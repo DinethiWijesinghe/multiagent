@@ -1,0 +1,992 @@
+{
+  "metadata": {
+    "version": "2.1",
+    "last_updated": "2026-03-11",
+    "total": 30,
+    "countries": [
+      "UK",
+      "Singapore",
+      "Australia"
+    ],
+    "source": "UniAssist Phase 1 Curated DB",
+    "change_note": "v2.1: ielts_minimum->ielts_min, toefl_minimum->toefl_min"
+  },
+  "UK": [
+    {
+      "id": "uk_cambridge",
+      "name": "University of Cambridge",
+      "country": "UK",
+      "city": "Cambridge",
+      "rankings": {
+        "qs_world": 2,
+        "the_world": 5
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Medicine",
+        "Business",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 28000,
+        "postgraduate_intl_gbp": 58000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.9,
+        "ielts_min": 7.5,
+        "toefl_min": 110
+      },
+      "website": "https://www.cam.ac.uk",
+      "interview_required": true,
+      "additional_tests": [
+        "Written assessment (STEP/MAT/PAT)",
+        "Interview required"
+      ]
+    },
+    {
+      "id": "uk_oxford",
+      "name": "University of Oxford",
+      "country": "UK",
+      "city": "Oxford",
+      "rankings": {
+        "qs_world": 3,
+        "the_world": 1
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Medicine",
+        "Business",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 28000,
+        "postgraduate_intl_gbp": 42000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.9,
+        "ielts_min": 7.5,
+        "toefl_min": 110
+      },
+      "website": "https://www.ox.ac.uk",
+      "interview_required": true,
+      "additional_tests": [
+        "Admissions test required (MAT/PAT/TSA)",
+        "Interview after shortlisting"
+      ]
+    },
+    {
+      "id": "uk_imperial",
+      "name": "Imperial College London",
+      "country": "UK",
+      "city": "London",
+      "rankings": {
+        "qs_world": 6,
+        "the_world": 8
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Medicine",
+        "Science",
+        "Business"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 32000,
+        "postgraduate_intl_gbp": 47000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.7,
+        "ielts_min": 6.5,
+        "toefl_min": 96
+      },
+      "website": "https://www.imperial.ac.uk",
+      "interview_required": false,
+      "additional_tests": [
+        "Mathematics A/L required for Engineering and Computing"
+      ]
+    },
+    {
+      "id": "uk_ucl",
+      "name": "University College London",
+      "country": "UK",
+      "city": "London",
+      "rankings": {
+        "qs_world": 9,
+        "the_world": 22
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Medicine",
+        "Business",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 22000,
+        "postgraduate_intl_gbp": 35000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.7,
+        "ielts_min": 6.5,
+        "toefl_min": 92
+      },
+      "website": "https://www.ucl.ac.uk",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "uk_edinburgh",
+      "name": "University of Edinburgh",
+      "country": "UK",
+      "city": "Edinburgh",
+      "rankings": {
+        "qs_world": 27,
+        "the_world": 30
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Medicine",
+        "Business",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 20000,
+        "postgraduate_intl_gbp": 32000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.5,
+        "ielts_min": 6.5,
+        "toefl_min": 92
+      },
+      "website": "https://www.ed.ac.uk",
+      "interview_required": false,
+      "additional_tests": [],
+      "new_program": "MSc Artificial Intelligence (2026, OVR-0004)"
+    },
+    {
+      "id": "uk_manchester",
+      "name": "University of Manchester",
+      "country": "UK",
+      "city": "Manchester",
+      "rankings": {
+        "qs_world": 32,
+        "the_world": 54
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "Arts",
+        "Medicine",
+        "Law"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 19000,
+        "postgraduate_intl_gbp": 28000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 90
+      },
+      "website": "https://www.manchester.ac.uk",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "uk_kings",
+      "name": "King's College London",
+      "country": "UK",
+      "city": "London",
+      "rankings": {
+        "qs_world": 40,
+        "the_world": 35
+      },
+      "programs": [
+        "Medicine",
+        "Law",
+        "Business",
+        "Arts",
+        "Science",
+        "Computer Science"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 21000,
+        "postgraduate_intl_gbp": 36000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.5,
+        "ielts_min": 7.0,
+        "toefl_min": 100
+      },
+      "website": "https://www.kcl.ac.uk",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "uk_lse",
+      "name": "London School of Economics",
+      "country": "UK",
+      "city": "London",
+      "rankings": {
+        "qs_world": 45,
+        "the_world": 27
+      },
+      "programs": [
+        "Business",
+        "Law",
+        "Arts",
+        "Science"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 22000,
+        "postgraduate_intl_gbp": 30000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.7,
+        "ielts_min": 7.0,
+        "toefl_min": 107
+      },
+      "website": "https://www.lse.ac.uk",
+      "interview_required": false,
+      "additional_tests": [
+        "Strong quantitative background required for Economics/Finance"
+      ]
+    },
+    {
+      "id": "uk_bristol",
+      "name": "University of Bristol",
+      "country": "UK",
+      "city": "Bristol",
+      "rankings": {
+        "qs_world": 55,
+        "the_world": 91
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "Arts",
+        "Law"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 18000,
+        "postgraduate_intl_gbp": 27000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 88
+      },
+      "website": "https://www.bristol.ac.uk",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "uk_warwick",
+      "name": "University of Warwick",
+      "country": "UK",
+      "city": "Coventry",
+      "rankings": {
+        "qs_world": 67,
+        "the_world": 81
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "Arts",
+        "Law"
+      ],
+      "tuition": {
+        "undergraduate_intl_gbp": 18000,
+        "postgraduate_intl_gbp": 26000,
+        "currency": "GBP"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 88
+      },
+      "website": "https://www.warwick.ac.uk",
+      "interview_required": false,
+      "additional_tests": []
+    }
+  ],
+  "Singapore": [
+    {
+      "id": "sg_nus",
+      "name": "National University of Singapore",
+      "country": "Singapore",
+      "city": "Singapore",
+      "rankings": {
+        "qs_world": 8,
+        "the_world": 19
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_sgd": 28000,
+        "postgraduate_intl_sgd": 42000,
+        "currency": "SGD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.7,
+        "ielts_min": 6.0,
+        "toefl_min": 85
+      },
+      "website": "https://www.nus.edu.sg",
+      "interview_required": true,
+      "additional_tests": [
+        "Medicine: UCAT-Asia",
+        "Law: LNAT",
+        "Portfolio for Architecture/Design"
+      ]
+    },
+    {
+      "id": "sg_ntu",
+      "name": "Nanyang Technological University",
+      "country": "Singapore",
+      "city": "Singapore",
+      "rankings": {
+        "qs_world": 15,
+        "the_world": 36
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "Arts",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_sgd": 26000,
+        "postgraduate_intl_sgd": 38000,
+        "currency": "SGD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.5,
+        "ielts_min": 6.0,
+        "toefl_min": 85
+      },
+      "website": "https://www.ntu.edu.sg",
+      "interview_required": false,
+      "additional_tests": [
+        "Portfolio required for ADM (Art Design Media)"
+      ]
+    },
+    {
+      "id": "sg_smu",
+      "name": "Singapore Management University",
+      "country": "Singapore",
+      "city": "Singapore",
+      "rankings": {
+        "qs_world": 500,
+        "the_world": null
+      },
+      "programs": [
+        "Business",
+        "Law",
+        "IT",
+        "Arts",
+        "Computer Science"
+      ],
+      "tuition": {
+        "undergraduate_intl_sgd": 35000,
+        "postgraduate_intl_sgd": 52000,
+        "currency": "SGD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 90
+      },
+      "website": "https://www.smu.edu.sg",
+      "interview_required": true,
+      "additional_tests": [
+        "Group discussion",
+        "Essay on leadership"
+      ]
+    },
+    {
+      "id": "sg_sutd",
+      "name": "Singapore Univ. of Technology and Design",
+      "country": "Singapore",
+      "city": "Singapore",
+      "rankings": {
+        "qs_world": null,
+        "the_world": null
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Design",
+        "IT"
+      ],
+      "tuition": {
+        "undergraduate_intl_sgd": 26000,
+        "postgraduate_intl_sgd": 35000,
+        "currency": "SGD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.0,
+        "toefl_min": 85
+      },
+      "website": "https://www.sutd.edu.sg",
+      "interview_required": true,
+      "additional_tests": [
+        "STEM-focused — project portfolio may be required"
+      ]
+    },
+    {
+      "id": "sg_sim",
+      "name": "Singapore Institute of Management",
+      "country": "Singapore",
+      "city": "Singapore",
+      "rankings": {
+        "qs_world": null,
+        "the_world": null
+      },
+      "programs": [
+        "Business",
+        "IT",
+        "Arts",
+        "Science",
+        "Engineering"
+      ],
+      "tuition": {
+        "undergraduate_intl_sgd": 15000,
+        "postgraduate_intl_sgd": 28000,
+        "currency": "SGD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.0,
+        "toefl_min": 79
+      },
+      "website": "https://www.sim.edu.sg",
+      "interview_required": false,
+      "additional_tests": []
+    }
+  ],
+  "Australia": [
+    {
+      "id": "au_melbourne",
+      "name": "University of Melbourne",
+      "country": "Australia",
+      "city": "Melbourne",
+      "rankings": {
+        "qs_world": 14,
+        "the_world": 33
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 50000,
+        "postgraduate_intl_aud": 50000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 79
+      },
+      "website": "https://www.unimelb.edu.au",
+      "interview_required": false,
+      "additional_tests": [
+        "Medicine: UCAT ANZ + Interview (GEMSAS)",
+        "Law: LSAT for JD"
+      ]
+    },
+    {
+      "id": "au_sydney",
+      "name": "University of Sydney",
+      "country": "Australia",
+      "city": "Sydney",
+      "rankings": {
+        "qs_world": 18,
+        "the_world": 59
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 36000,
+        "postgraduate_intl_aud": 52000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 85
+      },
+      "website": "https://www.sydney.edu.au",
+      "interview_required": false,
+      "additional_tests": [
+        "Medicine: UCAT ANZ + Interview"
+      ],
+      "scholarships": "Sydney Research Scholarship (AUD 25,000, min GPA 3.5)"
+    },
+    {
+      "id": "au_anu",
+      "name": "Australian National University",
+      "country": "Australia",
+      "city": "Canberra",
+      "rankings": {
+        "qs_world": 30,
+        "the_world": 67
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 32000,
+        "postgraduate_intl_aud": 48000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 80
+      },
+      "website": "https://www.anu.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_unsw",
+      "name": "University of New South Wales",
+      "country": "Australia",
+      "city": "Sydney",
+      "rankings": {
+        "qs_world": 19,
+        "the_world": 71
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 34000,
+        "postgraduate_intl_aud": 50000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.3,
+        "ielts_min": 6.5,
+        "toefl_min": 85
+      },
+      "website": "https://www.unsw.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_monash",
+      "name": "Monash University",
+      "country": "Australia",
+      "city": "Melbourne",
+      "rankings": {
+        "qs_world": 37,
+        "the_world": 95
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts",
+        "IT"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 30000,
+        "postgraduate_intl_aud": 46000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 79
+      },
+      "website": "https://www.monash.edu",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_uq",
+      "name": "University of Queensland",
+      "country": "Australia",
+      "city": "Brisbane",
+      "rankings": {
+        "qs_world": 43,
+        "the_world": 79
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 30000,
+        "postgraduate_intl_aud": 46000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 79
+      },
+      "website": "https://www.uq.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_uwa",
+      "name": "University of Western Australia",
+      "country": "Australia",
+      "city": "Perth",
+      "rankings": {
+        "qs_world": 72,
+        "the_world": 132
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 28000,
+        "postgraduate_intl_aud": 43000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 82
+      },
+      "website": "https://www.uwa.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_adelaide",
+      "name": "University of Adelaide",
+      "country": "Australia",
+      "city": "Adelaide",
+      "rankings": {
+        "qs_world": 89,
+        "the_world": 151
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Medicine",
+        "Science",
+        "Law",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 27000,
+        "postgraduate_intl_aud": 42000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 79
+      },
+      "website": "https://www.adelaide.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_rmit",
+      "name": "RMIT University",
+      "country": "Australia",
+      "city": "Melbourne",
+      "rankings": {
+        "qs_world": 140,
+        "the_world": null
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Design",
+        "IT",
+        "Science"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 28000,
+        "postgraduate_intl_aud": 40000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 79
+      },
+      "website": "https://www.rmit.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_macquarie",
+      "name": "Macquarie University",
+      "country": "Australia",
+      "city": "Sydney",
+      "rankings": {
+        "qs_world": 195,
+        "the_world": 251
+      },
+      "programs": [
+        "Business",
+        "IT",
+        "Science",
+        "Arts",
+        "Law",
+        "Engineering",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 26000,
+        "postgraduate_intl_aud": 38000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.5,
+        "toefl_min": 83
+      },
+      "website": "https://www.mq.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_deakin",
+      "name": "Deakin University",
+      "country": "Australia",
+      "city": "Geelong",
+      "rankings": {
+        "qs_world": 266,
+        "the_world": null
+      },
+      "programs": [
+        "Business",
+        "IT",
+        "Science",
+        "Arts",
+        "Education",
+        "Engineering",
+        "Computer Science"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 24000,
+        "postgraduate_intl_aud": 36000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 2.8,
+        "ielts_min": 6.0,
+        "toefl_min": 79
+      },
+      "website": "https://www.deakin.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_griffith",
+      "name": "Griffith University",
+      "country": "Australia",
+      "city": "Brisbane",
+      "rankings": {
+        "qs_world": 307,
+        "the_world": null
+      },
+      "programs": [
+        "Business",
+        "IT",
+        "Science",
+        "Arts",
+        "Law",
+        "Engineering",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 22000,
+        "postgraduate_intl_aud": 34000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 2.8,
+        "ielts_min": 6.0,
+        "toefl_min": 79
+      },
+      "website": "https://www.griffith.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_latrobe",
+      "name": "La Trobe University",
+      "country": "Australia",
+      "city": "Melbourne",
+      "rankings": {
+        "qs_world": 351,
+        "the_world": null
+      },
+      "programs": [
+        "Business",
+        "IT",
+        "Science",
+        "Arts",
+        "Law",
+        "Education",
+        "Engineering"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 22000,
+        "postgraduate_intl_aud": 33000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 2.8,
+        "ielts_min": 6.0,
+        "toefl_min": 79
+      },
+      "website": "https://www.latrobe.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_curtin",
+      "name": "Curtin University",
+      "country": "Australia",
+      "city": "Perth",
+      "rankings": {
+        "qs_world": 185,
+        "the_world": null
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "IT",
+        "Arts"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 25000,
+        "postgraduate_intl_aud": 38000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 3.0,
+        "ielts_min": 6.0,
+        "toefl_min": 80
+      },
+      "website": "https://www.curtin.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    },
+    {
+      "id": "au_wollongong",
+      "name": "University of Wollongong",
+      "country": "Australia",
+      "city": "Wollongong",
+      "rankings": {
+        "qs_world": 197,
+        "the_world": null
+      },
+      "programs": [
+        "Engineering",
+        "Computer Science",
+        "Business",
+        "Science",
+        "IT",
+        "Arts",
+        "Education"
+      ],
+      "tuition": {
+        "undergraduate_intl_aud": 24000,
+        "postgraduate_intl_aud": 36000,
+        "currency": "AUD"
+      },
+      "acceptance_criteria": {
+        "min_grade_point": 2.8,
+        "ielts_min": 6.0,
+        "toefl_min": 79
+      },
+      "website": "https://www.uow.edu.au",
+      "interview_required": false,
+      "additional_tests": []
+    }
+  ]
+}

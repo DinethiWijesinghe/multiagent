@@ -1,0 +1,27 @@
+# University Admission Assistant - Requirements
+# =============================================
+# Core framework
+streamlit>=1.32.0
+python-dotenv>=1.0.0
+
+# Document processing (OpenCV + Ollama)
+opencv-python>=4.9.0        # Image preprocessing, deskew, quality analysis
+requests>=2.31.0             # Ollama HTTP API client
+Pillow>=10.0.0               # Image loading / display in Streamlit
+
+# PDF support (optional but recommended)
+pymupdf>=1.23.0              # Fast PDF → image conversion (fitz)
+# pypdf>=4.0.0               # Alternative: pure-python PDF reader
+
+# Data & utilities
+numpy>=1.26.0                # Required by OpenCV
+python-dateutil>=2.9.0      # Flexible date parsing
+
+# Optional: database (uncomment when ready)
+# psycopg2-binary>=2.9.9    # PostgreSQL
+# SQLAlchemy>=2.0.0
+# alembic>=1.13.0
+
+# Dev / testing
+# pytest>=8.0.0
+# pytest-asyncio>=0.23.0

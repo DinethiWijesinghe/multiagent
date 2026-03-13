@@ -1,0 +1,90 @@
+{
+  "uk_manchester": {
+    "acceptance_criteria.ielts_minimum": {
+      "value": 6.5,
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-01-15 00:00:00",
+      "reason": "IELTS minimum raised to 6.5 for 2026 intake (was 6.0)",
+      "type": "update"
+    },
+    "acceptance_criteria.ielts_writing_band": {
+      "value": 6.5,
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-02-19 00:00:00",
+      "reason": "IELTS writing band minimum also raised to 6.5 for CS",
+      "type": "new"
+    }
+  },
+  "au_melbourne": {
+    "tuition.undergraduate_intl_aud": {
+      "value": 50000,
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-01-18 00:00:00",
+      "reason": "2026 tuition updated \u2014 AUD ~50,000/yr (OVR-0002)",
+      "type": "update"
+    }
+  },
+  "sg_nus": {
+    "application_deadline": {
+      "value": "2026-02-15",
+      "updated_by": "Lokesha Weerasinghe",
+      "updated_at": "2026-01-22 00:00:00",
+      "reason": "Application deadline moved to Feb 15 for Aug 2026 intake",
+      "type": "new"
+    }
+  },
+  "uk_edinburgh": {
+    "new_program": {
+      "value": "MSc Artificial Intelligence (2026, OVR-0004)",
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-01-25 00:00:00",
+      "reason": "New MSc Artificial Intelligence program added for 2026 \u2014 IELTS 6.5, min GPA 3.0",
+      "type": "new"
+    }
+  },
+  "au_uq": {
+    "rankings.qs_world": {
+      "value": 43,
+      "updated_by": "Lokesha Weerasinghe",
+      "updated_at": "2026-01-28 00:00:00",
+      "reason": "QS 2026 ranking updated to #43 (was #47 in Phase 1 DB)",
+      "type": "update"
+    }
+  },
+  "uk_ucl": {
+    "living_cost_usd_monthly": {
+      "value": 1750,
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-02-08 00:00:00",
+      "reason": "London living cost updated to USD 1,750/month for 2026 (Numbeo data)",
+      "type": "new"
+    }
+  },
+  "sg_ntu": {
+    "acceptance_criteria.min_grade_point": {
+      "value": 3.5,
+      "updated_by": "Lokesha Weerasinghe",
+      "updated_at": "2026-02-11 00:00:00",
+      "reason": "Min GPA corrected back to 3.5 (erroneous 3.8 entry rolled back)",
+      "type": "update"
+    }
+  },
+  "uk_imperial": {
+    "acceptance_criteria.toefl_minimum": {
+      "value": 96,
+      "updated_by": "WCD Wijesinghe",
+      "updated_at": "2026-02-14 00:00:00",
+      "reason": "TOEFL minimum updated to 96 (was 92 in Phase 1 DB \u2014 verified on Imperial website)",
+      "type": "update"
+    }
+  },
+  "au_sydney": {
+    "scholarships": {
+      "value": "Sydney Research Scholarship (AUD 25,000, min GPA 3.5)",
+      "updated_by": "Lokesha Weerasinghe",
+      "updated_at": "2026-02-17 00:00:00",
+      "reason": "Sydney Research Scholarship for International Students added \u2014 AUD 25,000, min GPA 3.5",
+      "type": "new"
+    }
+  }
+}

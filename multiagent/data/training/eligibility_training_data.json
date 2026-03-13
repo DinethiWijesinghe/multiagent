@@ -1,0 +1,158 @@
+{
+  "metadata": {
+    "version": "2.1",
+    "last_updated": "2026-03-11",
+    "note": "Key minimum_gpa_override (was min_grade_point_override) corrected to match EligibilityVerificationAgent"
+  },
+  "university_specific_requirements": {
+    "uk_cambridge": {
+      "minimum_gpa_override": 3.9,
+      "special_requirements": [
+        "Written assessment required: STEP (Maths), MAT (CS), PAT (Physics) depending on program",
+        "Interview required after shortlisting — collegiate system, apply to a specific college"
+      ],
+      "notes": "Collegiate system — apply to a specific college. STEP/MAT/PAT test + interview."
+    },
+    "uk_oxford": {
+      "minimum_gpa_override": 3.9,
+      "special_requirements": [
+        "Admissions test required: MAT (Maths/CS), PAT (Physics), TSA (PPE/Economics)",
+        "Interview required after shortlisting"
+      ],
+      "notes": "MAT/PAT/TSA test + interview required after shortlisting."
+    },
+    "uk_lse": {
+      "minimum_gpa_override": 3.7,
+      "special_requirements": [
+        "Strong quantitative background required for Economics and Finance programs"
+      ],
+      "notes": "LSE focuses on social sciences — strong quantitative background needed for Econ/Finance."
+    },
+    "uk_imperial": {
+      "minimum_gpa_override": 3.7,
+      "special_requirements": [
+        "A/L Mathematics required for Engineering and Computer Science",
+        "STEM-focused — limited arts/social science offerings"
+      ],
+      "notes": "STEM-focused — limited arts/social science offerings. A/L Maths required."
+    },
+    "sg_nus": {
+      "minimum_gpa_override": 3.7,
+      "special_requirements": [
+        "Medicine applicants: UCAT-Asia required",
+        "Law applicants: LNAT required",
+        "Architecture/Design: portfolio required",
+        "Interview required for most programs"
+      ],
+      "notes": "NUS merit scholarships — GPA 3.9+ may qualify for full scholarship."
+    },
+    "sg_ntu": {
+      "minimum_gpa_override": 3.5,
+      "special_requirements": [
+        "Art Design Media (ADM): portfolio required"
+      ],
+      "notes": "Nanyang Scholarship available for outstanding students."
+    }
+  },
+  "improvement_recommendations": {
+    "grade_below_minimum": [
+      "Consider foundation / pathway programmes (1 year) before undergraduate entry",
+      "Sit A/L supplementary exams to improve grades",
+      "Look at universities with lower minimum GPA requirements"
+    ],
+    "no_english_proficiency": [
+      "Take IELTS Academic (minimum 6.5) or TOEFL iBT (minimum 79)",
+      "Consider a 3–6 month English preparation course before the test",
+      "Use the British Council IELTS preparation resources",
+      "IELTS Academic is the most widely accepted — target 6.5+ overall"
+    ],
+    "no_english_provided": [
+      "English test score is required — IELTS Academic is the most widely accepted"
+    ],
+    "wrong_stream": [
+      "Foundation programmes can bridge stream-to-program gaps",
+      "Speak to admissions directly — some universities assess case-by-case",
+      "Consider bridging courses in the target subject area"
+    ],
+    "gpa_borderline": [
+      "Write a strong, personalised personal statement highlighting motivation",
+      "Highlight relevant extracurricular activities and achievements",
+      "Obtain strong academic references from teachers",
+      "Apply to a broader range of universities including safety options"
+    ]
+  },
+  "_reference_only": {
+    "_note": "The sections below are reference data only. The EligibilityVerificationAgent has these hardcoded. No code reads these at runtime.",
+    "program_requirements": {
+      "Medicine": {
+        "min_grade_point": 3.9,
+        "tests": [
+          "UCAT",
+          "BMAT"
+        ],
+        "interview": true,
+        "notes": "Extremely competitive — only top 5% of applicants succeed."
+      },
+      "Law": {
+        "min_grade_point": 3.7,
+        "tests": [
+          "LNAT"
+        ],
+        "interview": false,
+        "notes": "Strong writing and analytical skills essential."
+      },
+      "Engineering": {
+        "min_grade_point": 3.3,
+        "tests": [],
+        "interview": false,
+        "notes": "Combined Maths / Physics A/L strongly preferred."
+      },
+      "Computer Science": {
+        "min_grade_point": 3.3,
+        "tests": [],
+        "interview": false,
+        "notes": "Programming experience (Python, Java) is advantageous."
+      },
+      "Business": {
+        "min_grade_point": 3.0,
+        "tests": [
+          "GMAT"
+        ],
+        "interview": false,
+        "notes": "Work experience valued for MBA programmes."
+      }
+    },
+    "stream_program_compatibility": {
+      "Physical Science": [
+        "Engineering",
+        "Computer Science",
+        "Science",
+        "Medicine",
+        "IT"
+      ],
+      "Bio Science": [
+        "Medicine",
+        "Science",
+        "Engineering"
+      ],
+      "Commerce": [
+        "Business",
+        "Law",
+        "IT",
+        "Arts"
+      ],
+      "Arts": [
+        "Arts",
+        "Law",
+        "Social Science",
+        "Education",
+        "Business"
+      ],
+      "Technology": [
+        "Engineering",
+        "IT",
+        "Computer Science"
+      ]
+    }
+  }
+}
