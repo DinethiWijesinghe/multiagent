@@ -537,7 +537,7 @@ function ChatBot({user}){
 }
 
 // ── OCR BACKEND ─────────────────────────────────────────────────────────────
-const OCR_API = "http://127.0.0.1:8000";
+const OCR_API = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 async function extractDocumentWithAI(file, docType, onProgress) {
   onProgress("Reading file...", 10);
   const formData = new FormData();
@@ -552,7 +552,7 @@ async function extractDocumentWithAI(file, docType, onProgress) {
   try {
     response = await fetch(`${OCR_API}/ocr`, { method: "POST", body: formData });
   } catch (netErr) {
-    throw new Error("Cannot reach OCR server at " + OCR_API + ". Start it with: python api_server.py");
+    throw new Error("Cannot reach OCR server at " + OCR_API + ". Set VITE_API_URL for Colab/ngrok or start the API locally on port 8000.");
   }
   if (!response.ok) {
     const errBody = await response.json().catch(() => ({}));

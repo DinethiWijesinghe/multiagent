@@ -1,44 +1,40 @@
 """
-UniAssist API Server v7.0 — Ultra Lightweight Edition
-======================================================
-WHAT CHANGED FROM v6.0:
-  ✗ REMOVED  EasyOCR as primary OCR (causes laptop freeze/stuck)
-             → ✓ Tesseract LSTM as primary (3–4 sec, ~80 MB RAM)
-  ✓ KEPT     EasyOCR as optional fallback (set USE_EASYOCR=True if GPU available)
-  ✓ KEPT     TF-IDF + NaiveBayes ML classifier
-  ✓ KEPT     All /health and /ocr endpoints
-  ✓ KEPT     All 9 document types + field extractors
-  ✓ ADDED    Faster preprocessing (cap 1000px, Otsu threshold)
-  ✓ ADDED    Sinhala-script skip in OCR output
-  ✓ ADDED    District rank, island rank, stream extraction for AL docs
-  ✓ FIXED    Laptop freeze issue — Tesseract uses ~80 MB vs EasyOCR ~400 MB
+UniAssist API Server v7.1 — Windows-Fixed Edition
+===================================================
+FIXES vs v7.0:
+  ✓ FIXED   Tesseract "not found" on Windows
+            → Auto-detects common Windows install paths
+            → Falls back to EasyOCR if Tesseract unavailable
+  ✓ ADDED   _configure_tesseract() called at startup
+  ✓ ADDED   OCR_ENGINE auto-selection logic:
+              1. Try Tesseract (fast, low RAM)
+              2. If not found → try EasyOCR (CPU mode)
+              3. If neither → clear error message with install guide
+  ✓ KEPT    All ML classifier, field extractors, FastAPI endpoints
 
-WHY LAPTOP WAS FREEZING:
-  EasyOCR internally resizes images to 2560px → 14 MB buffer per image
-  Then runs CRAFT neural net (heavy) + CRNN decoder on CPU
-  On a low-spec laptop this exhausts RAM → OS starts swapping → freeze
+WINDOWS INSTALL (choose one):
+  Option A — Tesseract (recommended, fast):
+    Download: https://github.com/UB-Mannheim/tesseract/wiki
+    Install to: C:\\Program Files\\Tesseract-OCR\\tesseract.exe
+    Then restart this server.
 
-TESSERACT vs EASYOCR on low-spec laptop:
-  Tesseract : ~80 MB RAM  · 3–4 sec per doc  · no freeze
-  EasyOCR   : ~400 MB RAM · 15–30 sec per doc · causes freeze
-
-Install:
-  pip install fastapi uvicorn scikit-learn opencv-python-headless numpy Pillow python-multipart pytesseract
-  sudo apt install tesseract-ocr          (Linux)
-  # Windows: https://github.com/UB-Mannheim/tesseract/wiki
+  Option B — EasyOCR (no extra install):
+    Set USE_EASYOCR = True below.
+    First run downloads ~100 MB model weights.
 
 Run:
   uvicorn api_server:app --host 0.0.0.0 --port 8000
-
-Test on image:
-  python api_server.py path/to/doc.jpg
 """
 
-import os, re, pickle, random, time
+import os
+import re
+import sys
+import pickle
+import random
+import time
 import numpy as np
 import cv2
 from PIL import Image
-import pytesseract
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
@@ -48,14 +44,103 @@ from sklearn.model_selection import cross_val_score
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-USE_EASYOCR          = False   # set True only if you have 4+ GB RAM free
+
+USE_EASYOCR          = False   # Set True to force EasyOCR (overrides Tesseract)
 MODEL_PATH           = "uniassist_classifier.pkl"
 CONFIDENCE_THRESHOLD = 0.40
-MAX_IMAGE_DIM        = 1000    # px — enough for clear docs, prevents freeze
+MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TRAINING DATA  (225 raw → 1,125 augmented · sourced from real SL documents)
+# TESSERACT WINDOWS PATH AUTO-DETECTION  ← NEW FIX
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Common Windows install locations for Tesseract
+_WINDOWS_TESSERACT_PATHS = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    r"C:\Tesseract-OCR\tesseract.exe",
+    r"C:\Users\{}\AppData\Local\Programs\Tesseract-OCR\tesseract.exe".format(
+        os.environ.get("USERNAME", "")
+    ),
+]
+
+_OCR_ENGINE = None  # will be set to "tesseract", "easyocr", or None after startup
+
+
+def _configure_tesseract() -> bool:
+    """
+    Try to locate and configure Tesseract on Windows (or any OS).
+    Returns True if Tesseract is available and configured.
+    """
+    try:
+        import pytesseract
+
+        # 1. Try current PATH first (works on Linux/macOS and correctly set Windows)
+        try:
+            ver = pytesseract.get_tesseract_version()
+            print(f"[Tesseract] Found in PATH — version {ver}")
+            return True
+        except Exception:
+            pass
+
+        # 2. Try known Windows install paths
+        if sys.platform == "win32":
+            for path in _WINDOWS_TESSERACT_PATHS:
+                if os.path.isfile(path):
+                    pytesseract.pytesseract.tesseract_cmd = path
+                    try:
+                        ver = pytesseract.get_tesseract_version()
+                        print(f"[Tesseract] Found at {path} — version {ver}")
+                        return True
+                    except Exception:
+                        continue
+
+        # 3. Try environment variable TESSERACT_CMD
+        env_path = os.environ.get("TESSERACT_CMD", "")
+        if env_path and os.path.isfile(env_path):
+            pytesseract.pytesseract.tesseract_cmd = env_path
+            try:
+                ver = pytesseract.get_tesseract_version()
+                print(f"[Tesseract] Found via env TESSERACT_CMD — version {ver}")
+                return True
+            except Exception:
+                pass
+
+        print("[Tesseract] NOT FOUND on this system.")
+        _print_tesseract_install_guide()
+        return False
+
+    except ImportError:
+        print("[Tesseract] pytesseract package not installed.")
+        print("  Run: pip install pytesseract")
+        return False
+
+
+def _print_tesseract_install_guide():
+    print()
+    print("=" * 60)
+    print("  TESSERACT NOT FOUND — Install Guide")
+    print("=" * 60)
+    print("  Windows:")
+    print("    1. Download from:")
+    print("       https://github.com/UB-Mannheim/tesseract/wiki")
+    print("    2. Run installer → install to default location")
+    print("       (C:\\Program Files\\Tesseract-OCR\\)")
+    print("    3. Restart this server")
+    print()
+    print("  Alternative: Set environment variable before running:")
+    print("    set TESSERACT_CMD=C:\\path\\to\\tesseract.exe")
+    print()
+    print("  OR: Set USE_EASYOCR = True in api_server.py")
+    print("      to use EasyOCR instead (no extra install)")
+    print("=" * 60)
+    print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRAINING DATA  (225 raw → 1,125 augmented)
+# ─────────────────────────────────────────────────────────────────────────────
+
 TRAINING_DATA = {
     "alevel": [
         "sri lanka advanced level examination results 2023",
@@ -130,12 +215,12 @@ TRAINING_DATA = {
         "mba executive programme part time master degree university",
         "master of nursing science postgraduate degree university awarded",
         "msc electrical engineering postgraduate degree university faculty",
-        "master degree programme colombo moratuwa peradeniya university",
-        "postgraduate master awarded distinction merit pass university",
         "master of public administration mpa postgraduate degree",
         "master of finance mfin postgraduate degree awarded university",
         "postgraduate studies master programme two year full time",
         "master of social sciences mssci postgraduate awarded",
+        "master degree programme colombo moratuwa peradeniya university",
+        "postgraduate master awarded distinction merit pass university",
         "postgraduate diploma master degree university peradeniya",
     ],
     "diploma": [
@@ -305,37 +390,50 @@ TRAINING_DATA = {
 # ─────────────────────────────────────────────────────────────────────────────
 # AUGMENTATION
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _augment(text):
     words = text.split()
     v = [text.lower()]
-    v.append(" ".join(w.upper() if random.random()>0.55 else w for w in words))
+    v.append(" ".join(w.upper() if random.random() > 0.55 else w for w in words))
     if len(words) > 3:
-        i = random.randint(0, len(words)-2)
-        sw = words[:]; sw[i],sw[i+1] = sw[i+1],sw[i]; v.append(" ".join(sw))
-    else: v.append(text)
+        i = random.randint(0, len(words) - 2)
+        sw = words[:]
+        sw[i], sw[i + 1] = sw[i + 1], sw[i]
+        v.append(" ".join(sw))
+    else:
+        v.append(text)
     if len(words) > 4:
-        drop = set(random.sample(range(len(words)), min(2,len(words)//5)))
-        v.append(" ".join(w for i,w in enumerate(words) if i not in drop))
-    else: v.append(text.lower())
+        drop = set(random.sample(range(len(words)), min(2, len(words) // 5)))
+        v.append(" ".join(w for i, w in enumerate(words) if i not in drop))
+    else:
+        v.append(text.lower())
     return v
+
 
 def _build_corpus():
     texts, labels = [], []
     for label, samples in TRAINING_DATA.items():
         for s in samples:
-            texts.append(s); labels.append(label)
-            for a in _augment(s): texts.append(a); labels.append(label)
+            texts.append(s)
+            labels.append(label)
+            for a in _augment(s):
+                texts.append(a)
+                labels.append(label)
     return texts, labels
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# ML MODEL
+# ML MODEL — TF-IDF + Naive Bayes
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _train(verbose=True):
     texts, labels = _build_corpus()
     pipe = Pipeline([
-        ("tfidf", TfidfVectorizer(ngram_range=(1,2), max_features=8000,
-                                   sublinear_tf=True, min_df=1,
-                                   token_pattern=r"[a-zA-Z0-9]{2,}")),
+        ("tfidf", TfidfVectorizer(
+            ngram_range=(1, 2), max_features=8000,
+            sublinear_tf=True, min_df=1,
+            token_pattern=r"[a-zA-Z0-9]{2,}",
+        )),
         ("nb", MultinomialNB(alpha=0.3)),
     ])
     if verbose:
@@ -343,125 +441,239 @@ def _train(verbose=True):
         print(f"[ML] CV accuracy: {cv.mean():.1%} ± {cv.std():.1%}")
         print(f"[ML] Training {len(texts)} samples | {len(TRAINING_DATA)} classes ...")
     pipe.fit(texts, labels)
-    with open(MODEL_PATH, "wb") as f: pickle.dump(pipe, f)
-    if verbose: print(f"[ML] Saved → {MODEL_PATH}")
+    with open(MODEL_PATH, "wb") as f:
+        pickle.dump(pipe, f)
+    if verbose:
+        print(f"[ML] Saved → {MODEL_PATH}")
     return pipe
+
 
 def _load_model():
     if os.path.exists(MODEL_PATH):
-        with open(MODEL_PATH,"rb") as f: return pickle.load(f)
+        with open(MODEL_PATH, "rb") as f:
+            return pickle.load(f)
     return _train()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RULE-BASED FALLBACK
 # ─────────────────────────────────────────────────────────────────────────────
+
 _KW = {
-    "alevel":    ["advanced level","gce","z score","combined maths","stream","biology",
-                  "physics","chemistry","department of examinations","district rank",
-                  "island rank","aggregate","certificate of qualification","commissioner general"],
-    "bachelor":  ["bachelor","bsc","beng","bba","llb","mbbs","undergraduate",
-                  "first class","second class","honours","convocation"],
-    "master":    ["master","msc","mba","mphil","postgraduate","dissertation","thesis"],
-    "diploma":   ["diploma","nibm","hnd","nvq","naita","vta","technical college","vocational"],
-    "ielts":     ["ielts","band score","british council","idp","test report form","overall band"],
-    "toefl":     ["toefl","ets","educational testing service","ibt","internet based"],
-    "pte":       ["pte","pearson","communicative skills","enabling skills","oral fluency"],
-    "passport":  ["passport","nationality","lka","date of expiry","immigration","emigration",
-                  "mrz","biometric","travel document"],
-    "financial": ["bank statement","account number","closing balance","opening balance",
-                  "debit","credit","bank of ceylon","peoples bank","hatton","sampath","certified"],
+    "alevel":    ["advanced level", "gce", "z score", "combined maths", "stream",
+                  "biology", "physics", "chemistry", "department of examinations",
+                  "district rank", "island rank", "aggregate", "certificate of qualification",
+                  "commissioner general"],
+    "bachelor":  ["bachelor", "bsc", "beng", "bba", "llb", "mbbs", "undergraduate",
+                  "first class", "second class", "honours", "convocation"],
+    "master":    ["master", "msc", "mba", "mphil", "postgraduate", "dissertation", "thesis"],
+    "diploma":   ["diploma", "nibm", "hnd", "nvq", "naita", "vta",
+                  "technical college", "vocational"],
+    "ielts":     ["ielts", "band score", "british council", "idp",
+                  "test report form", "overall band"],
+    "toefl":     ["toefl", "ets", "educational testing service", "ibt", "internet based"],
+    "pte":       ["pte", "pearson", "communicative skills", "enabling skills", "oral fluency"],
+    "passport":  ["passport", "nationality", "lka", "date of expiry", "immigration",
+                  "emigration", "mrz", "biometric", "travel document"],
+    "financial": ["bank statement", "account number", "closing balance", "opening balance",
+                  "debit", "credit", "bank of ceylon", "peoples bank", "hatton",
+                  "sampath", "certified"],
 }
+
+
 def _rule_classify(text):
     t = text.lower()
-    scores = {l: sum(1 for kw in kws if kw in t)/len(kws) for l,kws in _KW.items()}
+    scores = {l: sum(1 for kw in kws if kw in t) / len(kws) for l, kws in _KW.items()}
     best = max(scores, key=scores.get)
-    conf = min(scores[best]*3, 1.0)
+    conf = min(scores[best] * 3, 1.0)
     return (best, conf) if conf > 0 else ("unknown", 0.0)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OCR ERROR CORRECTOR
 # ─────────────────────────────────────────────────────────────────────────────
+
 _FIXES = {
-    "examlnation":"examination","certlficate":"certificate","unlversity":"university",
-    "passporl":"passport","natlonality":"nationality","llstening":"listening",
-    "wrlting":"writing","speaklng":"speaking","readlng":"reading",
-    "candldate":"candidate","dlstrict":"district","agregate":"aggregate",
-    "zscore":"z score","bandsoore":"band score","balence":"balance",
-    "statment":"statement","certifled":"certified","bachelar":"bachelor",
-    "mastar":"master","diplama":"diploma",
+    "examlnation": "examination", "certlficate": "certificate",
+    "unlversity": "university", "passporl": "passport",
+    "natlonality": "nationality", "llstening": "listening",
+    "wrlting": "writing", "speaklng": "speaking", "readlng": "reading",
+    "candldate": "candidate", "dlstrict": "district", "agregate": "aggregate",
+    "zscore": "z score", "bandsoore": "band score", "balence": "balance",
+    "statment": "statement", "certifled": "certified",
+    "bachelar": "bachelor", "mastar": "master", "diplama": "diploma",
 }
+
+
 def _correct(text):
     return " ".join(_FIXES.get(w.lower(), w) for w in text.split())
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# IMAGE PREPROCESSING  (fast — no freeze)
+# IMAGE PREPROCESSING
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _preprocess(image_path):
+    """Load, resize and threshold image. Returns grayscale numpy array."""
     img = cv2.imread(image_path)
     if img is None:
         pil = Image.open(image_path).convert("RGB")
         img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
     h, w = img.shape[:2]
-    # Cap at MAX_IMAGE_DIM — KEY to prevent freeze
     max_dim = max(h, w)
     if max_dim > MAX_IMAGE_DIM:
         scale = MAX_IMAGE_DIM / max_dim
-        img = cv2.resize(img, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_AREA)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_AREA)
     elif max_dim < 600:
         scale = 800 / max_dim
-        img = cv2.resize(img, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_LANCZOS4)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                         interpolation=cv2.INTER_LANCZOS4)
 
-    # Auto-rotate landscape → portrait
     h, w = img.shape[:2]
-    if w > h: img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    if w > h:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8)).apply(gray)
-
-    # Otsu threshold — fast and effective for printed docs
+    gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
     _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return gray
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# OCR — Tesseract primary (fast), EasyOCR optional
+# OCR ENGINES
 # ─────────────────────────────────────────────────────────────────────────────
+
 _easyocr_reader = None
 
-def _run_ocr(image_path):
-    if USE_EASYOCR:
-        global _easyocr_reader
-        if _easyocr_reader is None:
-            import easyocr
-            print("[EasyOCR] Loading model ...")
-            _easyocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-        img = _preprocess(image_path)
-        results = _easyocr_reader.readtext(
-            cv2.cvtColor(img, cv2.COLOR_GRAY2BGR),
-            detail=1, batch_size=1, workers=0, beamWidth=3)
-        words = [t for (_,t,c) in results if t.strip() and c>0.25]
-        confs = [c for (_,t,c) in results if t.strip() and c>0.25]
-        text  = " ".join(words)
-        conf  = float(np.mean(confs)) if confs else 0.0
-    else:
-        # Tesseract — fast, low RAM, no freeze
-        gray = _preprocess(image_path)
-        text = pytesseract.image_to_string(gray, config="--oem 1 --psm 3")
-        # Get per-word confidence
-        data = pytesseract.image_to_data(gray, config="--oem 1 --psm 3",
-                                          output_type=pytesseract.Output.DICT)
-        confs = [int(c) for c in data["conf"] if int(c) > 0]
-        conf  = (sum(confs)/len(confs)/100) if confs else 0.0
 
-    # Strip Sinhala / Tamil unicode (not needed for classification)
+def _run_tesseract(image_path):
+    """Run Tesseract OCR. Raises if unavailable."""
+    import pytesseract
+    gray = _preprocess(image_path)
+    text = pytesseract.image_to_string(gray, config="--oem 1 --psm 3")
+    data = pytesseract.image_to_data(
+        gray, config="--oem 1 --psm 3",
+        output_type=pytesseract.Output.DICT,
+    )
+    confs = [int(c) for c in data["conf"] if int(c) > 0]
+    conf = (sum(confs) / len(confs) / 100) if confs else 0.0
     text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
     return _correct(text.strip()), conf
 
+
+def _run_easyocr_engine(image_path):
+    """Run EasyOCR in CPU mode."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        print("[EasyOCR] Loading model (first time ~5 sec) ...")
+        _easyocr_reader = easyocr.Reader(
+            ["en"], gpu=False,
+            model_storage_directory=os.path.join(
+                os.path.expanduser("~"), ".EasyOCR", "model"),
+            download_enabled=True,
+            verbose=False,
+        )
+        print("[EasyOCR] Ready.")
+    img = _preprocess(image_path)
+    results = _easyocr_reader.readtext(
+        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR),
+        detail=1, batch_size=1, workers=0, beamWidth=3,
+    )
+    words = [t for (_, t, c) in results if t.strip() and c > 0.25]
+    confs = [c for (_, t, c) in results if t.strip() and c > 0.25]
+    text = " ".join(words)
+    conf = float(np.mean(confs)) if confs else 0.0
+    text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
+    return _correct(text.strip()), conf
+
+
+def _run_ocr(image_path):
+    """
+    Smart OCR dispatcher:
+      - USE_EASYOCR=True  → EasyOCR always
+      - _OCR_ENGINE set to "tesseract" → use Tesseract
+      - _OCR_ENGINE set to "easyocr"   → use EasyOCR
+      - Neither available → raise with clear instructions
+    """
+    global _OCR_ENGINE
+
+    if USE_EASYOCR or _OCR_ENGINE == "easyocr":
+        return _run_easyocr_engine(image_path)
+
+    if _OCR_ENGINE == "tesseract":
+        return _run_tesseract(image_path)
+
+    # Engine not yet determined — try both
+    try:
+        result = _run_tesseract(image_path)
+        _OCR_ENGINE = "tesseract"
+        return result
+    except Exception as te:
+        print(f"[Tesseract] Failed: {te}")
+        print("[OCR] Falling back to EasyOCR ...")
+        try:
+            result = _run_easyocr_engine(image_path)
+            _OCR_ENGINE = "easyocr"
+            return result
+        except ImportError:
+            raise RuntimeError(
+                "No OCR engine available!\n\n"
+                "To fix this, choose ONE of:\n"
+                "  Option A (Tesseract — recommended):\n"
+                "    1. Download: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                "    2. Install to C:\\Program Files\\Tesseract-OCR\\\n"
+                "    3. Restart server\n\n"
+                "  Option B (EasyOCR — no extra install):\n"
+                "    pip install easyocr\n"
+                "    Set USE_EASYOCR = True in api_server.py\n"
+            )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# FIELD EXTRACTORS  (updated — added district_rank, island_rank, stream for AL)
+# CONFIDENCE SCORER
 # ─────────────────────────────────────────────────────────────────────────────
-def _f(p, text): m=re.search(p,text,re.I); return m.group(1).strip() if m else None
-def _fa(p, text): return re.findall(p, text, re.I)
+
+_FW = {
+    "alevel":    {"index_number": 0.25, "year": 0.1, "subjects": 0.25,
+                  "grades": 0.2, "z_score": 0.2},
+    "bachelor":  {"name": 0.2, "degree": 0.3, "university": 0.3, "year": 0.2},
+    "master":    {"name": 0.2, "degree": 0.3, "university": 0.3, "year": 0.2},
+    "diploma":   {"degree": 0.4, "year": 0.3, "university": 0.3},
+    "ielts":     {"overall": 0.4, "listening": 0.15, "reading": 0.15,
+                  "writing": 0.15, "speaking": 0.15},
+    "toefl":     {"total": 0.4, "reading": 0.15, "listening": 0.15,
+                  "speaking": 0.15, "writing": 0.15},
+    "pte":       {"overall": 0.4, "listening": 0.15, "reading": 0.15,
+                  "writing": 0.15, "speaking": 0.15},
+    "passport":  {"passport_no": 0.3, "surname": 0.2, "given_names": 0.2, "expiry": 0.3},
+    "financial": {"bank_name": 0.2, "account_no": 0.3, "closing_bal": 0.5},
+}
+
+
+def _score(doc_type, fields, ocr_conf, ml_conf):
+    fw = _FW.get(doc_type, {})
+    fs = sum(
+        w for f, w in fw.items()
+        if fields.get(f) and (fields[f] if isinstance(fields[f], str) else len(fields[f]) > 0)
+    )
+    return round(min(fs * 0.50 + ocr_conf * 0.25 + ml_conf * 0.25, 1.0), 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIELD EXTRACTORS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _f(p, text):
+    m = re.search(p, text, re.I)
+    return m.group(1).strip() if m else None
+
+
+def _fa(p, text):
+    return re.findall(p, text, re.I)
+
 
 def _extract(doc_type, text):
     t = text.lower()
@@ -470,9 +682,11 @@ def _extract(doc_type, text):
             "name":          _f(r"certify that\s+([A-Z][A-Z.\s]+)\n", text),
             "index_number":  _f(r"(?:Index\s*Number[:\s]+|Index\s*\n\s*Number[:\s]+)(\d{7})", text),
             "year":          _f(r"(20\d{2})", text),
-            "subjects":      _fa(r"(Physics|Chemistry|Combined Mathematic?s?|Biology|Sinhala|"
-                                 r"Political Science|General English|Logic.*?Method|"
-                                 r"Common General Test|Economics|Geography|Accounting|ICT)", text),
+            "subjects":      _fa(
+                r"(Physics|Chemistry|Combined Mathematic?s?|Biology|Sinhala|"
+                r"Political Science|General English|Logic.*?Method|"
+                r"Common General Test|Economics|Geography|Accounting|ICT)", text
+            ),
             "grades":        _fa(r"\|\s*([ABCSF])\s*\||([ABCSF])\s+Pass", text),
             "z_score":       _f(r"Z[\-\s]?Score[:\s]+([0-9.]+)", text),
             "district_rank": _f(r"District\s*Rank[:\s]+(\d+)", text),
@@ -480,13 +694,14 @@ def _extract(doc_type, text):
             "stream":        _f(r"(?:Subject\s*)?Stream[:\s]+([A-Z]+)", text),
             "date_of_issue": _f(r"(?:Date of Issue|Date)[:\s]+(.+?\d{4})", text),
         }
-    elif doc_type in ("bachelor","master","diploma"):
+    elif doc_type in ("bachelor", "master", "diploma"):
         return {
             "name":       _f(r"(?:certify that|awarded to|conferred upon)\s+([A-Z\s]+)", text),
             "degree":     _f(r"(bachelor|master|diploma)[^.\n]{0,60}", t),
             "university": _f(r"university of [\w\s]+|[\w\s]+ university", t),
             "year":       _f(r"(20\d{2})", text),
-            "class":      _f(r"(first class|second class|upper second|lower second|distinction|merit|pass)", t),
+            "class":      _f(r"(first class|second class|upper second|lower second|"
+                             r"distinction|merit|pass)", t),
             "gpa":        _f(r"gpa[\s:]+([0-9.]+)", t),
         }
     elif doc_type == "ielts":
@@ -500,91 +715,158 @@ def _extract(doc_type, text):
             "trf":       _f(r"(?:trf|reference)[\s:]+([A-Z0-9\-]+)", t),
         }
     elif doc_type == "toefl":
-        return {"total":_f(r"total[\s:]+(\d{2,3})",t),"reading":_f(r"reading[\s:]+(\d{1,2})",t),
-                "listening":_f(r"listening[\s:]+(\d{1,2})",t),"speaking":_f(r"speaking[\s:]+(\d{1,2})",t),
-                "writing":_f(r"writing[\s:]+(\d{1,2})",t),"test_date":_f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})",text)}
+        return {
+            "total":     _f(r"total[\s:]+(\d{2,3})", t),
+            "reading":   _f(r"reading[\s:]+(\d{1,2})", t),
+            "listening": _f(r"listening[\s:]+(\d{1,2})", t),
+            "speaking":  _f(r"speaking[\s:]+(\d{1,2})", t),
+            "writing":   _f(r"writing[\s:]+(\d{1,2})", t),
+            "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
+        }
     elif doc_type == "pte":
-        return {"overall":_f(r"overall[\s:]+(\d{2,3})",t),"listening":_f(r"listening[\s:]+(\d{2,3})",t),
-                "reading":_f(r"reading[\s:]+(\d{2,3})",t),"writing":_f(r"writing[\s:]+(\d{2,3})",t),
-                "speaking":_f(r"speaking[\s:]+(\d{2,3})",t),"test_date":_f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})",text)}
+        return {
+            "overall":   _f(r"overall[\s:]+(\d{2,3})", t),
+            "listening": _f(r"listening[\s:]+(\d{2,3})", t),
+            "reading":   _f(r"reading[\s:]+(\d{2,3})", t),
+            "writing":   _f(r"writing[\s:]+(\d{2,3})", t),
+            "speaking":  _f(r"speaking[\s:]+(\d{2,3})", t),
+            "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
+        }
     elif doc_type == "passport":
-        return {"surname":_f(r"surname[\s:]+([A-Z]+)",text),"given_names":_f(r"given\s*names?[\s:]+([A-Z\s]+)",text),
-                "passport_no":_f(r"\b([A-Z]\d{7})\b",text),"nationality":_f(r"nationality[\s:]+([A-Z\s]+)",text),
-                "dob":_f(r"(?:date of birth|dob)[\s:]+([0-9/\-\s\w]+)",t),
-                "expiry":_f(r"(?:date of expiry|expiry)[\s:]+([0-9/\-\s\w]+)",t),
-                "mrz":_f(r"(P<<LKA[A-Z<]+)",text)}
+        return {
+            "surname":     _f(r"surname[\s:]+([A-Z]+)", text),
+            "given_names": _f(r"given\s*names?[\s:]+([A-Z\s]+)", text),
+            "passport_no": _f(r"\b([A-Z]\d{7})\b", text),
+            "nationality": _f(r"nationality[\s:]+([A-Z\s]+)", text),
+            "dob":         _f(r"(?:date of birth|dob)[\s:]+([0-9/\-\s\w]+)", t),
+            "expiry":      _f(r"(?:date of expiry|expiry)[\s:]+([0-9/\-\s\w]+)", t),
+            "mrz":         _f(r"(P<<LKA[A-Z<]+)", text),
+        }
     elif doc_type == "financial":
-        return {"bank_name":_f(r"(bank of ceylon|peoples bank|commercial bank|hatton national|sampath|nations trust|dfcc|seylan|ndb)",t),
-                "account_no":_f(r"account\s*(?:number|no)[\s:]+([0-9\-]+)",t),
-                "closing_bal":_f(r"(?:closing|available|current)\s*balance[\s:]*(?:lkr|rs\.?)?[\s]*([0-9,]+(?:\.\d{2})?)",t),
-                "currency":_f(r"\b(LKR|USD|GBP|AUD|SGD)\b",text),
-                "period":_f(r"(?:statement period|from)[\s:]+([0-9/\-\s\w]+)",t)}
+        return {
+            "bank_name":   _f(
+                r"(bank of ceylon|peoples bank|commercial bank|hatton national|"
+                r"sampath|nations trust|dfcc|seylan|ndb)", t
+            ),
+            "account_no":  _f(r"account\s*(?:number|no)[\s:]+([0-9\-]+)", t),
+            "closing_bal": _f(
+                r"(?:closing|available|current)\s*balance[\s:]*"
+                r"(?:lkr|rs\.?)?[\s]*([0-9,]+(?:\.\d{2})?)", t
+            ),
+            "currency":    _f(r"\b(LKR|USD|GBP|AUD|SGD)\b", text),
+            "period":      _f(r"(?:statement period|from)[\s:]+([0-9/\-\s\w]+)", t),
+        }
     return {}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIDENCE SCORER
-# ─────────────────────────────────────────────────────────────────────────────
-_FW = {
-    "alevel":    {"index_number":0.25,"year":0.1,"subjects":0.25,"grades":0.2,"z_score":0.2},
-    "bachelor":  {"name":0.2,"degree":0.3,"university":0.3,"year":0.2},
-    "master":    {"name":0.2,"degree":0.3,"university":0.3,"year":0.2},
-    "diploma":   {"degree":0.4,"year":0.3,"university":0.3},
-    "ielts":     {"overall":0.4,"listening":0.15,"reading":0.15,"writing":0.15,"speaking":0.15},
-    "toefl":     {"total":0.4,"reading":0.15,"listening":0.15,"speaking":0.15,"writing":0.15},
-    "pte":       {"overall":0.4,"listening":0.15,"reading":0.15,"writing":0.15,"speaking":0.15},
-    "passport":  {"passport_no":0.3,"surname":0.2,"given_names":0.2,"expiry":0.3},
-    "financial": {"bank_name":0.2,"account_no":0.3,"closing_bal":0.5},
-}
-def _score(doc_type, fields, ocr_conf, ml_conf):
-    fw = _FW.get(doc_type, {})
-    fs = sum(w for f,w in fw.items()
-             if fields.get(f) and (fields[f] if isinstance(fields[f],str) else len(fields[f])>0))
-    return round(min(fs*0.50 + ocr_conf*0.25 + ml_conf*0.25, 1.0), 3)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FASTAPI
 # ─────────────────────────────────────────────────────────────────────────────
-from fastapi import FastAPI, File, UploadFile, Form
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 
-app = FastAPI(title="UniAssist OCR API", version="7.0",
-              description="Tesseract primary + TF-IDF/NaiveBayes — low-spec optimised")
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(
+    title="UniAssist OCR API",
+    version="7.1",
+    description=(
+        "Windows-fixed edition. "
+        "Auto-detects Tesseract; falls back to EasyOCR if not found. "
+        "TF-IDF + NaiveBayes ML classifier. 9 Sri Lankan document types."
+    ),
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _ml: Pipeline = None
 
+
 @app.on_event("startup")
 def startup():
-    global _ml
+    global _ml, _OCR_ENGINE
+
+    # 1. Train / load ML model
     _ml = _load_model()
-    ocr_engine = "EasyOCR (CPU)" if USE_EASYOCR else "Tesseract LSTM"
-    print(f"[UniAssist v7.0] Ready | OCR: {ocr_engine} | ML: TF-IDF+NaiveBayes")
+
+    # 2. Configure Tesseract (Windows path detection)
+    if not USE_EASYOCR:
+        tess_ok = _configure_tesseract()
+        if tess_ok:
+            _OCR_ENGINE = "tesseract"
+        else:
+            # Try EasyOCR as automatic fallback
+            try:
+                import easyocr  # noqa: F401
+                _OCR_ENGINE = "easyocr"
+                print("[OCR] Tesseract unavailable — using EasyOCR as fallback.")
+            except ImportError:
+                _OCR_ENGINE = None
+                print(
+                    "[OCR] WARNING: Neither Tesseract nor EasyOCR available!\n"
+                    "  Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                    "  OR: pip install easyocr  and set USE_EASYOCR=True"
+                )
+    else:
+        _OCR_ENGINE = "easyocr"
+
+    print(
+        f"[UniAssist v7.1] Ready | "
+        f"OCR: {_OCR_ENGINE or 'NONE — see warnings above'} | "
+        f"ML: TF-IDF + NaiveBayes"
+    )
+
 
 @app.get("/health")
 def health():
     return {
-        "status":"ok","version":"7.0",
-        "ocr": "EasyOCR cpu" if USE_EASYOCR else "Tesseract LSTM",
+        "status": "ok" if _OCR_ENGINE else "degraded",
+        "version": "7.1",
+        "ocr_engine": _OCR_ENGINE or "none",
+        "use_easyocr_flag": USE_EASYOCR,
         "ml_model": "TF-IDF bigrams + MultinomialNB",
-        "ram_est": "~400MB" if USE_EASYOCR else "~150MB",
-        "freeze_safe": not USE_EASYOCR,
         "doc_types": list(TRAINING_DATA.keys()),
+        "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
     }
 
+
 @app.post("/ocr")
-async def ocr_endpoint(file: UploadFile=File(...), doc_type: str=Form(default="auto")):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        tmp.write(await file.read()); tmp_path = tmp.name
+async def ocr_endpoint(
+    file: UploadFile = File(...),
+    doc_type: str = Form(default="auto"),
+):
+    if _OCR_ENGINE is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No OCR engine available. "
+                "Install Tesseract (https://github.com/UB-Mannheim/tesseract/wiki) "
+                "OR install easyocr (pip install easyocr) and set USE_EASYOCR=True."
+            ),
+        )
+
+    suffix = os.path.splitext(file.filename or "doc.jpg")[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
     try:
         t0 = time.time()
         text, ocr_conf = _run_ocr(tmp_path)
-        ocr_time = round(time.time()-t0, 2)
+        ocr_time = round(time.time() - t0, 2)
 
         if not text.strip():
-            return {"error":"No text extracted — check image quality.","doc_type":"unknown"}
+            return {
+                "success": False,
+                "errors": ["No text extracted — check image quality / lighting."],
+                "doc_type": "unknown",
+            }
 
+        # ML classification
         proba    = _ml.predict_proba([text])[0]
         best_idx = int(np.argmax(proba))
         ml_label = _ml.classes_[best_idx]
@@ -592,44 +874,92 @@ async def ocr_endpoint(file: UploadFile=File(...), doc_type: str=Form(default="a
 
         if ml_conf < CONFIDENCE_THRESHOLD:
             rb_label, rb_conf = _rule_classify(text)
-            detected, final_conf, method = (rb_label, rb_conf, "rule_based") if rb_conf>ml_conf else (ml_label, ml_conf, "ml_low_conf")
+            if rb_conf > ml_conf:
+                detected, final_conf, method = rb_label, rb_conf, "rule_based"
+            else:
+                detected, final_conf, method = ml_label, ml_conf, "ml_low_conf"
         else:
             detected, final_conf, method = ml_label, ml_conf, "ml"
 
+        # Override if doc_type explicitly passed
         if doc_type != "auto" and doc_type in TRAINING_DATA:
             detected = doc_type
 
         fields = _extract(detected, text)
         conf   = _score(detected, fields, ocr_conf, final_conf)
 
-        return {
-            "doc_type":           detected,
-            "ml_confidence":      round(final_conf, 3),
-            "overall_confidence": conf,
-            "classification_method": method,
-            "ocr_confidence":     round(ocr_conf, 3),
-            "ocr_time_sec":       ocr_time,
-            "fields":             fields,
-            "ocr_text":           text[:1000],
+        # Map internal keys to frontend-expected keys
+        _TYPE_MAP = {
+            "alevel":    "A-Level Results",
+            "bachelor":  "Bachelor's Degree",
+            "master":    "Master's Degree",
+            "diploma":   "Diploma",
+            "ielts":     "IELTS Certificate",
+            "toefl":     "TOEFL Certificate",
+            "pte":       "PTE Certificate",
+            "passport":  "Passport",
+            "financial": "Financial Statement",
         }
+
+        return {
+            "success":                True,
+            "data":                   {**fields, "document_type": _TYPE_MAP.get(detected, detected)},
+            "confidence":             conf,
+            "ml_confidence":          round(final_conf, 3),
+            "classification_method":  method,
+            "ocr_confidence":         round(ocr_conf, 3),
+            "ocr_engine":             _OCR_ENGINE,
+            "ocr_time_sec":           ocr_time,
+            "raw_text_preview":       text[:800],
+            "message":                (
+                f"{_OCR_ENGINE.capitalize()} OCR — "
+                f"{round(conf * 100)}% confidence — {_TYPE_MAP.get(detected, detected)}"
+            ),
+            "warnings":               (
+                ["Low confidence extraction — please verify fields manually."]
+                if conf < 0.5 else []
+            ),
+        }
+
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR processing error: {str(e)}")
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    import sys, json
+    import json
+
     _ml = _load_model()
+    _configure_tesseract()
+
     if len(sys.argv) > 1:
-        text, ocr_conf = _run_ocr(sys.argv[1])
+        image_file = sys.argv[1]
+        if not os.path.isfile(image_file):
+            print(f"File not found: {image_file}")
+            sys.exit(1)
+        text, ocr_conf = _run_ocr(image_file)
         proba = _ml.predict_proba([text])[0]
         best  = _ml.classes_[proba.argmax()]
         conf  = proba.max()
         detected = best if conf >= CONFIDENCE_THRESHOLD else _rule_classify(text)[0]
         fields = _extract(detected, text)
-        print(json.dumps({"doc_type":detected,"ml_confidence":round(conf,3),
-                          "fields":fields,"ocr_text_preview":text[:300]}, indent=2))
+        print(json.dumps({
+            "doc_type":           detected,
+            "ml_confidence":      round(conf, 3),
+            "ocr_confidence":     round(ocr_conf, 3),
+            "fields":             fields,
+            "ocr_text_preview":   text[:400],
+        }, indent=2))
     else:
         import uvicorn
         uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=False)

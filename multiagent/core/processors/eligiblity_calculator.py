@@ -184,6 +184,7 @@ def assess_eligibility_dynamic(profile_data: dict, document_data: dict) -> dict:
 
         from core.database.manager import UnifiedDataManager
         from core.agents.eligibility_verification_agent import EligibilityVerificationAgent
+        from core.agents.financial_feasibility_agent import FinancialFeasibilityAgent
 
         manager = UnifiedDataManager()
         unis    = manager.search_universities(
@@ -199,6 +200,20 @@ def assess_eligibility_dynamic(profile_data: dict, document_data: dict) -> dict:
         base["_report"]               = report.to_dict()
         base["eligible_universities"] = [u.to_dict() for u in report.eligible_universities]
         base["borderline_universities"]  = [u.to_dict() for u in report.borderline_universities]
+
+        # Financial feasibility assessment
+        try:
+            fin_agent = FinancialFeasibilityAgent()
+            fin_report = fin_agent.assess(profile_data, unis)
+            base["_financial_report"] = fin_report.to_dict()
+            base["financial_feasible"] = fin_report.overall_feasible
+            base["feasible_universities"] = [u.to_dict() for u in fin_report.feasible_universities]
+            base["borderline_feasible_universities"] = [u.to_dict() for u in fin_report.borderline_universities]
+            base["infeasible_universities"] = [u.to_dict() for u in fin_report.infeasible_universities]
+            base["financial_recommendations"] = fin_report.global_recommendations
+        except Exception as e:
+            base.setdefault("notes", []).append(f"Financial assessment unavailable: {e}")
+
         base["program_alignment"]     = report.program_alignment
         base["english_status"]        = report.english_status
         base["global_improvements"]   = report.global_improvements

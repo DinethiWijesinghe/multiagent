@@ -26,7 +26,7 @@ from .phase1_curated_db       import CuratedDatabaseManager
 from .phase2_web_scraper      import WebScraper
 from .phase3_api_integration  import APIIntegrator
 from .phase4_scheduler        import UpdateScheduler
-from .phase5_override_manager import OverrideManager
+from .phase5_override_manager_ml import Phase5 as OverrideManager
 
 
 class UnifiedDataManager:
