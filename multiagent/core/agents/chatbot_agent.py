@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional, Any
+from datetime import datetime
 
 try:
     from ..rag_system import RAGSystem
@@ -88,15 +89,26 @@ class ChatbotAgent:
         response = ""
         actions = []
         agent_calls = []
+        agent_data: Dict[str, Any] = {
+            "intent": intent,
+            "agent_results": {},
+            "processed_at": datetime.utcnow().isoformat() + "Z",
+        }
 
         if intent == "eligibility":
-            response, agent_calls = self._handle_eligibility(context)
+            response, agent_calls, agent_result = self._handle_eligibility(context)
+            if agent_result:
+                agent_data["agent_results"]["eligibility"] = agent_result
             actions = ["Upload academic documents", "Complete profile", "Check specific university requirements"]
         elif intent == "financial":
-            response, agent_calls = self._handle_financial(context)
+            response, agent_calls, agent_result = self._handle_financial(context)
+            if agent_result:
+                agent_data["agent_results"]["financial"] = agent_result
             actions = ["Provide budget details", "Explore scholarships", "Compare costs"]
         elif intent == "recommendation":
-            response, agent_calls = self._handle_recommendation(context)
+            response, agent_calls, agent_result = self._handle_recommendation(context)
+            if agent_result:
+                agent_data["agent_results"]["recommendation"] = agent_result
             actions = ["Review recommended universities", "Apply to top choices", "Prepare documents"]
         elif intent == "document":
             response = self.GENERAL_RESPONSES["document_help"]
@@ -120,6 +132,10 @@ class ChatbotAgent:
             if rag_response:
                 response = rag_response
                 agent_calls.append("RAGSystem")
+                agent_data["agent_results"]["rag"] = {
+                    "used": True,
+                    "query": user_message,
+                }
                 if "Review cited information" not in actions:
                     actions.append("Review cited information")
 
@@ -131,6 +147,7 @@ class ChatbotAgent:
             "intent": intent,
             "actions": actions,
             "agent_calls": agent_calls,
+            "agent_data": agent_data,
         }
 
     def _detect_intent(self, message: str) -> str:
@@ -140,9 +157,10 @@ class ChatbotAgent:
                 return intent
         return "general"
 
-    def _handle_eligibility(self, context: Dict) -> tuple[str, List[str]]:
+    def _handle_eligibility(self, context: Dict) -> tuple[str, List[str], Dict[str, Any]]:
         """Call Eligibility Agent if available."""
         agent_calls = []
+        agent_result: Dict[str, Any] = {}
         if self.eligibility_agent and context.get("profile_data") and context.get("document_data"):
             try:
                 unis = context.get("universities", [])
@@ -154,15 +172,17 @@ class ChatbotAgent:
                 else:
                     response += "You may need pathway programs. Check the improvements section."
                 agent_calls.append("EligibilityVerificationAgent")
+                agent_result = report.to_dict() if hasattr(report, "to_dict") else dict(report)
             except Exception as e:
                 response = f"Eligibility check failed: {e}. Please ensure your profile and documents are complete."
         else:
             response = self.GENERAL_RESPONSES["eligibility_help"]
-        return response, agent_calls
+        return response, agent_calls, agent_result
 
-    def _handle_financial(self, context: Dict) -> tuple[str, List[str]]:
+    def _handle_financial(self, context: Dict) -> tuple[str, List[str], Dict[str, Any]]:
         """Call Financial Feasibility Agent if available."""
         agent_calls = []
+        agent_result: Dict[str, Any] = {}
         if self.financial_agent and context.get("profile_data"):
             try:
                 unis = context.get("universities", [])
@@ -172,15 +192,17 @@ class ChatbotAgent:
                 if report.global_recommendations:
                     response += f"Recommendations: {', '.join(report.global_recommendations[:2])}."
                 agent_calls.append("FinancialFeasibilityAgent")
+                agent_result = report.to_dict() if hasattr(report, "to_dict") else dict(report)
             except Exception as e:
                 response = f"Financial assessment failed: {e}. Please provide your budget details."
         else:
             response = self.GENERAL_RESPONSES["financial_help"]
-        return response, agent_calls
+        return response, agent_calls, agent_result
 
-    def _handle_recommendation(self, context: Dict) -> tuple[str, List[str]]:
+    def _handle_recommendation(self, context: Dict) -> tuple[str, List[str], Dict[str, Any]]:
         """Call Recommendation Agent if available."""
         agent_calls = []
+        agent_result: Dict[str, Any] = {}
         if self.recommendation_agent and context.get("universities"):
             try:
                 eligibility_report = context.get("eligibility_report")
@@ -194,11 +216,12 @@ class ChatbotAgent:
                 if report.global_recommendations:
                     response += f"Tips: {', '.join(report.global_recommendations[:2])}."
                 agent_calls.append("RecommendationAgent")
+                agent_result = report.to_dict() if hasattr(report, "to_dict") else dict(report)
             except Exception as e:
                 response = f"Recommendation failed: {e}. Please complete eligibility and financial checks first."
         else:
             response = self.GENERAL_RESPONSES["recommendation_help"]
-        return response, agent_calls
+        return response, agent_calls, agent_result
 
     def _add_empathy(self, response: str, intent: str) -> str:
         """Add empathetic language based on intent."""
@@ -230,7 +253,7 @@ class ChatbotAgent:
             return None
 
         try:
-            result = self.rag_system.answer_with_context(query=user_message, context=context, k=4)
+            result = self.rag_system.answer_with_context(query=user_message, context=context)
             text = (result or {}).get("response", "").strip()
             if text:
                 return text

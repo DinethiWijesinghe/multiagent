@@ -23,7 +23,6 @@ This repository contains a multi-agent system designed to help international stu
   - Ranks and prioritises universities based on eligibility, financial feasibility, deadlines, and risk.
   - Powered by the eligibility processor (`multiagent/core/processors/eligiblity_calculator.py`) and data from the database phases (`multiagent/core/database/*`).
 
----
 
 ## External Factors → Agent Mapping
 
@@ -46,7 +45,6 @@ This section maps key external factors that impact student decision-making to th
 **Outcome for students:**
 Avoids unsuitable universities and reduces financial risk.
 
----
 
 ### 2. Access to Reliable Information
 **Handled by:** Chatbot Agent + Recommendation Agent
@@ -238,3 +236,156 @@ flowchart TD
   F --> G
   G --> H[Chatbot Assistance]
 ```
+
+## Running After Code Updates
+
+Colab sync rule:
+
+- Colab only sees code that is pushed to GitHub or uploaded into the Colab runtime.
+- If you change files in VS Code, commit and push those changes first, then rerun the clone or one-click cell in [colab_clone_guide.ipynb](D:/Multiagent/colab_clone_guide.ipynb).
+- The notebook installs backend dependencies from `multiagent/requirement.txt` and frontend dependencies from `multiagent/package.json`, so keep those files aligned with your code changes.
+
+## Runtime Profiles
+
+The application now supports lightweight runtime tuning without removing existing features. Set the `RUNTIME_PROFILE` environment variable before starting the backend.
+
+- `FULL`: higher OCR image cap and larger RAG retrieval settings for stronger hardware.
+- `LITE`: lower OCR image cap and smaller RAG retrieval settings for low-performance, low-storage laptops.
+- `RESEARCH`: same lightweight defaults as `LITE`, intended for repeatable MSc experiments and metric collection.
+
+PowerShell example:
+
+```powershell
+$env:RUNTIME_PROFILE = "LITE"
+```
+
+Optional overrides:
+
+```powershell
+$env:OCR_MAX_IMAGE_DIM = "720"
+$env:RAG_TOP_K = "2"
+$env:RAG_CHUNK_SIZE = "500"
+$env:RAG_CHUNK_OVERLAP = "100"
+```
+
+Recommended low-spec MSc demo profile:
+
+- Use `RUNTIME_PROFILE=LITE`
+- Keep OCR at `720` or lower
+- Keep retrieval at `RAG_TOP_K=2`
+- Index only the curated university database for routine demos
+- Run scraping, PDF indexing, and other heavy background tasks only when needed
+
+## Keyless Model Mode (No API Key Required)
+
+The RAG layer now supports a no-key default mode so the backend can run without paid model keys.
+
+- Default behavior: `RAG_LLM_PROVIDER=none`
+- Outcome: retrieval-grounded responses from local indexed data (no Gemini/OpenAI key required)
+- Optional: set `RAG_LLM_PROVIDER=gemini` and `GOOGLE_API_KEY` only if you want generated narrative responses
+
+PowerShell example (keyless):
+
+```powershell
+$env:RAG_LLM_PROVIDER = "none"
+```
+
+PowerShell example (optional Gemini):
+
+```powershell
+$env:RAG_LLM_PROVIDER = "gemini"
+$env:GOOGLE_API_KEY = "your_key_here"
+```
+
+Important practical note:
+
+- No model key is required in keyless mode.
+- Colab and Cloudflare tunnel sessions are still temporary and may reset.
+- So usage is effectively cost-free for model keys, but not truly unlimited runtime.
+
+## Selected MSc Stack (No Ollama)
+
+Use this stack for your thesis implementation and low-performance laptop constraints:
+
+- OCR: Tesseract
+- Document classifier: TF-IDF + LinearSVC
+- Eligibility model: HistGradientBoostingClassifier
+- Financial model: Rule-based + regression/classifier
+- Recommendation: Weighted scoring + small ML reranker
+- Embeddings: all-MiniLM-L6-v2
+- Vector DB: Chroma
+- Generator: Keyless grounded responses (default), with optional Gemini only when needed
+
+Implementation note:
+
+- Ollama is not required for this architecture.
+- Keep `RAG_LLM_PROVIDER=none` for default no-key operation.
+
+### If you changed frontend code locally
+
+The frontend runs locally with Vite, so changes in [multiagent/app.jsx](multiagent/app.jsx) and other frontend files usually reload automatically.
+
+1. Keep the frontend terminal running:
+   `cd d:\Multiagent\multiagent`
+   `npm run dev`
+2. Open `http://127.0.0.1:5173`
+3. Refresh the browser if needed.
+
+### If you changed backend code locally and want to keep using Colab
+
+Colab does not automatically see code changes from your laptop. You must make the updated code available to Colab first.
+
+Option 1: Push your updated code to GitHub, then in Colab rerun these steps:
+
+1. Commit and push the latest VS Code changes to GitHub.
+2. Open [colab_clone_guide.ipynb](D:/Multiagent/colab_clone_guide.ipynb).
+3. Rerun the backend one-click cell, or rerun the full-stack one-click cell if you also want the frontend on Colab.
+4. Copy the new printed `https://...trycloudflare.com` URL.
+
+Frontend with Colab backend (recommended setup):
+
+1. Run backend in Colab and copy the printed `https://...trycloudflare.com` URL.
+2. From repo root on your laptop run:
+  `powershell -ExecutionPolicy Bypass -File .\set-colab-url.ps1 -Url https://your-url.trycloudflare.com`
+3. Start frontend locally:
+  `cd d:\Multiagent\multiagent`
+  `npm run dev`
+4. Open `http://127.0.0.1:5173`
+
+Option 2: Run the backend locally instead of Colab:
+
+1. `cd d:\Multiagent`
+2. `.\.venv\Scripts\Activate.ps1`
+3. `uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload`
+
+Then set [multiagent/.env](multiagent/.env) to:
+
+`VITE_API_URL=http://127.0.0.1:8000`
+
+### If Colab restarts and gives you a new tunnel URL
+
+Update [multiagent/.env](multiagent/.env) with the new URL, or use this helper from the repo root:
+
+`powershell -ExecutionPolicy Bypass -File .\set-colab-url.ps1 -Url https://your-new-url.trycloudflare.com`
+
+Vite will restart automatically after the `.env` file changes.
+
+## Run Frontend + Backend Fully on Colab
+
+If you want both services running on Colab (not local frontend), use the notebook section:
+
+- Open `colab_clone_guide.ipynb`
+- Run the new section titled **Full Stack in Colab (Backend + Frontend)**
+- Execute the one-click code cell under that section
+
+That cell will:
+
+1. Refresh the repo from GitHub so the latest pushed VS Code changes are included
+2. Install backend dependencies from `multiagent/requirement.txt`
+3. Install frontend dependencies from `multiagent/package.json`
+4. Start FastAPI backend on Colab
+5. Create a public backend URL
+6. Start Vite frontend on Colab with `VITE_API_URL` set to that backend URL
+7. Create a public frontend URL
+
+Open the printed frontend URL to use the app. Keep the Colab runtime active while using it.

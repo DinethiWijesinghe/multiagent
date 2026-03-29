@@ -1,19 +1,20 @@
 """
 Retrieval-Augmented Generation (RAG) System
 ===========================================
-Integrates external knowledge sources with Gemini 2.5 Flash for improved NLP accuracy.
+Integrates external knowledge sources with lightweight retrieval for grounded responses.
 
 Features:
 - Indexes documents, databases, and web content
 - Retrieves relevant information based on user queries
-- Augments prompts sent to Gemini for context-aware responses
+- Supports keyless grounded mode (default, no model API key required)
+- Optionally augments prompts with Gemini when configured
 - Supports multiple data sources: JSON databases, PDFs, text files
 
 Components:
 - VectorStore: ChromaDB for document storage and retrieval
 - Embeddings: Sentence Transformers for text vectorization
 - Retriever: Semantic search with similarity scoring
-- Generator: Gemini 2.5 Flash for response generation
+- Generator: keyless grounded formatter (default) or optional Gemini
 """
 
 # pyright: reportMissingImports=false
@@ -25,11 +26,30 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 import importlib
 
-from langchain_google_genai import GoogleGenerativeAI
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+RUNTIME_PROFILE = os.environ.get("RUNTIME_PROFILE", "LITE").strip().upper()
+RAG_LLM_PROVIDER = os.environ.get("RAG_LLM_PROVIDER", "none").strip().lower()
+_PROFILE_DEFAULTS = {
+    "FULL": {
+        "chunk_size": 1000,
+        "chunk_overlap": 200,
+        "top_k": 4,
+    },
+    "LITE": {
+        "chunk_size": 500,
+        "chunk_overlap": 100,
+        "top_k": 2,
+    },
+    "RESEARCH": {
+        "chunk_size": 500,
+        "chunk_overlap": 100,
+        "top_k": 2,
+    },
+}
 
 
 def _import_symbol(module_candidates: List[str], symbol: str):
@@ -59,6 +79,13 @@ class RAGSystem:
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
         self.model = model
+        self.llm_provider = RAG_LLM_PROVIDER
+        self.llm = None
+        self.runtime_profile = RUNTIME_PROFILE
+        profile_defaults = _PROFILE_DEFAULTS.get(self.runtime_profile, _PROFILE_DEFAULTS["LITE"])
+        self.default_top_k = int(os.environ.get("RAG_TOP_K", str(profile_defaults["top_k"])))
+        chunk_size = int(os.environ.get("RAG_CHUNK_SIZE", str(profile_defaults["chunk_size"])))
+        chunk_overlap = int(os.environ.get("RAG_CHUNK_OVERLAP", str(profile_defaults["chunk_overlap"])))
 
         # Resolve LangChain symbols across old/new package layouts.
         self.DocumentCls = _import_symbol(
@@ -89,21 +116,89 @@ class RAGSystem:
             embedding_function=self.embedding_model
         )
 
-        # Initialize Gemini model
-        self.llm = GoogleGenerativeAI(
-            model=self.model,
-            temperature=0.7,
-            max_tokens=1024
-        )
+        self._initialize_llm()
 
         # Initialize text splitter
         self.text_splitter = self.TextSplitterCls(
-            chunk_size=1000,
-            chunk_overlap=200,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
             length_function=len
         )
 
-        logger.info("RAG system initialized with model %s", self.model)
+        logger.info(
+            "RAG system initialized with model %s, provider %s, profile %s, chunk_size=%s, chunk_overlap=%s, top_k=%s",
+            self.model,
+            self.llm_provider,
+            self.runtime_profile,
+            chunk_size,
+            chunk_overlap,
+            self.default_top_k,
+        )
+
+    def _initialize_llm(self) -> None:
+        """Initialize an optional LLM provider. Default is keyless mode."""
+        provider = (self.llm_provider or "none").lower()
+
+        if provider in ("none", "off", "disabled", "keyless"):
+            self.llm_provider = "none"
+            self.llm = None
+            logger.info("RAG LLM provider disabled; using keyless grounded response mode")
+            return
+
+        if provider == "gemini":
+            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                self.llm_provider = "none"
+                self.llm = None
+                logger.warning("Gemini provider requested but no GOOGLE_API_KEY/GEMINI_API_KEY found; using keyless mode")
+                return
+
+            try:
+                GoogleGenerativeAI = _import_symbol(
+                    ["langchain_google_genai"],
+                    "GoogleGenerativeAI",
+                )
+                self.llm = GoogleGenerativeAI(
+                    model=self.model,
+                    temperature=0.7,
+                    max_tokens=1024,
+                    google_api_key=api_key,
+                )
+                return
+            except Exception as e:
+                self.llm_provider = "none"
+                self.llm = None
+                logger.warning("Failed to initialize Gemini provider (%s); using keyless mode", e)
+                return
+
+        self.llm_provider = "none"
+        self.llm = None
+        logger.warning("Unknown RAG_LLM_PROVIDER=%s; using keyless mode", provider)
+
+    def _generate_keyless_response(self, query: str, relevant_docs: List[Any]) -> str:
+        """Return a grounded response without external LLM APIs."""
+        snippets: List[str] = []
+        for idx, doc in enumerate(relevant_docs[:4], start=1):
+            content = (getattr(doc, "page_content", "") or "").strip().replace("\n", " ")
+            if not content:
+                continue
+            trimmed = content[:260] + ("..." if len(content) > 260 else "")
+            source = getattr(doc, "metadata", {}).get("source", "knowledge_base")
+            snippets.append(f"{idx}. ({source}) {trimmed}")
+
+        if not snippets:
+            return (
+                "I could not find enough grounded information in the local index for that query. "
+                "Please index more data and try again."
+            )
+
+        return (
+            f"Grounded answer (keyless mode) for: '{query}'\n\n"
+            "Relevant evidence:\n"
+            + "\n".join(snippets)
+            + "\n\n"
+            "Tip: Set RAG_LLM_PROVIDER=gemini with a valid API key if you want generated narrative answers."
+        )
 
     def index_universities_database(self, json_path: str):
         """
@@ -241,7 +336,7 @@ class RAGSystem:
         except ImportError:
             logger.warning("PyPDFLoader not available. Install pypdf to index PDF documents")
 
-    def retrieve_relevant_info(self, query: str, k: int = 3) -> List[Any]:
+    def retrieve_relevant_info(self, query: str, k: Optional[int] = None) -> List[Any]:
         """
         Retrieve relevant documents for a query.
 
@@ -253,13 +348,21 @@ class RAGSystem:
             List of relevant documents
         """
         try:
+            if k is None:
+                k = self.default_top_k
             docs = self.vectorstore.similarity_search(query, k=k)
             return docs
         except Exception as e:
             logger.error(f"Error retrieving documents: {e}")
             return []
 
-    def generate_response(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def generate_response(
+        self,
+        query: str,
+        context: Optional[Dict[str, Any]] = None,
+        relevant_docs: Optional[List[Any]] = None,
+        k: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         Generate a response using RAG and Gemini.
 
@@ -271,8 +374,8 @@ class RAGSystem:
             Dict with response and source documents
         """
         try:
-            # Retrieve relevant documents
-            relevant_docs = self.retrieve_relevant_info(query)
+            if relevant_docs is None:
+                relevant_docs = self.retrieve_relevant_info(query=query, k=k)
 
             # Build context from retrieved documents
             context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
@@ -302,13 +405,18 @@ class RAGSystem:
                 additional_context=additional_context
             )
 
-            # Generate response using Gemini
-            response = self.llm.invoke(full_prompt)
+            # Generate response using selected provider; keyless mode is default.
+            if self.llm is None:
+                text = self._generate_keyless_response(query=query, relevant_docs=relevant_docs)
+            else:
+                response = self.llm.invoke(full_prompt)
+                text = response.content if hasattr(response, 'content') else str(response)
 
             return {
-                "response": response.content if hasattr(response, 'content') else str(response),
+                "response": text,
                 "source_documents": relevant_docs,
-                "query": query
+                "query": query,
+                "llm_provider": self.llm_provider,
             }
 
         except Exception as e:
@@ -319,7 +427,7 @@ class RAGSystem:
                 "query": query
             }
 
-    def answer_with_context(self, query: str, context: Optional[Dict[str, Any]] = None, k: int = 4) -> Dict[str, Any]:
+    def answer_with_context(self, query: str, context: Optional[Dict[str, Any]] = None, k: Optional[int] = None) -> Dict[str, Any]:
         """
         Retrieve supporting context and generate a grounded response.
 
@@ -332,6 +440,8 @@ class RAGSystem:
             Response payload with text and source snippets.
         """
         try:
+            if k is None:
+                k = self.default_top_k
             relevant_docs = self.retrieve_relevant_info(query=query, k=k)
             context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
 
@@ -342,7 +452,7 @@ class RAGSystem:
                     "query": query,
                 }
 
-            response = self.generate_response(query=query, context=context)
+            response = self.generate_response(query=query, context=context, relevant_docs=relevant_docs, k=k)
             response["source_count"] = len(relevant_docs)
             return response
         except Exception as e:

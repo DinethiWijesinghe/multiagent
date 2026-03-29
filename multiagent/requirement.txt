@@ -1,27 +1,32 @@
-# University Admission Assistant - Requirements
-# =============================================
-# Core framework
-streamlit>=1.32.0
+# MultiAgent Backend Requirements (No Ollama)
+# ===========================================
+# Core API
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
+
+# OCR and image processing
+opencv-python>=4.9.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+easyocr>=1.7.1
+
+# ML stack (resource-aware)
+numpy>=1.26.0
+scikit-learn>=1.4.0
+
+# RAG stack
+langchain>=0.1.0
+langchain-community>=0.0.30
+langchain-text-splitters>=0.0.1
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+pypdf>=4.0.0
+
+# Utilities
+requests>=2.31.0
 python-dotenv>=1.0.0
 
-# Document processing (OpenCV + Ollama)
-opencv-python>=4.9.0        # Image preprocessing, deskew, quality analysis
-requests>=2.31.0             # Ollama HTTP API client
-Pillow>=10.0.0               # Image loading / display in Streamlit
-
-# PDF support (optional but recommended)
-pymupdf>=1.23.0              # Fast PDF → image conversion (fitz)
-# pypdf>=4.0.0               # Alternative: pure-python PDF reader
-
-# Data & utilities
-numpy>=1.26.0                # Required by OpenCV
-python-dateutil>=2.9.0      # Flexible date parsing
-
-# Optional: database (uncomment when ready)
-# psycopg2-binary>=2.9.9    # PostgreSQL
-# SQLAlchemy>=2.0.0
-# alembic>=1.13.0
-
-# Dev / testing
-# pytest>=8.0.0
-# pytest-asyncio>=0.23.0
+# Optional Gemini provider (install only if needed)
+# langchain-google-genai>=0.1.0
+# google-generativeai>=0.3.0

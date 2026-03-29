@@ -426,10 +426,155 @@ function normalizeGpa(val,system){
 
 // ── CHATBOT ────────────────────────────────────────────────────────────────
 const BOT_INTRO = [
-  {role:"bot",text:"Hi! 👋 I'm your UniAssist advisor. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
+  {id:"intro",role:"bot",text:"Hi! 👋 I'm your UniAssist advisor. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
 ];
 
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
+
+const CHAT_HISTORY_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/chat/history`;
+const CHAT_RESPOND_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/chat/respond`;
+const USER_STATE_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/user/state`;
+const AUTH_REGISTER_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/register`;
+const AUTH_LOGIN_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/login`;
+
+function createMessage(role,text,metadata){
+  return {
+    id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+    role,
+    text,
+    time:now(),
+    metadata: metadata || undefined,
+  };
+}
+
+function createIntroMessages(){
+  return [{...BOT_INTRO[0]}];
+}
+
+function getChatStorageKey(user){
+  const email = user?.email?.trim().toLowerCase();
+  return email ? `uniassist.chat.${email}` : null;
+}
+
+function isIntroMessage(message){
+  return message?.id === "intro" || (message?.role === "bot" && message?.text === BOT_INTRO[0].text);
+}
+
+function dedupeMessages(messages){
+  const seen = new Set();
+  return messages.filter(message=>{
+    const key = message?.id || `${message?.role||""}|${message?.text||""}|${message?.time||""}`;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeMessages(messages){
+  if(!Array.isArray(messages)) return createIntroMessages();
+  const valid = messages
+    .filter(message=>message&&typeof message.text==="string"&&typeof message.role==="string")
+    .map(message=>({
+      id:message.id || undefined,
+      role:message.role,
+      text:message.text,
+      time:message.time || now(),
+    }));
+  if(!valid.length) return createIntroMessages();
+  const withIntro = valid.some(isIntroMessage) ? valid : [createIntroMessages()[0],...valid];
+  return dedupeMessages(withIntro);
+}
+
+function hasConversationContent(messages){
+  return normalizeMessages(messages).some(message=>!isIntroMessage(message));
+}
+
+function authHeaders(token, includeJsonContentType = false){
+  const headers = {};
+  if(includeJsonContentType) headers["Content-Type"] = "application/json";
+  if(token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+async function fetchChatHistory(userId,token){
+  const response = await fetch(`${CHAT_HISTORY_API}?user_id=${encodeURIComponent(userId)}`, {
+    headers: authHeaders(token),
+  });
+  if(!response.ok) throw new Error(`Failed to load chat history (${response.status})`);
+  const payload = await response.json();
+  return normalizeMessages(payload.messages);
+}
+
+async function appendChatHistory(userId,messages,token){
+  if(!messages.length) return;
+  await fetch(CHAT_HISTORY_API,{
+    method:"POST",
+    headers:authHeaders(token, true),
+    body:JSON.stringify({user_id:userId,messages}),
+  });
+}
+
+async function clearChatHistory(userId,token){
+  await fetch(`${CHAT_HISTORY_API}?user_id=${encodeURIComponent(userId)}`,{
+    method:"DELETE",
+    headers:authHeaders(token),
+  });
+}
+
+async function fetchUserState(userId,token){
+  const response = await fetch(`${USER_STATE_API}?user_id=${encodeURIComponent(userId)}`, {
+    headers: authHeaders(token),
+  });
+  if(!response.ok) throw new Error(`Failed to load user state (${response.status})`);
+  const payload = await response.json();
+  return payload?.state || {};
+}
+
+async function saveUserState(userId,state,token){
+  await fetch(USER_STATE_API, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ user_id: userId, state }),
+  });
+}
+
+async function registerUser({name,email,password}){
+  const response = await fetch(AUTH_REGISTER_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, email, password }),
+  });
+  const payload = await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(payload?.detail || `Register failed (${response.status})`);
+  return payload;
+}
+
+async function loginUser({email,password}){
+  const response = await fetch(AUTH_LOGIN_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const payload = await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(payload?.detail || `Login failed (${response.status})`);
+  return payload;
+}
+
+async function fetchBackendChatReply(message){
+  const response = await fetch(CHAT_RESPOND_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_message: message, context: {} }),
+  });
+  if(!response.ok) throw new Error(`Chat backend failed (${response.status})`);
+  const payload = await response.json();
+  return {
+    text: (payload?.response || "").trim(),
+    source: payload?.source || "backend_agent",
+    intent: payload?.intent,
+    actions: payload?.actions,
+  };
+}
 
 const QUICK_REPLIES = [
   "Best unis for CS in UK?",
@@ -459,12 +604,55 @@ function getBotReply(msg){
 
 function ChatBot({user}){
   const [open,setOpen]=useState(false);
-  const [messages,setMessages]=useState(BOT_INTRO);
+  const [messages,setMessages]=useState(()=>createIntroMessages());
   const [input,setInput]=useState("");
   const [typing,setTyping]=useState(false);
   const [unread,setUnread]=useState(0);
   const messagesEndRef=useRef(null);
   const inputRef=useRef(null);
+  const storageKey = getChatStorageKey(user);
+
+  useEffect(()=>{
+    let cancelled = false;
+    const localMessages = (()=>{
+      if(!storageKey) return createIntroMessages();
+      try{
+        const raw = window.localStorage.getItem(storageKey);
+        return raw ? normalizeMessages(JSON.parse(raw)) : createIntroMessages();
+      }catch{
+        return createIntroMessages();
+      }
+    })();
+
+    setMessages(localMessages);
+    setUnread(0);
+
+    if(!storageKey || !user?.email) return ()=>{cancelled=true;};
+
+    (async()=>{
+      try{
+        const remoteMessages = await fetchChatHistory(user.email, user?.token);
+        if(cancelled) return;
+        setMessages(currentMessages=>normalizeMessages([...currentMessages,...remoteMessages]));
+        if(hasConversationContent(localMessages) && !hasConversationContent(remoteMessages)){
+          await appendChatHistory(user.email, localMessages.filter(message=>!isIntroMessage(message)), user?.token);
+        }
+      }catch{
+        if(cancelled) return;
+      }
+    })();
+
+    return ()=>{cancelled=true;};
+  },[storageKey,user]);
+
+  useEffect(()=>{
+    if(!storageKey) return;
+    try{
+      window.localStorage.setItem(storageKey, JSON.stringify(normalizeMessages(messages)));
+    }catch{
+      // Ignore storage quota and private mode failures.
+    }
+  },[messages,storageKey]);
 
   useEffect(()=>{
     if(open){
@@ -478,13 +666,57 @@ function ChatBot({user}){
     const msg=text||input.trim();
     if(!msg)return;
     setInput("");
-    setMessages(p=>[...p,{role:"user",text:msg,time:now()}]);
+    const userMessage = createMessage("user",msg);
+    setMessages(p=>[...p,userMessage]);
+    if(user?.email){
+      appendChatHistory(user.email,[userMessage], user?.token).catch(()=>{});
+    }
     setTyping(true);
-    await new Promise(r=>setTimeout(r,900+Math.random()*600));
+    await new Promise(r=>setTimeout(r,350));
+    let replyText = "";
+    let replySource = "frontend_fallback";
+    let replyIntent = undefined;
+    let replyActions = undefined;
+    try{
+      const backendReply = await fetchBackendChatReply(msg);
+      replyText = backendReply.text;
+      replySource = backendReply.source || "backend_agent";
+      replyIntent = backendReply.intent;
+      replyActions = backendReply.actions;
+    }catch{
+      replyText = getBotReply(msg);
+      await new Promise(r=>setTimeout(r,550+Math.random()*450));
+    }
     setTyping(false);
-    const reply=getBotReply(msg);
-    setMessages(p=>[...p,{role:"bot",text:reply,time:now()}]);
+    const botMessage = createMessage("bot",replyText,{
+      source: replySource,
+      intent: replyIntent,
+      actions: replyActions,
+    });
+    setMessages(p=>[...p,botMessage]);
+    if(user?.email){
+      appendChatHistory(user.email,[botMessage], user?.token).catch(()=>{});
+    }
     if(!open) setUnread(n=>n+1);
+  };
+
+  const handleClearChat=async()=>{
+    setMessages(createIntroMessages());
+    setUnread(0);
+    if(storageKey){
+      try{
+        window.localStorage.removeItem(storageKey);
+      }catch{
+        // Ignore storage failures during clear.
+      }
+    }
+    if(user?.email){
+      try{
+        await clearChatHistory(user.email, user?.token);
+      }catch{
+        // Keep local clear even if backend clear fails.
+      }
+    }
   };
 
   const handleKey=(e)=>{
@@ -504,11 +736,12 @@ function ChatBot({user}){
             <div className="chat-header-name">UniAssist AI Advisor</div>
             <div className="chat-header-status"><div className="chat-header-dot"/>Online · Always ready</div>
           </div>
+          <button className="chat-close" onClick={handleClearChat} type="button">Clear</button>
           <button className="chat-close" onClick={()=>setOpen(false)}>✕</button>
         </div>
         <div className="chat-messages">
           {messages.map((m,i)=>(
-            <div key={i} className={`chat-msg ${m.role}`}>
+            <div key={m.id||i} className={`chat-msg ${m.role}`}>
               <div className="chat-bubble">{m.text}</div>
               <div className="chat-time">{m.time}</div>
             </div>
@@ -538,11 +771,28 @@ function ChatBot({user}){
 
 // ── OCR BACKEND ─────────────────────────────────────────────────────────────
 const OCR_API = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const API_DOC_TYPE_MAP = {
+  "A-Level Results": "alevel",
+  "Bachelor's Degree": "bachelor",
+  "Master's Degree": "master",
+  Diploma: "diploma",
+  "IELTS Certificate": "ielts",
+  "TOEFL Certificate": "toefl",
+  "PTE Certificate": "pte",
+  Passport: "passport",
+  "Financial Statement": "financial",
+};
+
+const UPLOAD_DOC_TYPE_OPTIONS = [
+  { value: "auto", label: "Auto identify" },
+  ...Object.keys(API_DOC_TYPE_MAP).map((label) => ({ value: API_DOC_TYPE_MAP[label], label })),
+];
+
 async function extractDocumentWithAI(file, docType, onProgress) {
   onProgress("Reading file...", 10);
   const formData = new FormData();
   formData.append("file", file, file.name || "document");
-  formData.append("doc_type", docType);
+  formData.append("doc_type", docType || "auto");
   onProgress("Preprocessing image with OpenCV...", 25);
   await new Promise(r => setTimeout(r, 180));
   onProgress("Running EasyOCR text extraction...", 45);
@@ -564,7 +814,16 @@ async function extractDocumentWithAI(file, docType, onProgress) {
   onProgress("Scoring confidence...", 90);
   await new Promise(r => setTimeout(r, 80));
   onProgress("Extraction complete!", 100);
-  return { success:true, data:result.data, confidence:result.confidence??0.75, rawPreview:result.raw_text_preview||"", message:result.message||`EasyOCR — ${Math.round((result.confidence??0.75)*100)}% confidence`, warnings:result.warnings||[] };
+  return {
+    success:true,
+    data:result.data,
+    confidence:result.confidence??0.75,
+    rawPreview:result.raw_text_preview||"",
+    message:result.message||`EasyOCR — ${Math.round((result.confidence??0.75)*100)}% confidence`,
+    warnings:result.warnings||[],
+    requested_doc_type:docType||"auto",
+    classification_method:result.classification_method,
+  };
 }
 
 // ── ELIGIBILITY ENGINE ──────────────────────────────────────────────────────
@@ -1068,10 +1327,9 @@ function DocumentStep({profile,docData,onNext,onBack}){
 
   // v6: track all uploaded docs so checklist + banner work
   const [uploadedDocs,setUploadedDocs]=useState({});
+  const [pendingUploads,setPendingUploads]=useState([]);
 
   const fileRef=useRef();
-  const [file,setFile]=useState(null);
-  const [preview,setPreview]=useState(null);
   const [drag,setDrag]=useState(false);
   const [pipeStatus,setPipeStatus]=useState({});
   const [running,setRunning]=useState(false);
@@ -1088,34 +1346,84 @@ function DocumentStep({profile,docData,onNext,onBack}){
   const engDone   = ["IELTS Certificate","TOEFL Certificate","PTE Certificate"].some(t=>uploadedDocs[t]);
   const showEngBanner = alDone && !engDone;
 
+  const revokePreview = (item) => {
+    if(item?.preview) URL.revokeObjectURL(item.preview);
+  };
+
   const switchType = (t) => {
     setSelectedType(t);
     setAiResult(null);setAiError("");setPipeStatus({});
-    setFile(null);setPreview(null);setProgress("");
+    setProgress("");
     // restore prior result for this type if already uploaded
     if(uploadedDocs[t]) setAiResult(uploadedDocs[t]);
   };
 
-  const handleFile=(f)=>{if(!f)return;setFile(f);setAiResult(null);setAiError("");setPipeStatus({});setProgress("");setPreview(f.type.startsWith("image")?URL.createObjectURL(f):null);};
+  const handleFiles=(files)=>{
+    const nextFiles=Array.from(files||[]).filter(Boolean);
+    if(!nextFiles.length)return;
+    setAiResult(null);
+    setAiError("");
+    setPipeStatus({});
+    setProgress("");
+    setPendingUploads((current)=>[
+      ...current,
+      ...nextFiles.map((uploadFile,index)=>(
+        {
+          id:`${Date.now()}-${index}-${Math.random().toString(36).slice(2,8)}`,
+          file:uploadFile,
+          assignedType:API_DOC_TYPE_MAP[selectedType]||"auto",
+          preview:uploadFile.type.startsWith("image")?URL.createObjectURL(uploadFile):null,
+        }
+      )),
+    ]);
+  };
+
+  const updatePendingType=(id,assignedType)=>{
+    setPendingUploads((current)=>current.map((item)=>item.id===id?{...item,assignedType}:item));
+  };
+
+  const removePendingUpload=(id)=>{
+    setPendingUploads((current)=>{
+      const item=current.find((entry)=>entry.id===id);
+      revokePreview(item);
+      return current.filter((entry)=>entry.id!==id);
+    });
+  };
 
   const runAIExtraction=async()=>{
-    if(!file)return;
+    if(!pendingUploads.length)return;
     setRunning(true);setAiError("");setPipeStatus({});setAiResult(null);
     const setStage=(i,st)=>setPipeStatus(p=>({...p,[i]:st}));
     setStage(0,"running");await new Promise(r=>setTimeout(r,180));setStage(0,"done");
     setStage(1,"running");await new Promise(r=>setTimeout(r,250));setStage(1,"done");
     setStage(2,"running");setStage(3,"running");
     try{
-      const result=await extractDocumentWithAI(file,selectedType,(msg,pct)=>{
-        setProgress(msg);
-        if(pct>=45){setStage(2,"done");setStage(3,"running");}
-        if(pct>=60){setStage(3,"done");setStage(4,"running");}
-        if(pct>=75){setStage(4,"done");setStage(5,"running");}
-      });
+      let lastResult=null;
+      const uploadedResults={};
+      for(let index=0;index<pendingUploads.length;index+=1){
+        const pending=pendingUploads[index];
+        const typeLabel=UPLOAD_DOC_TYPE_OPTIONS.find((opt)=>opt.value===pending.assignedType)?.label||"Auto identify";
+        const result=await extractDocumentWithAI(pending.file,pending.assignedType,(msg,pct)=>{
+          setProgress(`File ${index+1}/${pendingUploads.length} · ${pending.file.name} · ${typeLabel} · ${msg}`);
+          if(pct>=45){setStage(2,"done");setStage(3,"running");}
+          if(pct>=60){setStage(3,"done");setStage(4,"running");}
+          if(pct>=75){setStage(4,"done");setStage(5,"running");}
+        });
+        lastResult=result;
+        uploadedResults[result.data.document_type]=result;
+      }
       setStage(4,"done");setStage(5,"done");
-      setAiResult(result);
-      // v6: mark this type as uploaded in checklist
-      setUploadedDocs(p=>({...p,[selectedType]:result}));
+      setUploadedDocs(p=>({...p,...uploadedResults}));
+      if(uploadedResults[selectedType]){
+        setAiResult(uploadedResults[selectedType]);
+      }else if(lastResult){
+        setAiResult(lastResult);
+        if(lastResult?.data?.document_type) setSelectedType(lastResult.data.document_type);
+      }
+      setPendingUploads((current)=>{
+        current.forEach(revokePreview);
+        return [];
+      });
     }catch(e){
       setStage(2,"error");setStage(3,"error");setStage(4,"error");
       setAiError(e.message);
@@ -1174,23 +1482,42 @@ function DocumentStep({profile,docData,onNext,onBack}){
 
         {tab==="upload"&&(
           <div>
-            <Alert type="info">EasyOCR + ML will automatically read and extract all fields from your <strong>{selectedType}</strong> document.</Alert>
-            <input ref={fileRef} type="file" accept=".png,.jpg,.jpeg,.pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files[0])} />
-            {!file?(
-              <div className={`upload-zone${drag?" drag":""}`} onClick={()=>fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFile(e.dataTransfer.files[0]);}} style={{marginTop:"1rem"}}>
+            <Alert type="info">Students can upload multiple files here. Tag each file with a document type or leave it on <strong>Auto identify</strong> to use the backend classifier.</Alert>
+            <input ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.pdf" style={{display:"none"}} onChange={e=>{handleFiles(e.target.files);e.target.value="";}} />
+            {!pendingUploads.length?(
+              <div className={`upload-zone${drag?" drag":""}`} onClick={()=>fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFiles(e.dataTransfer.files);}} style={{marginTop:"1rem"}}>
                 <div className="upload-icon">{DOC_TYPE_LIST.find(d=>d.id===selectedType)?.icon||"📁"}</div>
-                <div className="upload-title">Drop your {selectedType} here</div>
-                <div className="upload-sub">PNG · JPG · JPEG · PDF · Max 10 MB</div>
+                <div className="upload-title">Drop one or more documents here</div>
+                <div className="upload-sub">PNG · JPG · JPEG · PDF · Max 10 MB each</div>
               </div>
             ):(
               <div style={{marginTop:"1rem"}}>
-                {preview&&<img src={preview} alt="Preview" className="upload-preview" />}
-                {!preview&&<div style={{padding:"1rem",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:"var(--r)",fontFamily:"var(--mono)",fontSize:".78rem",color:"var(--text2)",marginBottom:"1rem"}}>📄 {file.name} ({(file.size/1024).toFixed(0)} KB)</div>}
-                <div style={{display:"flex",gap:".75rem",alignItems:"center",marginBottom:"1rem"}}>
-                  <span style={{fontFamily:"var(--mono)",fontSize:".75rem",color:"var(--text3)"}}>{file.name} — {(file.size/1024).toFixed(0)} KB</span>
-                  <button className="btn btn-ghost btn-sm" onClick={()=>{setFile(null);setPreview(null);setAiResult(null);setAiError("");setPipeStatus({});setProgress("");}}>✕ Remove</button>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:".75rem",marginBottom:"1rem",flexWrap:"wrap"}}>
+                  <span style={{fontFamily:"var(--mono)",fontSize:".75rem",color:"var(--text3)"}}>{pendingUploads.length} file(s) ready for extraction</span>
+                  <div style={{display:"flex",gap:".5rem",flexWrap:"wrap"}}>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>fileRef.current?.click()}>+ Add More</button>
+                    <button className="btn btn-ghost btn-sm" onClick={()=>{setPendingUploads((current)=>{current.forEach(revokePreview);return [];});setAiResult(null);setAiError("");setPipeStatus({});setProgress("");}}>Clear Queue</button>
+                  </div>
                 </div>
-                {!running&&!aiResult&&<button className="btn btn-primary btn-full" onClick={runAIExtraction}>🔍 Extract with EasyOCR + ML</button>}
+                <div style={{display:"grid",gap:".75rem"}}>
+                  {pendingUploads.map((item)=>{
+                    const isImage=!!item.preview;
+                    return(
+                      <div key={item.id} style={{display:"grid",gridTemplateColumns:isImage?"84px 1fr auto":"1fr auto",gap:".75rem",alignItems:"center",padding:".85rem",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:"var(--r)"}}>
+                        {isImage&&<img src={item.preview} alt={item.file.name} className="upload-preview" style={{margin:0,maxHeight:"72px",width:"84px"}} />}
+                        <div style={{minWidth:0}}>
+                          <div style={{fontWeight:700,fontSize:".9rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.file.name}</div>
+                          <div style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)",margin:".2rem 0 .55rem"}}>{(item.file.size/1024).toFixed(0)} KB</div>
+                          <select value={item.assignedType} onChange={e=>updatePendingType(item.id,e.target.value)}>
+                            {UPLOAD_DOC_TYPE_OPTIONS.map((option)=><option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                        </div>
+                        <button className="btn btn-ghost btn-sm" onClick={()=>removePendingUpload(item.id)}>✕ Remove</button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {!running&&<button className="btn btn-primary btn-full" onClick={runAIExtraction} style={{marginTop:"1rem"}}>🔍 Extract {pendingUploads.length} Document{pendingUploads.length>1?"s":""}</button>}
               </div>
             )}
             {aiError&&<div style={{marginTop:"1rem"}}><Alert type="error">{aiError}</Alert></div>}
@@ -1293,16 +1620,97 @@ function UniversitiesStep({profile,elig,onBack,onReset}){
 // ── AUTH ────────────────────────────────────────────────────────────────────
 function AuthPage({onLogin}){
   const [tab,setTab]=useState("login");
-  const [email,setEmail]=useState(""),  [pw,setPw]=useState(""), [name,setName]=useState(""), [err,setErr]=useState(""), [ok,setOk]=useState("");
-  const login=()=>{if(!email||!pw){setErr("Enter email and password.");return;}setErr("");onLogin({email,name:name||email.split("@")[0]});};
-  const register=()=>{if(!name||!email||!pw){setErr("Fill all fields.");return;}setErr("");setOk("Account created!");setTimeout(()=>{setOk("");setTab("login");},1500);};
+  const [email,setEmail]=useState("");
+  const [pw,setPw]=useState("");
+  const [name,setName]=useState("");
+  const [err,setErr]=useState("");
+  const [ok,setOk]=useState("");
+  const [loading,setLoading]=useState(false);
+
+  const login=async()=>{
+    if(!email||!pw){
+      setErr("Enter email and password.");
+      return;
+    }
+    setErr("");
+    setOk("");
+    setLoading(true);
+    try{
+      const payload = await loginUser({ email, password: pw });
+      const user = payload?.user || { email, name: email.split("@")[0] };
+      onLogin({ ...user, token: payload?.token || "" });
+    }catch(e){
+      setErr(e.message || "Login failed.");
+    }finally{
+      setLoading(false);
+    }
+  };
+
+  const register=async()=>{
+    if(!name||!email||!pw){
+      setErr("Fill all fields.");
+      return;
+    }
+    setErr("");
+    setOk("");
+    setLoading(true);
+    try{
+      await registerUser({ name, email, password: pw });
+      setOk("Account created. You can now sign in.");
+      setTimeout(()=>{
+        setOk("");
+        setTab("login");
+      },1200);
+    }catch(e){
+      setErr(e.message || "Register failed.");
+    }finally{
+      setLoading(false);
+    }
+  };
+
   return(
     <div className="auth-wrap">
       <div className="auth-card fade-up">
         <div className="auth-logo"><div className="auth-icon">🎓</div><span>UniAssist</span></div>
         <div className="auth-sub" style={{marginTop:".4rem"}}>EasyOCR + ML-powered study abroad advisor · 9 document types</div>
         <div className="tabs" style={{marginTop:"1.5rem"}}><button className={`tab${tab==="login"?" active":""}`} onClick={()=>{setTab("login");setErr("");}}>Login</button><button className={`tab${tab==="register"?" active":""}`} onClick={()=>{setTab("register");setErr("");}}>Register</button></div>
-        {tab==="login"?(<div><div className="field" style={{marginBottom:"1rem"}}><label className="flabel">Email</label><input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@email.com" onKeyDown={e=>e.key==="Enter"&&login()} /></div><div className="field" style={{marginBottom:"1.5rem"}}><label className="flabel">Password</label><input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&login()} /></div>{err&&<Alert type="error">{err}</Alert>}<button className="btn btn-primary btn-full" onClick={login} style={{marginTop:"1rem"}}>Sign In</button></div>):(<div><div className="field" style={{marginBottom:"1rem"}}><label className="flabel">Full Name</label><input value={name} onChange={e=>setName(e.target.value)} /></div><div className="field" style={{marginBottom:"1rem"}}><label className="flabel">Email</label><input value={email} onChange={e=>setEmail(e.target.value)} /></div><div className="field" style={{marginBottom:"1.5rem"}}><label className="flabel">Password</label><input type="password" value={pw} onChange={e=>setPw(e.target.value)} /></div>{err&&<Alert type="error">{err}</Alert>}{ok&&<Alert type="ok">{ok}</Alert>}<button className="btn btn-primary btn-full" onClick={register} style={{marginTop:"1rem"}}>Create Account</button></div>)}
+        {tab==="login" ? (
+          <div>
+            <div className="field" style={{marginBottom:"1rem"}}>
+              <label className="flabel">Email</label>
+              <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@email.com" onKeyDown={e=>e.key==="Enter"&&login()} />
+            </div>
+            <div className="field" style={{marginBottom:"1.5rem"}}>
+              <label className="flabel">Password</label>
+              <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&login()} />
+            </div>
+            {err&&<Alert type="error">{err}</Alert>}
+            {ok&&<Alert type="ok">{ok}</Alert>}
+            <button className="btn btn-primary btn-full" onClick={login} style={{marginTop:"1rem"}} disabled={loading}>
+              {loading ? "Signing In..." : "Sign In"}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <div className="field" style={{marginBottom:"1rem"}}>
+              <label className="flabel">Full Name</label>
+              <input value={name} onChange={e=>setName(e.target.value)} />
+            </div>
+            <div className="field" style={{marginBottom:"1rem"}}>
+              <label className="flabel">Email</label>
+              <input value={email} onChange={e=>setEmail(e.target.value)} />
+            </div>
+            <div className="field" style={{marginBottom:"1.5rem"}}>
+              <label className="flabel">Password</label>
+              <input type="password" value={pw} onChange={e=>setPw(e.target.value)} />
+            </div>
+            {err&&<Alert type="error">{err}</Alert>}
+            {ok&&<Alert type="ok">{ok}</Alert>}
+            <button className="btn btn-primary btn-full" onClick={register} style={{marginTop:"1rem"}} disabled={loading}>
+              {loading ? "Creating Account..." : "Create Account"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1324,6 +1732,7 @@ export default function App(){
   const [profile,setProfile]=useState({});
   const [docData,setDocData]=useState({});
   const [elig,setElig]=useState(null);
+  const [stateReady,setStateReady]=useState(false);
 
   const handleDoc=(doc)=>{
     if(!doc||!doc.document_type)return;
@@ -1331,7 +1740,38 @@ export default function App(){
     setDocData(doc);setElig(eligResult);setStep(3);
   };
   const reset=()=>{setStep(1);setProfile({});setDocData({});setElig(null);};
-  const logout=()=>{setUser(null);reset();};
+  const logout=()=>{setUser(null);setStateReady(false);reset();};
+
+  useEffect(()=>{
+    let cancelled = false;
+    if(!user?.email){
+      setStateReady(false);
+      return ()=>{cancelled = true;};
+    }
+    (async()=>{
+      try{
+        const state = await fetchUserState(user.email, user?.token);
+        if(cancelled) return;
+        if(state && typeof state === "object"){
+          if(typeof state.step === "number") setStep(state.step);
+          if(state.profile && typeof state.profile === "object") setProfile(state.profile);
+          if(state.docData && typeof state.docData === "object") setDocData(state.docData);
+          if(state.elig && typeof state.elig === "object") setElig(state.elig);
+        }
+      }catch{
+        // Continue with in-memory defaults if backend state is unavailable.
+      }finally{
+        if(!cancelled) setStateReady(true);
+      }
+    })();
+    return ()=>{cancelled = true;};
+  },[user?.email]);
+
+  useEffect(()=>{
+    if(!user?.email || !stateReady) return;
+    const payload = { step, profile, docData, elig };
+    saveUserState(user.email, payload, user?.token).catch(()=>{});
+  },[user?.email,stateReady,step,profile,docData,elig]);
 
   if(!user) return <><style>{STYLES}</style><AuthPage onLogin={u=>{setUser(u);setProfile(p=>({...p,email:u.email}));}} /></>;
 

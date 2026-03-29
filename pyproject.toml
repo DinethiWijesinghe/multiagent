@@ -1,17 +1,30 @@
 [project]
 name = "multiagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Resource-aware multi-agent study advisor for MSc research"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "google-adk[extensions]>=1.24.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "python-multipart>=0.0.9",
+    "numpy>=1.26.0",
+    "opencv-python>=4.9.0",
+    "pillow>=10.0.0",
+    "scikit-learn>=1.4.0",
+    "pytesseract>=0.3.10",
+    "easyocr>=1.7.1",
     "langchain>=0.1.0",
-    "langchain-google-genai>=0.1.0",
+    "langchain-community>=0.0.30",
+    "langchain-text-splitters>=0.0.1",
     "chromadb>=0.4.0",
     "sentence-transformers>=2.2.0",
-    "google-generativeai>=0.3.0",
-    "faiss-cpu>=1.7.0",
     "pypdf>=4.0.0",
-    "unstructured>=0.10.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+gemini = [
+    "langchain-google-genai>=0.1.0",
+    "google-generativeai>=0.3.0",
 ]

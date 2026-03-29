@@ -29,9 +29,25 @@ Run:
 import os
 import re
 import sys
+import json
 import pickle
 import random
 import time
+import base64
+import hmac
+import hashlib
+import secrets
+import shutil
+import logging
+from pathlib import Path
+
+# ✓ Configure debug logging to show what's being saved
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="[%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 import numpy as np
 import cv2
 from PIL import Image
@@ -45,10 +61,17 @@ from sklearn.model_selection import cross_val_score
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
+RUNTIME_PROFILE      = os.environ.get("RUNTIME_PROFILE", "LITE").strip().upper()
 USE_EASYOCR          = False   # Set True to force EasyOCR (overrides Tesseract)
 MODEL_PATH           = "uniassist_classifier.pkl"
 CONFIDENCE_THRESHOLD = 0.40
-MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
+_DEFAULT_MAX_IMAGE_DIM = {
+    "FULL": 1000,
+    "LITE": 720,
+    "RESEARCH": 720,
+}.get(RUNTIME_PROFILE, 720)
+MAX_IMAGE_DIM        = int(os.environ.get("OCR_MAX_IMAGE_DIM", str(_DEFAULT_MAX_IMAGE_DIM)))
+# The default cap follows the runtime profile; override with OCR_MAX_IMAGE_DIM when needed.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TESSERACT WINDOWS PATH AUTO-DETECTION  ← NEW FIX
@@ -65,6 +88,34 @@ _WINDOWS_TESSERACT_PATHS = [
 ]
 
 _OCR_ENGINE = None  # will be set to "tesseract", "easyocr", or None after startup
+
+_DOC_TYPE_ALIASES = {
+    "a-level results": "alevel",
+    "alevel": "alevel",
+    "bachelor's degree": "bachelor",
+    "bachelors degree": "bachelor",
+    "bachelor": "bachelor",
+    "master's degree": "master",
+    "masters degree": "master",
+    "master": "master",
+    "diploma": "diploma",
+    "ielts certificate": "ielts",
+    "ielts": "ielts",
+    "toefl certificate": "toefl",
+    "toefl": "toefl",
+    "pte certificate": "pte",
+    "pte": "pte",
+    "passport": "passport",
+    "financial statement": "financial",
+    "financial": "financial",
+}
+
+
+def _normalize_doc_type(doc_type: str) -> str:
+    normalized = (doc_type or "auto").strip().lower()
+    if normalized == "auto":
+        return "auto"
+    return _DOC_TYPE_ALIASES.get(normalized, normalized)
 
 
 def _configure_tesseract() -> bool:
@@ -763,9 +814,317 @@ def _extract(doc_type, text):
 # FASTAPI
 # ─────────────────────────────────────────────────────────────────────────────
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import tempfile
+from typing import Any
+
+try:
+    from multiagent.core.agents.chatbot_agent import ChatbotAgent
+except Exception:
+    try:
+        from core.agents.chatbot_agent import ChatbotAgent
+    except Exception:
+        ChatbotAgent = None
+
+CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
+CHAT_HISTORY_LIMIT = 500
+USER_STATE_DIR = Path(__file__).resolve().parent / "data" / "user_state"
+USER_AUTH_PATH = Path(__file__).resolve().parent / "data" / "users" / "users.json"
+AUTH_SECRET = os.environ.get("AUTH_SECRET", "change-this-dev-secret")
+AUTH_TOKEN_TTL_SECONDS = int(os.environ.get("AUTH_TOKEN_TTL_SECONDS", str(7 * 24 * 3600)))
+
+
+class ChatMessage(BaseModel):
+    id: str | None = None
+    role: str
+    text: str
+    time: str
+    metadata: dict[str, Any] | None = None
+
+
+class ChatHistoryPayload(BaseModel):
+    user_id: str
+    messages: list[ChatMessage] = []
+    agent_data: dict[str, Any] | None = None
+
+
+class UserStatePayload(BaseModel):
+    user_id: str
+    state: dict[str, Any] = {}
+
+
+class AuthRegisterPayload(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class AuthLoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    success: bool
+    user: dict[str, Any]
+    message: str
+    token: str | None = None
+
+
+class ChatRequest(BaseModel):
+    user_message: str
+    context: dict[str, Any] | None = None
+
+
+class ChatResponse(BaseModel):
+    response: str
+    intent: str
+    actions: list[str]
+    agent_calls: list[str]
+    agent_data: dict[str, Any]
+    source: str
+
+
+def _chat_history_path(user_id: str) -> Path:
+    safe_user_id = re.sub(r"[^a-zA-Z0-9_.@-]", "_", user_id.strip().lower())
+    if not safe_user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return CHAT_HISTORY_DIR / f"{safe_user_id}.json"
+
+
+def _user_state_path(user_id: str) -> Path:
+    safe_user_id = re.sub(r"[^a-zA-Z0-9_.@-]", "_", user_id.strip().lower())
+    if not safe_user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    return USER_STATE_DIR / f"{safe_user_id}.json"
+
+
+def _load_chat_history(user_id: str) -> list[dict]:
+    record = _load_chat_record(user_id)
+    return record.get("messages", [])
+
+
+def _save_chat_history(user_id: str, messages: list[dict]) -> None:
+    record = _load_chat_record(user_id)
+    record["messages"] = messages[-CHAT_HISTORY_LIMIT:]
+    _save_chat_record(user_id, record)
+
+
+def _load_chat_record(user_id: str) -> dict[str, Any]:
+    path = _chat_history_path(user_id)
+    if not path.exists():
+        return {"messages": [], "agent_data": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {"messages": [], "agent_data": {}}
+
+    # Backward compatibility: older format stored a raw list of messages.
+    if isinstance(data, list):
+        messages = [item for item in data if isinstance(item, dict)]
+        return {"messages": messages[-CHAT_HISTORY_LIMIT:], "agent_data": {}}
+
+    if not isinstance(data, dict):
+        return {"messages": [], "agent_data": {}}
+
+    messages = data.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    messages = [item for item in messages if isinstance(item, dict)][-CHAT_HISTORY_LIMIT:]
+
+    agent_data = data.get("agent_data", {})
+    if not isinstance(agent_data, dict):
+        agent_data = {}
+
+    return {
+        "messages": messages,
+        "agent_data": agent_data,
+    }
+
+
+def _save_chat_record(user_id: str, record: dict[str, Any]) -> None:
+    path = _chat_history_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "messages": record.get("messages", [])[-CHAT_HISTORY_LIMIT:],
+        "agent_data": record.get("agent_data", {}),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    logger.debug(f"💾 Saved chat history: {path} ({len(payload['messages'])} messages)")
+
+
+def _merge_chat_messages(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for message in [*existing, *incoming]:
+        key = message.get("id") or f"{message.get('role','')}|{message.get('text','')}|{message.get('time','')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(message)
+    return merged[-CHAT_HISTORY_LIMIT:]
+
+
+def _merge_agent_data(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(existing, dict):
+        existing = {}
+    if not isinstance(incoming, dict):
+        return existing
+
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _merge_agent_data(merged[key], value)
+            continue
+        if key in merged and isinstance(merged[key], list) and isinstance(value, list):
+            merged[key] = [*merged[key], *value][-CHAT_HISTORY_LIMIT:]
+            continue
+        merged[key] = value
+    return merged
+
+
+def _load_user_state(user_id: str) -> dict[str, Any]:
+    path = _user_state_path(user_id)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_user_state(user_id: str, state: dict[str, Any]) -> None:
+    path = _user_state_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = state if isinstance(state, dict) else {}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    logger.debug(f"💾 Saved user state: {path} (keys: {list(payload.keys())})")
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _load_users_db() -> dict[str, Any]:
+    if not USER_AUTH_PATH.exists():
+        return {"users": {}}
+    try:
+        with open(USER_AUTH_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("users"), dict):
+            return data
+        return {"users": {}}
+    except Exception:
+        return {"users": {}}
+
+
+def _save_users_db(data: dict[str, Any]) -> None:
+    USER_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = data if isinstance(data, dict) else {"users": {}}
+    if not isinstance(payload.get("users"), dict):
+        payload["users"] = {}
+    with open(USER_AUTH_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    logger.debug(f"👤 Saved users database: {USER_AUTH_PATH} ({len(payload['users'])} users)")
+
+
+def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        (password or "").encode("utf-8"),
+        salt,
+        200_000,
+    )
+    return salt.hex(), digest.hex()
+
+
+def _verify_password(password: str, salt_hex: str, digest_hex: str) -> bool:
+    try:
+        _, calculated = _hash_password(password, salt_hex)
+        return secrets.compare_digest(calculated, digest_hex)
+    except Exception:
+        return False
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * ((4 - len(data) % 4) % 4)
+    return base64.urlsafe_b64decode((data + padding).encode("utf-8"))
+
+
+def _create_auth_token(email: str, ttl_seconds: int = AUTH_TOKEN_TTL_SECONDS) -> str:
+    payload = {
+        "email": _normalize_email(email),
+        "exp": int(time.time()) + int(ttl_seconds),
+    }
+    payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(AUTH_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    return f"{payload_b64}.{_b64url_encode(signature)}"
+
+
+def _verify_auth_token(token: str) -> str | None:
+    try:
+        payload_b64, signature_b64 = token.split(".", 1)
+    except ValueError:
+        return None
+
+    expected_sig = hmac.new(AUTH_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    try:
+        provided_sig = _b64url_decode(signature_b64)
+    except Exception:
+        return None
+
+    if not secrets.compare_digest(expected_sig, provided_sig):
+        return None
+
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+
+    email = _normalize_email(payload.get("email", ""))
+    exp = int(payload.get("exp", 0))
+    if not email or exp < int(time.time()):
+        return None
+    return email
+
+
+def _extract_bearer_token(request: Request) -> str | None:
+    header = request.headers.get("Authorization", "").strip()
+    if not header.lower().startswith("bearer "):
+        return None
+    return header[7:].strip() or None
+
+
+def _require_authenticated_email(request: Request) -> str:
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization token")
+    email = _verify_auth_token(token)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return email
+
+
+def _resolve_request_user(request: Request, requested_user_id: str | None = None) -> str:
+    email = _require_authenticated_email(request)
+    if requested_user_id:
+        normalized = _normalize_email(requested_user_id)
+        if normalized and normalized != email:
+            raise HTTPException(status_code=403, detail="Forbidden for requested user_id")
+    return email
+
 
 app = FastAPI(
     title="UniAssist OCR API",
@@ -784,11 +1143,12 @@ app.add_middleware(
 )
 
 _ml: Pipeline = None
+_chatbot_agent: Any = None
 
 
 @app.on_event("startup")
 def startup():
-    global _ml, _OCR_ENGINE
+    global _ml, _OCR_ENGINE, _chatbot_agent
 
     # 1. Train / load ML model
     _ml = _load_model()
@@ -820,6 +1180,15 @@ def startup():
         f"ML: TF-IDF + NaiveBayes"
     )
 
+    if ChatbotAgent is not None:
+        try:
+            _chatbot_agent = ChatbotAgent()
+        except Exception as e:
+            _chatbot_agent = None
+            print(f"[Chatbot] Initialization failed: {e}")
+    else:
+        _chatbot_agent = None
+
 
 @app.get("/health")
 def health():
@@ -831,6 +1200,355 @@ def health():
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
+    }
+
+
+@app.post("/auth/register", response_model=AuthResponse)
+def auth_register(payload: AuthRegisterPayload):
+    name = (payload.name or "").strip()
+    email = _normalize_email(payload.email)
+    password = payload.password or ""
+
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="password must be at least 6 characters")
+
+    db = _load_users_db()
+    users = db.get("users", {})
+    if email in users:
+        raise HTTPException(status_code=409, detail="User already exists")
+
+    salt_hex, digest_hex = _hash_password(password)
+    users[email] = {
+        "name": name,
+        "email": email,
+        "password_salt": salt_hex,
+        "password_hash": digest_hex,
+        "created_at": time.time(),
+    }
+    db["users"] = users
+    _save_users_db(db)
+
+    return AuthResponse(
+        success=True,
+        user={"name": name, "email": email},
+        message="Account created successfully",
+    )
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def auth_login(payload: AuthLoginPayload):
+    email = _normalize_email(payload.email)
+    password = payload.password or ""
+
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="email and password are required")
+
+    db = _load_users_db()
+    user = (db.get("users", {}) or {}).get(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    salt_hex = user.get("password_salt", "")
+    digest_hex = user.get("password_hash", "")
+    if not salt_hex or not digest_hex or not _verify_password(password, salt_hex, digest_hex):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    token = _create_auth_token(email)
+    return AuthResponse(
+        success=True,
+        user={"name": user.get("name") or email.split("@")[0], "email": email},
+        message="Login successful",
+        token=token,
+    )
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    email = _require_authenticated_email(request)
+    db = _load_users_db()
+    user = (db.get("users", {}) or {}).get(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    return {
+        "success": True,
+        "user": {"name": user.get("name") or email.split("@")[0], "email": email},
+    }
+
+
+@app.get("/chat/history")
+def get_chat_history(request: Request, user_id: str | None = None):
+    email = _resolve_request_user(request, user_id)
+    record = _load_chat_record(email)
+    return {
+        "user_id": email,
+        "messages": record.get("messages", []),
+        "agent_data": record.get("agent_data", {}),
+    }
+
+
+@app.post("/chat/respond", response_model=ChatResponse)
+def chat_respond(payload: ChatRequest):
+    message = (payload.user_message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    if _chatbot_agent is None:
+        return ChatResponse(
+            response="I am here to help. Please ask about eligibility, finances, recommendations, or documents.",
+            intent="general",
+            actions=["Ask about eligibility", "Ask about costs", "Upload documents"],
+            agent_calls=[],
+            agent_data={"intent": "general", "agent_results": {}, "fallback": True},
+            source="backend_fallback",
+        )
+
+    try:
+        result = _chatbot_agent.process_message(message, payload.context or {})
+        return ChatResponse(
+            response=result.get("response", "I am here to help."),
+            intent=result.get("intent", "general"),
+            actions=result.get("actions", []),
+            agent_calls=result.get("agent_calls", []),
+            agent_data=result.get("agent_data", {}),
+            source="backend_agent",
+        )
+    except Exception as e:
+        return ChatResponse(
+            response="I could not process that right now. Please try again shortly.",
+            intent="general",
+            actions=["Retry", "Ask about eligibility", "Ask about costs"],
+            agent_calls=[],
+            agent_data={"intent": "general", "agent_results": {}, "error": str(e)},
+            source="backend_error_fallback",
+        )
+
+
+@app.post("/chat/history")
+def append_chat_history(payload: ChatHistoryPayload, request: Request):
+    email = _resolve_request_user(request, payload.user_id)
+    record = _load_chat_record(email)
+    existing = record.get("messages", [])
+    incoming = [message.model_dump() for message in payload.messages]
+    merged = _merge_chat_messages(existing, incoming)
+    merged_agent_data = _merge_agent_data(record.get("agent_data", {}), payload.agent_data or {})
+    _save_chat_record(email, {
+        "messages": merged,
+        "agent_data": merged_agent_data,
+    })
+    return {
+        "success": True,
+        "user_id": email,
+        "messages": merged,
+        "agent_data": merged_agent_data,
+        "count": len(merged),
+    }
+
+
+@app.get("/user/state")
+def get_user_state(request: Request, user_id: str | None = None):
+    email = _resolve_request_user(request, user_id)
+    return {
+        "user_id": email,
+        "state": _load_user_state(email),
+    }
+
+
+@app.post("/user/state")
+def save_user_state(payload: UserStatePayload, request: Request):
+    email = _resolve_request_user(request, payload.user_id)
+    _save_user_state(email, payload.state or {})
+    return {
+        "success": True,
+        "user_id": email,
+        "state": payload.state or {},
+    }
+
+
+@app.delete("/user/state")
+def clear_user_state(request: Request, user_id: str | None = None):
+    email = _resolve_request_user(request, user_id)
+    path = _user_state_path(email)
+    if path.exists():
+        path.unlink()
+    return {
+        "success": True,
+        "user_id": email,
+        "state": {},
+    }
+
+
+@app.delete("/chat/history")
+def clear_chat_history(request: Request, user_id: str | None = None):
+    email = _resolve_request_user(request, user_id)
+    path = _chat_history_path(email)
+    if path.exists():
+        path.unlink()
+    return {
+        "success": True,
+        "user_id": email,
+        "messages": [],
+        "agent_data": {},
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEBUG ENDPOINTS (Developer Tools)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/debug/data")
+def debug_show_all_data():
+    """📊 Shows all saved data (users, user states, chat histories) — FOR DEVELOPMENT ONLY"""
+    result = {
+        "users": _load_users_db(),
+        "user_states": {},
+        "chat_histories": {},
+    }
+    
+    # Load all user states
+    if USER_STATE_DIR.exists():
+        for state_file in USER_STATE_DIR.glob("*.json"):
+            user_id = state_file.stem
+            result["user_states"][user_id] = _load_user_state(user_id)
+    
+    # Load all chat histories
+    if CHAT_HISTORY_DIR.exists():
+        for chat_file in CHAT_HISTORY_DIR.glob("*.json"):
+            user_id = chat_file.stem
+            result["chat_histories"][user_id] = _load_chat_record(user_id)
+    
+    logger.info(f"📊 Debug data requested: {len(result['users'].get('users', {}))} users, "
+                f"{len(result['user_states'])} user states, {len(result['chat_histories'])} chat histories")
+    
+    return result
+
+
+@app.post("/debug/clear")
+def debug_clear_all_data():
+    """🗑️  Clears ALL saved data — FOR DEVELOPMENT ONLY"""
+    import shutil
+    
+    # Clear files
+    for directory in [USER_STATE_DIR, CHAT_HISTORY_DIR]:
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+    
+    # Clear users db
+    _save_users_db({"users": {}})
+    
+    logger.warning("🗑️  ALL DATA CLEARED!")
+    return {"success": True, "message": "All data cleared"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STUDENT/USER ENDPOINTS (Authenticated - View Own Data)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/history/chat")
+def get_chat_history_full(request: Request, user_id: str | None = None):
+    """📱 Get complete chat history for authenticated user"""
+    email = _resolve_request_user(request, user_id)
+    record = _load_chat_record(email)
+    return {
+        "user_id": email,
+        "total_messages": len(record.get("messages", [])),
+        "messages": record.get("messages", []),
+        "agent_data": record.get("agent_data", {}),
+    }
+
+
+@app.get("/history/progress")
+def get_progress_history(request: Request, user_id: str | None = None):
+    """📈 Get user's application progress history"""
+    email = _resolve_request_user(request, user_id)
+    state = _load_user_state(email)
+    return {
+        "user_id": email,
+        "current_step": state.get("step", 0),
+        "profile": state.get("profile", {}),
+        "documents": state.get("docData", {}),
+        "eligibility": state.get("elig", {}),
+    }
+
+
+@app.get("/history/export")
+def export_user_data(request: Request, format: str = "json", user_id: str | None = None):
+    """📥 Export all personal data as JSON or CSV — FOR STUDENT RECORDS"""
+    email = _resolve_request_user(request, user_id)
+    
+    chat = _load_chat_record(email)
+    state = _load_user_state(email)
+    
+    if format == "json":
+        return {
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "user": email,
+            "profile": state.get("profile", {}),
+            "documents": state.get("docData", {}),
+            "eligibility": state.get("elig", {}),
+            "chat_messages_count": len(chat.get("messages", [])),
+            "chat_messages": chat.get("messages", []),
+        }
+    
+    # CSV export placeholder
+    return {"error": "CSV export not yet implemented"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEVELOPER ENDPOINTS (Admin - View All Data)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/debug/users")
+def debug_list_all_users():
+    """👥 List all registered users (Dev only)"""
+    users_db = _load_users_db()
+    users_list = []
+    
+    for email, user_data in users_db.get("users", {}).items():
+        users_list.append({
+            "email": email,
+            "name": user_data.get("name", "N/A"),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(user_data.get("created_at", 0))),
+            "has_chat_history": (CHAT_HISTORY_DIR / f"{email}.json").exists(),
+            "has_state": (USER_STATE_DIR / f"{email}.json").exists(),
+        })
+    
+    return {
+        "total_users": len(users_list),
+        "users": users_list,
+    }
+
+
+@app.get("/debug/user/{email}")
+def debug_view_user_data(email: str):
+    """🔍 View specific user's complete data (Dev only) — URL: /debug/user/john@example.com"""
+    email = _normalize_email(email)
+    users_db = _load_users_db()
+    
+    if email not in users_db.get("users", {}):
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    user_info = users_db["users"][email]
+    chat = _load_chat_record(email)
+    state = _load_user_state(email)
+    
+    return {
+        "user": {
+            "email": email,
+            "name": user_info.get("name"),
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(user_info.get("created_at", 0))),
+        },
+        "profile": state.get("profile", {}),
+        "documents": state.get("docData", {}),
+        "eligibility": state.get("elig", {}),
+        "chat_history": {
+            "total_messages": len(chat.get("messages", [])),
+            "recent_messages": chat.get("messages", [])[-10:],  # Last 10
+        },
     }
 
 
@@ -848,6 +1566,8 @@ async def ocr_endpoint(
                 "OR install easyocr (pip install easyocr) and set USE_EASYOCR=True."
             ),
         )
+
+    normalized_doc_type = _normalize_doc_type(doc_type)
 
     suffix = os.path.splitext(file.filename or "doc.jpg")[1] or ".jpg"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -882,8 +1602,8 @@ async def ocr_endpoint(
             detected, final_conf, method = ml_label, ml_conf, "ml"
 
         # Override if doc_type explicitly passed
-        if doc_type != "auto" and doc_type in TRAINING_DATA:
-            detected = doc_type
+        if normalized_doc_type != "auto" and normalized_doc_type in TRAINING_DATA:
+            detected = normalized_doc_type
 
         fields = _extract(detected, text)
         conf   = _score(detected, fields, ocr_conf, final_conf)
