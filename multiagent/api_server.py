@@ -41,6 +41,86 @@ import shutil
 import logging
 from pathlib import Path
 
+# ── PostgreSQL / SQLAlchemy (optional — only used when DATABASE_URL is set) ──
+def _normalize_database_url(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if url.startswith("postgresql://"):
+        return f"postgresql+psycopg://{url[len('postgresql://'):]}"
+    if url.startswith("postgres://"):
+        return f"postgresql+psycopg://{url[len('postgres://'):]}"
+    return url
+
+
+_DATABASE_URL = _normalize_database_url(os.environ.get("DATABASE_URL", ""))
+_USE_DB = bool(_DATABASE_URL)
+
+if _USE_DB:
+    try:
+        from sqlalchemy import (
+            create_engine, Column, String, Text, DateTime, text
+        )
+        from sqlalchemy.orm import declarative_base, sessionmaker
+        import datetime as _dt
+
+        _engine = create_engine(
+            _DATABASE_URL,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=10,
+        )
+        _Base = declarative_base()
+        _SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
+
+        class _DBUser(_Base):
+            __tablename__ = "users"
+            email = Column(String(255), primary_key=True, index=True)
+            data  = Column(Text, nullable=False, default="{}")
+
+        class _DBChatHistory(_Base):
+            __tablename__ = "chat_history"
+            user_id    = Column(String(255), primary_key=True, index=True)
+            data       = Column(Text, nullable=False, default="{}")
+            updated_at = Column(DateTime, default=_dt.datetime.utcnow, onupdate=_dt.datetime.utcnow)
+
+        class _DBUserState(_Base):
+            __tablename__ = "user_state"
+            user_id    = Column(String(255), primary_key=True, index=True)
+            data       = Column(Text, nullable=False, default="{}")
+            updated_at = Column(DateTime, default=_dt.datetime.utcnow, onupdate=_dt.datetime.utcnow)
+
+        _Base.metadata.create_all(bind=_engine)
+        _db_logger = logging.getLogger(__name__)
+        _db_logger.info("✅ PostgreSQL connected — tables ready")
+
+    except Exception as _db_exc:
+        _USE_DB = False
+        logging.getLogger(__name__).warning(
+            f"⚠️  PostgreSQL unavailable ({_db_exc}), falling back to JSON files"
+        )
+
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+
+def _load_environment() -> None:
+    """Load environment variables from common local .env files."""
+    if load_dotenv is None:
+        return
+
+    module_dir = Path(__file__).resolve().parent
+    candidate_paths = [
+        module_dir / ".env",
+        module_dir.parent / ".env",
+    ]
+    for env_path in candidate_paths:
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+
+
+_load_environment()
+
 # ✓ Configure debug logging to show what's being saved
 logging.basicConfig(
     level=logging.DEBUG,
@@ -913,6 +993,26 @@ def _save_chat_history(user_id: str, messages: list[dict]) -> None:
 
 
 def _load_chat_record(user_id: str) -> dict[str, Any]:
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                row = db.get(_DBChatHistory, user_id)
+                if row is None:
+                    return {"messages": [], "agent_data": {}}
+                data = json.loads(row.data)
+                if not isinstance(data, dict):
+                    return {"messages": [], "agent_data": {}}
+                messages = data.get("messages", [])
+                if not isinstance(messages, list):
+                    messages = []
+                messages = [m for m in messages if isinstance(m, dict)][-CHAT_HISTORY_LIMIT:]
+                agent_data = data.get("agent_data", {})
+                if not isinstance(agent_data, dict):
+                    agent_data = {}
+                return {"messages": messages, "agent_data": agent_data}
+        except Exception as e:
+            logger.warning(f"DB read chat_history failed, using JSON fallback: {e}")
+
     path = _chat_history_path(user_id)
     if not path.exists():
         return {"messages": [], "agent_data": {}}
@@ -946,12 +1046,27 @@ def _load_chat_record(user_id: str) -> dict[str, Any]:
 
 
 def _save_chat_record(user_id: str, record: dict[str, Any]) -> None:
-    path = _chat_history_path(user_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "messages": record.get("messages", [])[-CHAT_HISTORY_LIMIT:],
         "agent_data": record.get("agent_data", {}),
     }
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                row = db.get(_DBChatHistory, user_id)
+                if row is None:
+                    row = _DBChatHistory(user_id=user_id, data=json.dumps(payload, ensure_ascii=False))
+                    db.add(row)
+                else:
+                    row.data = json.dumps(payload, ensure_ascii=False)
+                db.commit()
+            logger.debug(f"💾 DB saved chat_history: {user_id} ({len(payload['messages'])} messages)")
+            return
+        except Exception as e:
+            logger.warning(f"DB write chat_history failed, using JSON fallback: {e}")
+
+    path = _chat_history_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     logger.debug(f"💾 Saved chat history: {path} ({len(payload['messages'])} messages)")
@@ -988,6 +1103,17 @@ def _merge_agent_data(existing: dict[str, Any], incoming: dict[str, Any]) -> dic
 
 
 def _load_user_state(user_id: str) -> dict[str, Any]:
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                row = db.get(_DBUserState, user_id)
+                if row is None:
+                    return {}
+                data = json.loads(row.data)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning(f"DB read user_state failed, using JSON fallback: {e}")
+
     path = _user_state_path(user_id)
     if not path.exists():
         return {}
@@ -1000,9 +1126,24 @@ def _load_user_state(user_id: str) -> dict[str, Any]:
 
 
 def _save_user_state(user_id: str, state: dict[str, Any]) -> None:
+    payload = state if isinstance(state, dict) else {}
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                row = db.get(_DBUserState, user_id)
+                if row is None:
+                    row = _DBUserState(user_id=user_id, data=json.dumps(payload, ensure_ascii=False))
+                    db.add(row)
+                else:
+                    row.data = json.dumps(payload, ensure_ascii=False)
+                db.commit()
+            logger.debug(f"💾 DB saved user_state: {user_id} (keys: {list(payload.keys())})")
+            return
+        except Exception as e:
+            logger.warning(f"DB write user_state failed, using JSON fallback: {e}")
+
     path = _user_state_path(user_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = state if isinstance(state, dict) else {}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     logger.debug(f"💾 Saved user state: {path} (keys: {list(payload.keys())})")
@@ -1013,6 +1154,20 @@ def _normalize_email(email: str) -> str:
 
 
 def _load_users_db() -> dict[str, Any]:
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                rows = db.query(_DBUser).all()
+                users = {}
+                for row in rows:
+                    try:
+                        users[row.email] = json.loads(row.data)
+                    except Exception:
+                        pass
+                return {"users": users}
+        except Exception as e:
+            logger.warning(f"DB read users failed, using JSON fallback: {e}")
+
     if not USER_AUTH_PATH.exists():
         return {"users": {}}
     try:
@@ -1026,10 +1181,26 @@ def _load_users_db() -> dict[str, Any]:
 
 
 def _save_users_db(data: dict[str, Any]) -> None:
-    USER_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = data if isinstance(data, dict) else {"users": {}}
     if not isinstance(payload.get("users"), dict):
         payload["users"] = {}
+    if _USE_DB:
+        try:
+            with _SessionLocal() as db:
+                for email, user_data in payload["users"].items():
+                    row = db.get(_DBUser, email)
+                    if row is None:
+                        row = _DBUser(email=email, data=json.dumps(user_data, ensure_ascii=False))
+                        db.add(row)
+                    else:
+                        row.data = json.dumps(user_data, ensure_ascii=False)
+                db.commit()
+            logger.debug(f"👤 DB saved users ({len(payload['users'])} users)")
+            return
+        except Exception as e:
+            logger.warning(f"DB write users failed, using JSON fallback: {e}")
+
+    USER_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(USER_AUTH_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     logger.debug(f"👤 Saved users database: {USER_AUTH_PATH} ({len(payload['users'])} users)")
@@ -1200,6 +1371,8 @@ def health():
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
+        "db": "postgresql" if _USE_DB else "json",
+        "db_url_set": bool(_DATABASE_URL),
     }
 
 
@@ -1291,10 +1464,21 @@ def get_chat_history(request: Request, user_id: str | None = None):
 
 
 @app.post("/chat/respond", response_model=ChatResponse)
-def chat_respond(payload: ChatRequest):
+def chat_respond(payload: ChatRequest, request: Request):
     message = (payload.user_message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="user_message is required")
+
+    # Resolve authenticated user (optional — endpoint still works without auth)
+    user_email: str | None = None
+    token = _extract_bearer_token(request)
+    if token:
+        user_email = _verify_auth_token(token)
+
+    # Load conversation history for multi-turn context
+    conversation_history: list[dict] = []
+    if user_email:
+        conversation_history = _load_chat_history(user_email)
 
     if _chatbot_agent is None:
         return ChatResponse(
@@ -1307,9 +1491,27 @@ def chat_respond(payload: ChatRequest):
         )
 
     try:
-        result = _chatbot_agent.process_message(message, payload.context or {})
+        result = _chatbot_agent.process_message(
+            message,
+            payload.context or {},
+            conversation_history=conversation_history,
+        )
+        response_text = result.get("response", "I am here to help.")
+
+        # Auto-persist both turns to history when user is authenticated
+        if user_email:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            new_msgs = [
+                {"role": "user",      "text": message,       "time": now, "id": f"u{int(time.time()*1000)}"},
+                {"role": "assistant", "text": response_text, "time": now, "id": f"a{int(time.time()*1000)}"},
+            ]
+            record = _load_chat_record(user_email)
+            merged_msgs = _merge_chat_messages(record.get("messages", []), new_msgs)
+            merged_agent = _merge_agent_data(record.get("agent_data", {}), result.get("agent_data", {}))
+            _save_chat_record(user_email, {"messages": merged_msgs, "agent_data": merged_agent})
+
         return ChatResponse(
-            response=result.get("response", "I am here to help."),
+            response=response_text,
             intent=result.get("intent", "general"),
             actions=result.get("actions", []),
             agent_calls=result.get("agent_calls", []),
@@ -1550,6 +1752,29 @@ def debug_view_user_data(email: str):
             "recent_messages": chat.get("messages", [])[-10:],  # Last 10
         },
     }
+
+
+@app.get("/universities")
+def get_universities(country: str = None):
+    """Return universities from the curated database, optionally filtered by country."""
+    db_path = Path(__file__).resolve().parent / "data" / "databases" / "universities_database.json"
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="Universities database not found.")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Universities database is corrupt.")
+
+    if country:
+        universities = db.get(country, [])
+    else:
+        universities = []
+        for unis in db.values():
+            if isinstance(unis, list):
+                universities.extend(unis)
+
+    return {"universities": universities, "total": len(universities)}
 
 
 @app.post("/ocr")

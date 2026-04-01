@@ -137,6 +137,8 @@ class EligibilityVerificationAgent:
         "Australia": {"ielts": 6.5, "toefl": 79, "pte": 58},
     }
 
+    _DEFAULT_ENGLISH_REQUIREMENT = {"ielts": 6.5, "toefl": 90, "pte": 58}
+
     def __init__(self, training_data_path: str = ""):
         # Default: resolve relative to project root regardless of working directory
         if not training_data_path:
@@ -145,9 +147,13 @@ class EligibilityVerificationAgent:
         self.training_data = self._load_training_data(training_data_path)
         if self.training_data:
             self._special_reqs        = self.training_data.get("university_specific_requirements", {})
+            self._country_english_reqs = self.training_data.get("country_english_requirements", {})
+            self._program_reqs        = self.training_data.get("program_specific_requirements", {})
             self._improvement_library = self.training_data.get("improvement_recommendations", {})
         else:
             self._special_reqs        = {}
+            self._country_english_reqs = {}
+            self._program_reqs        = {}
             self._improvement_library = {}
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -161,7 +167,11 @@ class EligibilityVerificationAgent:
         grade_point = self._compute_grade_point(document_data)
         tier        = self._compute_tier(grade_point)
 
-        english_status    = self._check_english(document_data, profile_data.get("country", "UK"))
+        english_status    = self._check_english(
+            document_data,
+            profile_data.get("country", "UK"),
+            profile_data.get("program_interest", ""),
+        )
         program_alignment = self._check_program_alignment(
             profile_data.get("stream", ""),
             profile_data.get("program_interest", "")
@@ -238,15 +248,23 @@ class EligibilityVerificationAgent:
         if not gpa_pass:
             improvements.append(f"Improve grades to {uni_min_gpa:.1f} GPA for {uni['name']}")
 
+        target_program  = profile.get("program_interest", "")
+        available_progs = uni.get("programs", [])
+        prog_available  = target_program in available_progs
+        program_min     = self.PROGRAM_MIN_GPA.get(target_program, 3.0)
+
         # Criterion 2 — English
-        req       = self.ENGLISH_REQUIREMENTS.get(country, self.ENGLISH_REQUIREMENTS["UK"])
-        uni_ielts = uni.get("acceptance_criteria", {}).get("ielts_min", req["ielts"])
-        uni_toefl = uni.get("acceptance_criteria", {}).get("toefl_min", req["toefl"])
+        req       = self._resolve_english_requirements(uni, target_program, country)
+        uni_ielts = req["ielts"]
+        uni_toefl = req["toefl"]
+        uni_pte   = req["pte"]
         ielts_val = english_status.get("ielts_score")
         toefl_val = english_status.get("toefl_score")
+        pte_val   = english_status.get("pte_score")
         uni_eng_pass = (
             (ielts_val is not None and ielts_val >= uni_ielts) or
-            (toefl_val is not None and toefl_val >= uni_toefl)
+            (toefl_val is not None and toefl_val >= uni_toefl) or
+            (pte_val is not None and pte_val >= uni_pte)
         )
 
         criteria.append(CriterionResult(
@@ -254,20 +272,17 @@ class EligibilityVerificationAgent:
             status=CriterionStatus.PASS.value if uni_eng_pass else CriterionStatus.FAIL.value,
             label="English Proficiency",
             your_value=english_status.get("score_summary", "Not provided"),
-            required=f"IELTS {uni_ielts} or TOEFL {uni_toefl}",
+            required=f"IELTS {uni_ielts} or TOEFL {uni_toefl} or PTE {uni_pte}",
             message="English requirement met." if uni_eng_pass
-                    else f"IELTS {uni_ielts}+ or TOEFL {uni_toefl}+ required",
+                    else f"IELTS {uni_ielts}+ or TOEFL {uni_toefl}+ or PTE {uni_pte}+ required",
             weight=0.9,
         ))
         if not uni_eng_pass:
-            improvements.append(f"Take IELTS (target {uni_ielts}+) or TOEFL (target {uni_toefl}+)")
+            improvements.append(
+                f"Take IELTS (target {uni_ielts}+), TOEFL (target {uni_toefl}+), or PTE (target {uni_pte}+)."
+            )
 
         # Criterion 3 — Program availability
-        target_program  = profile.get("program_interest", "")
-        available_progs = uni.get("programs", [])
-        prog_available  = target_program in available_progs
-        program_min     = self.PROGRAM_MIN_GPA.get(target_program, 3.0)
-
         criteria.append(CriterionResult(
             criterion="program_availability",
             status=CriterionStatus.PASS.value if prog_available else CriterionStatus.FAIL.value,
@@ -342,9 +357,9 @@ class EligibilityVerificationAgent:
         if gpa >= 3.0: return EligibilityTier.AVERAGE
         return EligibilityTier.FOUNDATION
 
-    def _check_english(self, document_data: dict, country: str) -> dict:
+    def _check_english(self, document_data: dict, country: str, program: str = "") -> dict:
         eng  = document_data.get("english_proficiency", {}) or {}
-        req  = self.ENGLISH_REQUIREMENTS.get(country, self.ENGLISH_REQUIREMENTS["UK"])
+        req  = self._resolve_english_requirements(None, program, country)
 
         ielts = (eng.get("ielts") or {}).get("overall") if isinstance(eng.get("ielts"), dict) else eng.get("ielts")
         toefl = eng.get("toefl")
@@ -368,6 +383,37 @@ class EligibilityVerificationAgent:
             "country_req":   req,
             "score_summary": " | ".join(parts) if parts else "Not provided",
         }
+
+    def _resolve_english_requirements(
+        self,
+        uni: Optional[dict],
+        program: str,
+        country: str,
+    ) -> dict:
+        req = dict(self._DEFAULT_ENGLISH_REQUIREMENT)
+
+        country_req = self._country_english_reqs.get(country) or self.ENGLISH_REQUIREMENTS.get(country)
+        if isinstance(country_req, dict):
+            req.update({k: v for k, v in country_req.items() if v is not None})
+
+        program_req = self._program_reqs.get(program, {}).get("english_requirements", {})
+        if isinstance(program_req, dict):
+            req.update({k: v for k, v in program_req.items() if v is not None})
+
+        if uni:
+            acceptance = uni.get("acceptance_criteria", {}) or {}
+            req.update({
+                "ielts": acceptance.get("ielts_min", req["ielts"]),
+                "toefl": acceptance.get("toefl_min", req["toefl"]),
+                "pte": acceptance.get("pte_min", req["pte"]),
+            })
+
+            uni_id = uni.get("id", "")
+            special_req = self._special_reqs.get(uni_id, {}).get("english_requirements", {})
+            if isinstance(special_req, dict):
+                req.update({k: v for k, v in special_req.items() if v is not None})
+
+        return req
 
     def _check_program_alignment(self, stream: str, program: str) -> str:
         if not stream or not program:

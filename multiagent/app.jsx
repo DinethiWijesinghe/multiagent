@@ -843,32 +843,46 @@ function assessEligibility(profile, doc) {
   return{...base,eligible:true,grade_point:2.0,eligibility_tier:"average",eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:["Document processed. Check individual university requirements."]};
 }
 
-// ── UNIVERSITIES DATA ──────────────────────────────────────────────────────
-const UNIVERSITIES=[
-  {name:"University of Cambridge",location:"UK",qs:2,programs:["Engineering","Computer Science","Medicine","Business","Science"],tuitionLKR:28000*400,minGpa:3.9,ielts:7.5,website:"https://www.cam.ac.uk"},
-  {name:"Imperial College London",location:"UK",qs:6,programs:["Engineering","Computer Science","Medicine","Science"],tuitionLKR:32000*400,minGpa:3.7,ielts:6.5,website:"https://www.imperial.ac.uk"},
-  {name:"University of Edinburgh",location:"UK",qs:22,programs:["Computer Science","Science","Arts","Business","Medicine"],tuitionLKR:20000*400,minGpa:3.3,ielts:6.5,website:"https://www.ed.ac.uk"},
-  {name:"University of Manchester",location:"UK",qs:32,programs:["Engineering","Computer Science","Business","Science","Arts"],tuitionLKR:19000*400,minGpa:3.3,ielts:6.5,website:"https://www.manchester.ac.uk"},
-  {name:"University of Bristol",location:"UK",qs:54,programs:["Engineering","Computer Science","Business","Arts","Science"],tuitionLKR:17000*400,minGpa:3.1,ielts:6.5,website:"https://www.bristol.ac.uk"},
-  {name:"National University of Singapore",location:"Singapore",qs:8,programs:["Engineering","Computer Science","Business","Medicine","Science"],tuitionLKR:28000*235,minGpa:3.7,ielts:6.0,website:"https://www.nus.edu.sg"},
-  {name:"Nanyang Technological University",location:"Singapore",qs:26,programs:["Engineering","Computer Science","Business","Science"],tuitionLKR:25000*235,minGpa:3.5,ielts:6.0,website:"https://www.ntu.edu.sg"},
-  {name:"University of Melbourne",location:"Australia",qs:14,programs:["Engineering","Computer Science","Business","Medicine","Science","Arts"],tuitionLKR:35000*210,minGpa:3.3,ielts:6.5,website:"https://www.unimelb.edu.au"},
-  {name:"University of Sydney",location:"Australia",qs:18,programs:["Business","Medicine","Law","Science","Arts"],tuitionLKR:32000*210,minGpa:3.2,ielts:6.5,website:"https://www.sydney.edu.au"},
-  {name:"University of Queensland",location:"Australia",qs:40,programs:["Engineering","Science","Business","Arts","Medicine"],tuitionLKR:28000*210,minGpa:3.0,ielts:6.5,website:"https://www.uq.edu.au"},
-  {name:"Monash University",location:"Australia",qs:42,programs:["Business","Engineering","Medicine","Science","Arts","Law"],tuitionLKR:26000*210,minGpa:2.8,ielts:6.5,website:"https://www.monash.edu"},
-];
+const UNIVERSITIES_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/universities`;
 
-function searchUniversities(country,minGpa,program,budgetLKR){
-  return UNIVERSITIES.filter(u=>{
-    if(country&&u.location!==country) return false;
-    if(minGpa&&u.minGpa>minGpa+0.05) return false;
-    if(program&&program!=="Other"&&!u.programs.includes(program)) return false;
-    return true;
-  }).sort((a,b)=>a.qs-b.qs).map(u=>({
-    ...u,
-    affordable:budgetLKR<=0||budgetLKR>=u.tuitionLKR,
-    tuitionDisplay:country==="UK"?"GBP "+Math.round(u.tuitionLKR/400).toLocaleString()+" / yr":country==="Singapore"?"SGD "+Math.round(u.tuitionLKR/235).toLocaleString()+" / yr":"AUD "+Math.round(u.tuitionLKR/210).toLocaleString()+" / yr"
-  }));
+const TUITION_RATES = { UK: 400, Singapore: 235, Australia: 210 };
+
+function _mapUniversity(u, country, budgetLKR) {
+  const rate = TUITION_RATES[u.country] || 400;
+  const tuitionUSD = u.tuition?.undergraduate_intl_gbp
+    || u.tuition?.undergraduate_intl_sgd
+    || u.tuition?.undergraduate_intl_aud
+    || 0;
+  const tuitionLKR = tuitionUSD * rate;
+  const qs = u.rankings?.qs_world || 999;
+  const currencyLabel = u.country === "UK" ? "GBP" : u.country === "Singapore" ? "SGD" : "AUD";
+  return {
+    name: u.name,
+    location: u.country,
+    qs,
+    programs: u.programs || [],
+    tuitionLKR,
+    minGpa: u.acceptance_criteria?.min_grade_point || 0,
+    ielts: u.acceptance_criteria?.ielts_min || 0,
+    website: u.website || "#",
+    affordable: budgetLKR <= 0 || budgetLKR >= tuitionLKR,
+    tuitionDisplay: `${currencyLabel} ${Math.round(tuitionUSD).toLocaleString()} / yr`,
+  };
+}
+
+async function fetchUniversities(country, minGpa, program, budgetLKR) {
+  const url = country ? `${UNIVERSITIES_API}?country=${encodeURIComponent(country)}` : UNIVERSITIES_API;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to load universities.");
+  const { universities } = await res.json();
+  return universities
+    .map(u => _mapUniversity(u, country, budgetLKR))
+    .filter(u => {
+      if (minGpa && u.minGpa > minGpa + 0.05) return false;
+      if (program && program !== "Other" && !u.programs.includes(program)) return false;
+      return true;
+    })
+    .sort((a, b) => a.qs - b.qs);
 }
 
 // ── SHARED UI ──────────────────────────────────────────────────────────────
@@ -933,7 +947,7 @@ function ExtractedDisplay({data,confidence}){
     if(dt==="Diploma")return<DataGrid pairs={[["Student Name",data.student_name],["Institution",data.institution],["Program",data.program],["Grade",data.grade],["Completion",data.completion_year]]} />;
     if(dt==="IELTS Certificate")return<><DataGrid pairs={[["Candidate",data.candidate_name],["Overall Band",`${data.overall} / 9.0`],["Test Date",data.test_date],["TRF Number",data.trf_number],["Test Centre",data.test_centre],["DOB",data.date_of_birth],["Nationality",data.nationality]]} /><div className="slabel">Section Scores</div><ScoreSections sections={[["Listening",data.listening,9],["Reading",data.reading,9],["Writing",data.writing,9],["Speaking",data.speaking,9]]} maxVal={9} /></>;
     if(dt==="TOEFL Certificate")return<><DataGrid pairs={[["Candidate",data.candidate_name],["Total Score",`${data.total} / 120`],["Test Date",data.test_date],["Reg. Number",data.registration_number]]} /><div className="slabel">Section Scores</div><ScoreSections sections={[["Reading",data.reading,30],["Listening",data.listening,30],["Speaking",data.speaking,30],["Writing",data.writing,30]]} maxVal={30} /></>;
-    if(dt==="PTE Certificate")return<><DataGrid pairs={[["Candidate",data.candidate_name],["Overall Score",`${data.overall} / 90`],["Test Date",data.test_date],["Score Code",data.score_report_code]]} /><div className="slabel">Section Scores</div><ScoreSections sections={[["Listening",data.listening,90],["Reading",data.reading,90],["Writing",data.writing,90],["Speaking",data.speaking,90]]} maxVal={90} /></>;
+      if(dt==="PTE Certificate")return<><DataGrid pairs={[["Candidate",data.candidate_name],["Overall Score",`${data.overall} / 90`],["Test Date",data.test_date]]} /><div className="slabel">Section Scores</div><ScoreSections sections={[["Listening",data.listening,90],["Reading",data.reading,90],["Writing",data.writing,90],["Speaking",data.speaking,90]]} maxVal={90} /></>;
     if(dt==="Passport")return<DataGrid pairs={[["Surname",data.surname],["Given Names",data.given_names],["Passport No.",data.passport_number],["Nationality",data.nationality],["Date of Birth",data.date_of_birth],["Sex",data.sex],["Place of Birth",data.place_of_birth],["Issue Date",data.issue_date],["Expiry",data.expiry_date],["Issuing Authority",data.issuing_authority]]} />;
     if(dt==="Financial Statement")return<><DataGrid pairs={[["Account Holder",data.account_holder],["Bank",data.bank_name],["Account No.",data.account_number],["Currency",data.currency],["Opening Balance",data.opening_balance],["Closing Balance",data.closing_balance],["Period",data.statement_period]]} />{data.closing_balance&&<div style={{marginTop:".75rem",padding:".75rem 1rem",background:"var(--green-dim)",border:"1px solid #3ecf8e22",borderRadius:"var(--r)",fontFamily:"var(--mono)",fontSize:".8rem",color:"var(--green)"}}>💰 Closing Balance: <strong>{data.closing_balance} {data.currency||"LKR"}</strong></div>}</>;
     const skip=new Set(["document_type","confidence"]);
@@ -1186,12 +1200,12 @@ function TOEFLManualForm({onSubmit,onBack}){
 }
 
 function PTEManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",score_report_code:""});
+  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:""});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const submit=()=>{if(!form.candidate_name||!form.overall){setErr("Name and overall score are required.");return;}const o=parseInt(form.overall);if(isNaN(o)||o<10||o>90){setErr("Overall score must be 10–90.");return;}setErr("");onSubmit({document_type:"PTE Certificate",...form});};
   const secs=[["Listening","listening"],["Reading","reading"],["Writing","writing"],["Speaking","speaking"]];
-  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div><div className="field"><label className="flabel">Overall Score (10–90) <span className="req">*</span></label><input type="number" min={10} max={90} value={form.overall} onChange={e=>f("overall",e.target.value)} /></div>{secs.map(([label,key])=>(<div key={key} className="field"><label className="flabel">{label} (10–90)</label><input type="number" min={10} max={90} value={form[key]} onChange={e=>f(key,e.target.value)} /></div>))}<div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">Score Report Code</label><input value={form.score_report_code} onChange={e=>f("score_report_code",e.target.value)} /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
+  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div><div className="field"><label className="flabel">Overall Score (10–90) <span className="req">*</span></label><input type="number" min={10} max={90} value={form.overall} onChange={e=>f("overall",e.target.value)} /></div>{secs.map(([label,key])=>(<div key={key} className="field"><label className="flabel">{label} (10–90)</label><input type="number" min={10} max={90} value={form[key]} onChange={e=>f(key,e.target.value)} /></div>))}<div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
 
 function PassportManualForm({onSubmit,onBack}){
@@ -1593,7 +1607,17 @@ function EligibilityStep({elig,docData,profile,onNext,onBack}){
 function UniversitiesStep({profile,elig,onBack,onReset}){
   const fin=profile.financial||{};
   const budgetLKR=toLKR(parseFloat(fin.total_budget)||0,fin.budget_currency||"LKR");
-  const unis=searchUniversities(profile.country,elig.grade_point,profile.program_interest,budgetLKR);
+  const [unis,setUnis]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [fetchErr,setFetchErr]=useState("");
+  useEffect(()=>{
+    setLoading(true);
+    setFetchErr("");
+    fetchUniversities(profile.country,elig.grade_point,profile.program_interest,budgetLKR)
+      .then(setUnis)
+      .catch(e=>setFetchErr(e.message||"Failed to load universities."))
+      .finally(()=>setLoading(false));
+  },[]);
   const affordable=unis.filter(u=>u.affordable),stretch=unis.filter(u=>!u.affordable);
   const UniCard=({u,idx})=>(
     <div className="uni-card">
@@ -1608,10 +1632,12 @@ function UniversitiesStep({profile,elig,onBack,onReset}){
     <div className="fade-up">
       <div style={{marginBottom:"1.25rem"}}>
         <div style={{fontFamily:"var(--sans)",fontSize:"1.05rem",fontWeight:800,marginBottom:".4rem"}}>Matched Universities — {profile.country}</div>
-        {unis.length>0?<Alert type="ok">Found {unis.length} {unis.length===1?"university":"universities"} — {affordable.length} within budget</Alert>:<Alert type="warn">No universities matched. Adjust GPA, country, or program in your profile.</Alert>}
+        {loading?<Alert type="info">Loading universities…</Alert>:fetchErr?<Alert type="error">{fetchErr}</Alert>:unis.length>0?<Alert type="ok">Found {unis.length} {unis.length===1?"university":"universities"} — {affordable.length} within budget</Alert>:<Alert type="warn">No universities matched. Adjust GPA, country, or program in your profile.</Alert>}
       </div>
-      {affordable.length>0&&<div><div className="slabel">Within Budget</div>{affordable.map((u,i)=><UniCard key={u.name} u={u} idx={i+1} />)}</div>}
-      {stretch.length>0&&<div><div className="slabel">Stretch — Consider Scholarship / Loan</div>{stretch.map((u,i)=><UniCard key={u.name} u={u} idx={affordable.length+i+1} />)}</div>}
+      {!loading&&!fetchErr&&<>
+        {affordable.length>0&&<div><div className="slabel">Within Budget</div>{affordable.map((u,i)=><UniCard key={u.name} u={u} idx={i+1} />)}</div>}
+        {stretch.length>0&&<div><div className="slabel">Stretch — Consider Scholarship / Loan</div>{stretch.map((u,i)=><UniCard key={u.name} u={u} idx={affordable.length+i+1} />)}</div>}
+      </>}
       <div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Eligibility</button><button className="btn btn-primary" onClick={onReset}>New Search</button></div>
     </div>
   );

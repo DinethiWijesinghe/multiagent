@@ -154,16 +154,17 @@ class RAGSystem:
                 return
 
             try:
-                GoogleGenerativeAI = _import_symbol(
+                ChatGoogleGenerativeAI = _import_symbol(
                     ["langchain_google_genai"],
-                    "GoogleGenerativeAI",
+                    "ChatGoogleGenerativeAI",
                 )
-                self.llm = GoogleGenerativeAI(
+                self.llm = ChatGoogleGenerativeAI(
                     model=self.model,
                     temperature=0.7,
-                    max_tokens=1024,
+                    max_output_tokens=1024,
                     google_api_key=api_key,
                 )
+                logger.info("Gemini provider initialised with model %s", self.model)
                 return
             except Exception as e:
                 self.llm_provider = "none"
@@ -174,6 +175,55 @@ class RAGSystem:
         self.llm_provider = "none"
         self.llm = None
         logger.warning("Unknown RAG_LLM_PROVIDER=%s; using keyless mode", provider)
+
+    def _build_chat_messages(self, query: str, context_text: str, context: Optional[Dict[str, Any]], conversation_history: List[Dict[str, Any]]) -> Any:
+        """Build a LangChain message list for multi-turn Gemini calls."""
+        try:
+            SystemMessage = _import_symbol(["langchain_core.messages"], "SystemMessage")
+            HumanMessage = _import_symbol(["langchain_core.messages"], "HumanMessage")
+            AIMessage = _import_symbol(["langchain_core.messages"], "AIMessage")
+        except ImportError:
+            # Fallback: single-string prompt for completion-style LLMs
+            profile_str = ""
+            if context:
+                profile = context.get("profile_data", {})
+                if profile:
+                    profile_str = f"\nUser profile: {json.dumps(profile, ensure_ascii=False)}"
+            return f"Knowledge base:\n{context_text}{profile_str}\n\nQuestion: {query}\nAnswer:"
+
+        profile_lines = ""
+        if context:
+            profile = context.get("profile_data") or {}
+            if profile:
+                profile_lines = (
+                    "\n\nUser profile:\n"
+                    + "\n".join(f"  {k}: {v}" for k, v in profile.items() if v is not None)
+                )
+
+        system_content = (
+            "You are UniAssist, a helpful and empathetic study-abroad advisor for Sri Lankan students. "
+            "Use the knowledge base context below to give accurate, personalised answers about "
+            "university eligibility, tuition costs, scholarships, visa requirements, and applications. "
+            "If the context doesn't cover the question, say so honestly rather than guessing."
+            "\n\nKnowledge base context:\n" + context_text
+            + profile_lines
+        )
+
+        messages: list = [SystemMessage(content=system_content)]
+
+        # Inject last 10 conversation turns for continuity
+        for turn in (conversation_history or [])[-10:]:
+            role = (turn.get("role") or "").lower()
+            text = (turn.get("text") or turn.get("content") or "").strip()
+            if not text:
+                continue
+            if role == "user":
+                messages.append(HumanMessage(content=text))
+            elif role in ("assistant", "bot", "ai"):
+                messages.append(AIMessage(content=text))
+
+        messages.append(HumanMessage(content=query))
+        return messages
 
     def _generate_keyless_response(self, query: str, relevant_docs: List[Any]) -> str:
         """Return a grounded response without external LLM APIs."""
@@ -362,13 +412,17 @@ class RAGSystem:
         context: Optional[Dict[str, Any]] = None,
         relevant_docs: Optional[List[Any]] = None,
         k: Optional[int] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
-        Generate a response using RAG and Gemini.
+        Generate a response using RAG and Gemini (multi-turn).
 
         Args:
             query: User query
-            context: Additional context from the chatbot
+            context: Additional context (user profile, etc.)
+            relevant_docs: Pre-retrieved docs (fetched if None)
+            k: Retrieval top-k override
+            conversation_history: List of prior {role, text} dicts for multi-turn continuity
 
         Returns:
             Dict with response and source documents
@@ -377,40 +431,20 @@ class RAGSystem:
             if relevant_docs is None:
                 relevant_docs = self.retrieve_relevant_info(query=query, k=k)
 
-            # Build context from retrieved documents
             context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
-
-            # Create augmented prompt
-            system_prompt = """
-            You are a helpful study abroad assistant. Use the provided context to give accurate,
-            personalized advice about universities, eligibility, costs, and applications.
-
-            Context from knowledge base:
-            {context}
-
-            User query: {query}
-
-            Additional context: {additional_context}
-
-            Provide a helpful, empathetic response based on the context above.
-            """
-
-            additional_context = ""
-            if context:
-                additional_context = f"User profile: {context.get('profile_data', {})}"
-
-            full_prompt = system_prompt.format(
-                context=context_text,
-                query=query,
-                additional_context=additional_context
-            )
 
             # Generate response using selected provider; keyless mode is default.
             if self.llm is None:
                 text = self._generate_keyless_response(query=query, relevant_docs=relevant_docs)
             else:
-                response = self.llm.invoke(full_prompt)
-                text = response.content if hasattr(response, 'content') else str(response)
+                messages = self._build_chat_messages(
+                    query=query,
+                    context_text=context_text,
+                    context=context,
+                    conversation_history=conversation_history or [],
+                )
+                response = self.llm.invoke(messages)
+                text = response.content if hasattr(response, "content") else str(response)
 
             return {
                 "response": text,
@@ -427,14 +461,15 @@ class RAGSystem:
                 "query": query
             }
 
-    def answer_with_context(self, query: str, context: Optional[Dict[str, Any]] = None, k: Optional[int] = None) -> Dict[str, Any]:
+    def answer_with_context(self, query: str, context: Optional[Dict[str, Any]] = None, k: Optional[int] = None, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Retrieve supporting context and generate a grounded response.
 
         Args:
             query: User question.
-            context: Optional user/session context.
+            context: Optional user/session context (profile_data, etc.).
             k: Number of documents to retrieve.
+            conversation_history: Prior {role, text} turns for multi-turn continuity.
 
         Returns:
             Response payload with text and source snippets.
@@ -445,14 +480,20 @@ class RAGSystem:
             relevant_docs = self.retrieve_relevant_info(query=query, k=k)
             context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
 
-            if not context_text.strip():
+            if not context_text.strip() and self.llm is None:
                 return {
                     "response": "I don't have enough indexed knowledge yet. Please add data to the vector index and try again.",
                     "source_documents": [],
                     "query": query,
                 }
 
-            response = self.generate_response(query=query, context=context, relevant_docs=relevant_docs, k=k)
+            response = self.generate_response(
+                query=query,
+                context=context,
+                relevant_docs=relevant_docs,
+                k=k,
+                conversation_history=conversation_history,
+            )
             response["source_count"] = len(relevant_docs)
             return response
         except Exception as e:

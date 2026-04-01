@@ -74,13 +74,14 @@ class ChatbotAgent:
         """Attach or replace a RAG system at runtime."""
         self.rag_system = rag_system
 
-    def process_message(self, user_message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    def process_message(self, user_message: str, context: Dict[str, Any], conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Process a user message and return a response.
 
         Args:
             user_message: The user's input text.
             context: Dict with user profile, documents, universities, etc.
+            conversation_history: Prior {role, text} turns for multi-turn continuity.
 
         Returns:
             Dict with 'response' (str), 'intent' (str), 'actions' (list of next steps), 'agent_calls' (list of called agents).
@@ -128,7 +129,7 @@ class ChatbotAgent:
 
         # Use RAG for general or unresolved queries when available.
         if self._should_use_rag(intent=intent, response=response):
-            rag_response = self._handle_rag(user_message=user_message, context=context)
+            rag_response = self._handle_rag(user_message=user_message, context=context, conversation_history=conversation_history)
             if rag_response:
                 response = rag_response
                 agent_calls.append("RAGSystem")
@@ -239,6 +240,12 @@ class ChatbotAgent:
         if not self.rag_system:
             return False
 
+        # When Gemini LLM is active, use RAG for every intent so all replies
+        # are grounded in real data and consider the user profile.
+        if getattr(self.rag_system, "llm", None) is not None:
+            return True
+
+        # Keyless mode: ground only general queries or explicit fallbacks.
         if intent == "general":
             return True
 
@@ -247,13 +254,17 @@ class ChatbotAgent:
 
         return False
 
-    def _handle_rag(self, user_message: str, context: Dict[str, Any]) -> Optional[str]:
-        """Retrieve context and generate an answer using RAG + Gemini."""
+    def _handle_rag(self, user_message: str, context: Dict[str, Any], conversation_history: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+        """Retrieve context and generate an answer using RAG + Gemini (multi-turn)."""
         if not self.rag_system:
             return None
 
         try:
-            result = self.rag_system.answer_with_context(query=user_message, context=context)
+            result = self.rag_system.answer_with_context(
+                query=user_message,
+                context=context,
+                conversation_history=conversation_history,
+            )
             text = (result or {}).get("response", "").strip()
             if text:
                 return text

@@ -8,6 +8,9 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
     "python-multipart>=0.0.9",
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.1.0",
+    "alembic>=1.13.0",
     "numpy>=1.26.0",
     "opencv-python>=4.9.0",
     "pillow>=10.0.0",
@@ -21,10 +24,11 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "pypdf>=4.0.0",
     "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
 gemini = [
-    "langchain-google-genai>=0.1.0",
-    "google-generativeai>=0.3.0",
+    "langchain-google-genai>=1.0.0",
+    "google-generativeai>=0.5.0",
 ]

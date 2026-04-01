@@ -2,11 +2,71 @@
   "metadata": {
     "version": "2.1",
     "last_updated": "2026-03-11",
-    "note": "Key minimum_gpa_override (was min_grade_point_override) corrected to match EligibilityVerificationAgent"
+    "note": "Key minimum_gpa_override (was min_grade_point_override) corrected to match EligibilityVerificationAgent",
+    "english_requirements_note": "Country and program English requirements are runtime data. University acceptance_criteria still take priority unless overridden per university below."
+  },
+  "country_english_requirements": {
+    "UK": {
+      "ielts": 6.5,
+      "toefl": 90,
+      "pte": 58
+    },
+    "Singapore": {
+      "ielts": 6.0,
+      "toefl": 85,
+      "pte": 54
+    },
+    "Australia": {
+      "ielts": 6.5,
+      "toefl": 79,
+      "pte": 58
+    }
+  },
+  "program_specific_requirements": {
+    "Medicine": {
+      "english_requirements": {
+        "ielts": 7.0,
+        "toefl": 100,
+        "pte": 65
+      }
+    },
+    "Law": {
+      "english_requirements": {
+        "ielts": 7.0,
+        "toefl": 100,
+        "pte": 65
+      }
+    },
+    "Computer Science": {
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 92,
+        "pte": 58
+      }
+    },
+    "Engineering": {
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 90,
+        "pte": 58
+      }
+    },
+    "Business": {
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 90,
+        "pte": 58
+      }
+    }
   },
   "university_specific_requirements": {
     "uk_cambridge": {
       "minimum_gpa_override": 3.9,
+      "english_requirements": {
+        "ielts": 7.5,
+        "toefl": 110,
+        "pte": 75
+      },
       "special_requirements": [
         "Written assessment required: STEP (Maths), MAT (CS), PAT (Physics) depending on program",
         "Interview required after shortlisting — collegiate system, apply to a specific college"
@@ -15,6 +75,11 @@
     },
     "uk_oxford": {
       "minimum_gpa_override": 3.9,
+      "english_requirements": {
+        "ielts": 7.5,
+        "toefl": 110,
+        "pte": 75
+      },
       "special_requirements": [
         "Admissions test required: MAT (Maths/CS), PAT (Physics), TSA (PPE/Economics)",
         "Interview required after shortlisting"
@@ -30,6 +95,11 @@
     },
     "uk_imperial": {
       "minimum_gpa_override": 3.7,
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 96,
+        "pte": 62
+      },
       "special_requirements": [
         "A/L Mathematics required for Engineering and Computer Science",
         "STEM-focused — limited arts/social science offerings"
@@ -38,6 +108,11 @@
     },
     "sg_nus": {
       "minimum_gpa_override": 3.7,
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 92,
+        "pte": 62
+      },
       "special_requirements": [
         "Medicine applicants: UCAT-Asia required",
         "Law applicants: LNAT required",
@@ -48,6 +123,11 @@
     },
     "sg_ntu": {
       "minimum_gpa_override": 3.5,
+      "english_requirements": {
+        "ielts": 6.5,
+        "toefl": 90,
+        "pte": 58
+      },
       "special_requirements": [
         "Art Design Media (ADM): portfolio required"
       ],
@@ -82,7 +162,7 @@
     ]
   },
   "_reference_only": {
-    "_note": "The sections below are reference data only. The EligibilityVerificationAgent has these hardcoded. No code reads these at runtime.",
+    "_note": "The sections below are reference data only. Country/program English requirements now load at runtime, but these reference sections still remain informational only.",
     "program_requirements": {
       "Medicine": {
         "min_grade_point": 3.9,
