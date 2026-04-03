@@ -436,6 +436,7 @@ const CHAT_RESPOND_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8
 const USER_STATE_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/user/state`;
 const AUTH_REGISTER_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/register`;
 const AUTH_LOGIN_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/login`;
+const DOCUMENTS_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/documents`;
 
 function createMessage(role,text,metadata){
   return {
@@ -538,6 +539,40 @@ async function saveUserState(userId,state,token){
   });
 }
 
+async function fetchUserDocuments(token){
+  const response = await fetch(DOCUMENTS_API, {
+    headers: authHeaders(token),
+  });
+  if(!response.ok) throw new Error(`Failed to load documents (${response.status})`);
+  const payload = await response.json();
+  return Array.isArray(payload?.documents) ? payload.documents : [];
+}
+
+async function deleteUserDocument(documentId,token){
+  const response = await fetch(`${DOCUMENTS_API}/${encodeURIComponent(documentId)}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if(!response.ok){
+    const payload = await response.json().catch(()=>({}));
+    throw new Error(payload?.detail || `Delete failed (${response.status})`);
+  }
+}
+
+async function openUserDocument(documentId,token){
+  const response = await fetch(`${DOCUMENTS_API}/${encodeURIComponent(documentId)}/content`, {
+    headers: authHeaders(token),
+  });
+  if(!response.ok){
+    const payload = await response.json().catch(()=>({}));
+    throw new Error(payload?.detail || `Open failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  window.open(blobUrl, "_blank", "noopener,noreferrer");
+  setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
+}
+
 async function registerUser({name,email,password}){
   const response = await fetch(AUTH_REGISTER_API, {
     method: "POST",
@@ -560,12 +595,20 @@ async function loginUser({email,password}){
   return payload;
 }
 
-async function fetchBackendChatReply(message){
-  const response = await fetch(CHAT_RESPOND_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_message: message, context: {} }),
-  });
+async function fetchBackendChatReply(message, token, timeoutMs = 12000){
+  const controller = new AbortController();
+  const timeoutId = setTimeout(()=>controller.abort(), timeoutMs);
+  let response;
+  try{
+    response = await fetch(CHAT_RESPOND_API, {
+      method: "POST",
+      headers: authHeaders(token, true),
+      signal: controller.signal,
+      body: JSON.stringify({ user_message: message, context: {} }),
+    });
+  }finally{
+    clearTimeout(timeoutId);
+  }
   if(!response.ok) throw new Error(`Chat backend failed (${response.status})`);
   const payload = await response.json();
   return {
@@ -678,14 +721,18 @@ function ChatBot({user}){
     let replyIntent = undefined;
     let replyActions = undefined;
     try{
-      const backendReply = await fetchBackendChatReply(msg);
-      replyText = backendReply.text;
+      const backendReply = await fetchBackendChatReply(msg, user?.token);
+      replyText = (backendReply.text || "").trim();
       replySource = backendReply.source || "backend_agent";
       replyIntent = backendReply.intent;
       replyActions = backendReply.actions;
     }catch{
       replyText = getBotReply(msg);
       await new Promise(r=>setTimeout(r,550+Math.random()*450));
+    }
+    if(!replyText){
+      replyText = getBotReply(msg);
+      replySource = "frontend_fallback";
     }
     setTyping(false);
     const botMessage = createMessage("bot",replyText,{
@@ -788,7 +835,7 @@ const UPLOAD_DOC_TYPE_OPTIONS = [
   ...Object.keys(API_DOC_TYPE_MAP).map((label) => ({ value: API_DOC_TYPE_MAP[label], label })),
 ];
 
-async function extractDocumentWithAI(file, docType, onProgress) {
+async function extractDocumentWithAI(file, docType, onProgress, token) {
   onProgress("Reading file...", 10);
   const formData = new FormData();
   formData.append("file", file, file.name || "document");
@@ -800,7 +847,8 @@ async function extractDocumentWithAI(file, docType, onProgress) {
   onProgress("Classifying document with ML model...", 60);
   let response;
   try {
-    response = await fetch(`${OCR_API}/ocr`, { method: "POST", body: formData });
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    response = await fetch(`${OCR_API}/ocr`, { method: "POST", headers, body: formData });
   } catch (netErr) {
     throw new Error("Cannot reach OCR server at " + OCR_API + ". Set VITE_API_URL for Colab/ngrok or start the API locally on port 8000.");
   }
@@ -1332,7 +1380,7 @@ function EngNextBanner({onSelectType}) {
   );
 }
 
-function DocumentStep({profile,docData,onNext,onBack}){
+function DocumentStep({profile,docData,onNext,onBack,user}){
   const qual=profile.current_qualification;
   const defaultType=qual==="GCE A/L"?"A-Level Results":qual==="Bachelor's Degree"?"Bachelor's Degree":qual==="Master's Degree"?"Master's Degree":qual==="Diploma"?"Diploma":"A-Level Results";
 
@@ -1351,6 +1399,10 @@ function DocumentStep({profile,docData,onNext,onBack}){
   const [aiError,setAiError]=useState("");
   const [progress,setProgress]=useState("");
   const [eng,setEng]=useState(docData.english_proficiency||{});
+  const [serverDocs,setServerDocs]=useState([]);
+  const [docsLoading,setDocsLoading]=useState(false);
+  const [docsError,setDocsError]=useState("");
+  const [docsBusyId,setDocsBusyId]=useState("");
 
   // A/L never needs inline english section (it's a separate doc type)
   const needsEng = ["Bachelor's Degree","Master's Degree","Diploma"].includes(selectedType);
@@ -1363,6 +1415,22 @@ function DocumentStep({profile,docData,onNext,onBack}){
   const revokePreview = (item) => {
     if(item?.preview) URL.revokeObjectURL(item.preview);
   };
+
+  const refreshServerDocs = useCallback(async()=>{
+    if(!user?.token) return;
+    setDocsLoading(true);
+    setDocsError("");
+    try{
+      const docs = await fetchUserDocuments(user.token);
+      setServerDocs(docs);
+    }catch(e){
+      setDocsError(e?.message || "Unable to load documents");
+    }finally{
+      setDocsLoading(false);
+    }
+  },[user?.token]);
+
+  useEffect(()=>{refreshServerDocs();},[refreshServerDocs]);
 
   const switchType = (t) => {
     setSelectedType(t);
@@ -1422,7 +1490,7 @@ function DocumentStep({profile,docData,onNext,onBack}){
           if(pct>=45){setStage(2,"done");setStage(3,"running");}
           if(pct>=60){setStage(3,"done");setStage(4,"running");}
           if(pct>=75){setStage(4,"done");setStage(5,"running");}
-        });
+        },user?.token);
         lastResult=result;
         uploadedResults[result.data.document_type]=result;
       }
@@ -1438,6 +1506,7 @@ function DocumentStep({profile,docData,onNext,onBack}){
         current.forEach(revokePreview);
         return [];
       });
+      refreshServerDocs();
     }catch(e){
       setStage(2,"error");setStage(3,"error");setStage(4,"error");
       setAiError(e.message);
@@ -1473,6 +1542,36 @@ function DocumentStep({profile,docData,onNext,onBack}){
         <div className="tabs">
           <button className={`tab${tab==="upload"?" active":""}`} onClick={()=>setTab("upload")}>🔍 OCR Upload & Extract</button>
           <button className={`tab${tab==="manual"?" active":""}`} onClick={()=>setTab("manual")}>✏️ Manual Entry</button>
+        </div>
+
+        <div className="slabel">My Stored Documents</div>
+        {docsError&&<Alert type="warn">{docsError}</Alert>}
+        <div style={{display:"grid",gap:".5rem",marginBottom:"1rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:".75rem",flexWrap:"wrap"}}>
+            <span style={{fontFamily:"var(--mono)",fontSize:".7rem",color:"var(--text3)"}}>{docsLoading?"Loading...":`${serverDocs.length} file(s) saved for this user`}</span>
+            <button className="btn btn-ghost btn-sm" onClick={refreshServerDocs} disabled={docsLoading}>↻ Refresh</button>
+          </div>
+          {!serverDocs.length && !docsLoading && (
+            <div style={{padding:".75rem .9rem",border:"1px dashed var(--border2)",borderRadius:"var(--r)",fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>
+              No stored documents yet. Upload files while logged in to save them.
+            </div>
+          )}
+          {serverDocs.slice(0,8).map((doc)=>{
+            const docId = doc.document_id || "";
+            const busy = docsBusyId===docId;
+            return (
+              <div key={docId} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:".6rem",alignItems:"center",padding:".6rem .75rem",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:"var(--r)"}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:".84rem",fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.filename || "document"}</div>
+                  <div style={{fontFamily:"var(--mono)",fontSize:".62rem",color:"var(--text3)",marginTop:".2rem"}}>{doc.content_type || "file"} · {Math.round((doc.file_size||0)/1024)} KB</div>
+                </div>
+                <div style={{display:"flex",gap:".45rem",flexWrap:"wrap",justifyContent:"flex-end"}}>
+                  <button className="btn btn-ghost btn-sm" disabled={busy} onClick={async()=>{try{setDocsBusyId(docId);await openUserDocument(docId,user?.token);}catch(e){setDocsError(e?.message||"Open failed");}finally{setDocsBusyId("");}}}>Open</button>
+                  <button className="btn btn-danger btn-sm" disabled={busy} onClick={async()=>{try{setDocsBusyId(docId);setDocsError("");await deleteUserDocument(docId,user?.token);setServerDocs((current)=>current.filter((d)=>d.document_id!==docId));}catch(e){setDocsError(e?.message||"Delete failed");}finally{setDocsBusyId("");}}}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         {/* v6: 9-type doc grid with upload-done indicators */}
@@ -1832,7 +1931,7 @@ export default function App(){
           </div>
           {step>1&&<UserCard profile={profile} user={user} />}
           {step===1&&<ProfileStep data={profile} onNext={d=>{setProfile(d);setStep(2);}} />}
-          {step===2&&<DocumentStep profile={profile} docData={docData} onNext={handleDoc} onBack={()=>setStep(1)} />}
+          {step===2&&<DocumentStep profile={profile} docData={docData} onNext={handleDoc} onBack={()=>setStep(1)} user={user} />}
           {step===3&&elig&&<EligibilityStep elig={elig} docData={docData} profile={profile} onNext={()=>setStep(4)} onBack={()=>setStep(2)} />}
           {step===3&&!elig&&<div className="panel"><Alert type="error">Eligibility data missing. Go back and re-submit your document.</Alert><div className="btn-row btn-row-end" style={{marginTop:"1rem"}}><button className="btn btn-ghost" onClick={()=>setStep(2)}>← Back to Documents</button></div></div>}
           {step===4&&elig&&<UniversitiesStep profile={profile} elig={elig} onBack={()=>setStep(3)} onReset={reset} />}

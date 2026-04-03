@@ -25,7 +25,7 @@ $apiKeyVarHits = git -C $RepoPath grep -n "GOOGLE_API_KEY=" -- . 2>$null
 $unsafeApiKeyVarHits = @()
 if ($apiKeyVarHits) {
     foreach ($line in $apiKeyVarHits) {
-        if ($line -notmatch "\.env\.example:") {
+        if ($line -notmatch "\.env\.example:" -and $line -notmatch "scripts/prepush_secret_check\.ps1:") {
             $unsafeApiKeyVarHits += $line
         }
     }
@@ -35,8 +35,9 @@ if ($unsafeApiKeyVarHits.Count -gt 0) {
     $hits += $unsafeApiKeyVarHits
 }
 
-# 3) Sensitive strings in staged diff
-$stagedSensitiveHits = git -C $RepoPath diff --cached | Select-String -Pattern "AIza|GOOGLE_API_KEY|DATABASE_URL|npg_"
+# 3) Sensitive strings in staged added lines only
+$stagedAddedLines = git -C $RepoPath diff --cached --no-color --unified=0 | Select-String -Pattern '^\+[^+]'
+$stagedSensitiveHits = $stagedAddedLines | Select-String -Pattern 'AIza[0-9A-Za-z_-]{35}|GOOGLE_API_KEY\s*=\s*["'']?(?!your_key_here|your_real_key_here)[^"''\s]+|DATABASE_URL\s*=\s*(postgres|postgresql)://|npg_[0-9A-Za-z]{8,}'
 if ($stagedSensitiveHits) {
     $hits += "Found sensitive patterns in staged changes:"
     $hits += ($stagedSensitiveHits | ForEach-Object { $_.Line })

@@ -259,6 +259,93 @@ PowerShell example:
 $env:RUNTIME_PROFILE = "LITE"
 ```
 
+## Neon PostgreSQL Integration
+
+Application-level persistence (auth users, chat history, and user state) supports Neon PostgreSQL.
+
+Tables are auto-created on backend startup when a DB URL is configured:
+
+- users
+- chat_history
+- user_state
+- document_uploads
+- user_profile
+
+Supported env vars (either one):
+
+- DATABASE_URL
+- NEON_DATABASE_URL
+
+Notes:
+
+- If both are set, DATABASE_URL is used.
+- If no DB URL is set, the backend falls back to local JSON files.
+- sslmode=require is automatically enforced for PostgreSQL URLs.
+- Set `DB_STRICT_MODE=true` to disable JSON fallback and force real DB only.
+
+PowerShell quick start:
+
+```powershell
+$env:NEON_DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?channel_binding=require"
+$env:AUTH_SECRET = "replace-with-a-strong-secret"
+$env:DB_STRICT_MODE = "true"
+uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Verify backend DB mode:
+
+1. Open /health endpoint.
+2. Confirm db is postgresql, db_url_set is true, and db_strict_mode is true.
+
+### Move Existing JSON Data to Neon (then remove JSON)
+
+Use the migration script before switching to strict mode if you already have local JSON data:
+
+```powershell
+$env:DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?sslmode=require"
+python scripts/migrate_json_to_db.py --cleanup-json
+```
+
+What it migrates:
+
+- users/users.json -> users
+- chat_history/*.json -> chat_history
+- user_state/*.json -> user_state
+
+The script creates a backup snapshot in `multiagent/data/backups` before cleanup.
+
+## Logged-In User Data Storage (Current Flow)
+
+When a user logs in, the app now persists all key data per user account:
+
+- Personal + education + financial profile state
+  - Saved via `/user/state`
+  - Frontend stores `{step, profile, docData, elig}` continuously while progressing through the wizard
+  - Also upserted into `user_profile` for SQL-friendly querying/reporting
+
+- Chat messages and agent metadata
+  - Saved via `/chat/history`
+
+- Uploaded files (images and PDFs)
+  - OCR uploads (`/ocr`) now auto-store files when Authorization token is present
+  - Manual file-only upload also available via `/documents/upload`
+  - List files: `/documents`
+  - Open/Download file: `/documents/{document_id}/content`
+  - Delete a file: `/documents/{document_id}`
+
+Storage behavior:
+
+- Neon connected: metadata goes to PostgreSQL tables (including `document_uploads`), files are stored on disk under `multiagent/data/documents/<user>/`
+- Neon not connected: metadata falls back to JSON files, files are still stored under `multiagent/data/documents/<user>/`
+
+How to use with current frontend:
+
+1. Start backend with `NEON_DATABASE_URL` (or `DATABASE_URL`) and `AUTH_SECRET`.
+2. Register and log in from the app.
+3. Fill profile (personal/education/financial) and upload docs.
+4. Data is persisted automatically for that user.
+5. In the Documents step, use the "My Stored Documents" panel to refresh, open, and delete saved files.
+
 Optional overrides:
 
 ```powershell

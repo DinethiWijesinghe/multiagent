@@ -211,7 +211,7 @@ def assess_eligibility_dynamic(profile_data: dict, document_data: dict) -> dict:
             base["borderline_feasible_universities"] = [u.to_dict() for u in fin_report.borderline_universities]
             base["infeasible_universities"] = [u.to_dict() for u in fin_report.infeasible_universities]
             base["financial_recommendations"] = fin_report.global_recommendations
-        except Exception as e:
+        except Exception as e:     
             base.setdefault("notes", []).append(f"Financial assessment unavailable: {e}")
 
         base["program_alignment"]     = report.program_alignment
