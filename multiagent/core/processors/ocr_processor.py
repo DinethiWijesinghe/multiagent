@@ -350,50 +350,12 @@ def build_corpus():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RULE-BASED FALLBACK  (keyword scoring)
-# Used when ML confidence < CONFIDENCE_THRESHOLD
-# ─────────────────────────────────────────────────────────────────────────────
-
-_KEYWORDS = {
-    "alevel":    ["advanced level","al ","gce","z score","combined maths","stream",
-                  "biology","physics","chemistry","department of examinations",
-                  "candidate index","district rank","island rank","aggregate"],
-    "bachelor":  ["bachelor","bsc","beng","bba","llb","mbbs","undergraduate",
-                  "first class","second class","honours","convocation","faculty of"],
-    "master":    ["master","msc","mba","mphil","postgraduate","post graduate",
-                  "dissertation","thesis","distinction merit"],
-    "diploma":   ["diploma","nibm","hnd","nvq","naita","vta",
-                  "technical college","institute of technology","vocational"],
-    "ielts":     ["ielts","band score","british council","idp","test report form",
-                  "listening reading writing speaking","overall band"],
-    "toefl":     ["toefl","ets","educational testing service","ibt",
-                  "internet based","toefl score"],
-    "pte":       ["pte","pearson","communicative skills","enabling skills",
-                  "oral fluency","pearson test of english"],
-    "passport":  ["passport","nationality","lka","date of expiry","date of issue",
-                  "immigration","emigration","mrz","p<<lka","biometric","travel document"],
-    "financial": ["bank statement","account number","closing balance","opening balance",
-                  "transaction","debit","credit","bank of ceylon","peoples bank",
-                  "commercial bank","hatton","sampath","fixed deposit","certified"],
-}
-
-
-def _rule_classify(text: str) -> tuple[str, float]:
-    t = text.lower()
-    scores = {lbl: sum(1 for kw in kws if kw in t) / len(kws)
-              for lbl, kws in _KEYWORDS.items()}
-    best = max(scores, key=scores.get)
-    conf = min(scores[best] * 3, 1.0)
-    return (best, conf) if conf > 0 else ("unknown", 0.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # ML MODEL — TF-IDF (bigrams) + Multinomial Naive Bayes
 # Trains in < 1 second, uses ~5 MB RAM for the model
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODEL_PATH          = "sl_doc_classifier_easyocr.pkl"
-CONFIDENCE_THRESHOLD = 0.40   # below this → rule-based fallback kicks in
+CONFIDENCE_THRESHOLD = 0.40   # below this → ML top-2 comparison kicks in
 
 
 def train_model(verbose: bool = True) -> Pipeline:
@@ -752,11 +714,12 @@ class UniAssistProcessor:
         ml_label  = self.ml_model.classes_[ml_best]
         ml_conf   = float(ml_proba[ml_best])
 
-        # 4. Fallback if ML is uncertain
+        # 4. ML-only classify: use top-2 when top-1 confidence is low
         if ml_conf < CONFIDENCE_THRESHOLD:
-            rb_label, rb_conf = _rule_classify(text)
-            if rb_conf > ml_conf:
-                doc_type, final_conf, method = rb_label, rb_conf, "rule_based"
+            sorted_idx  = np.argsort(ml_proba)[::-1]
+            second_conf = float(ml_proba[sorted_idx[1]])
+            if second_conf > ml_conf * 0.9:
+                doc_type, final_conf, method = self.ml_model.classes_[sorted_idx[1]], second_conf, "ml_low_conf_top2"
             else:
                 doc_type, final_conf, method = ml_label, ml_conf, "ml_low_conf"
         else:
@@ -784,9 +747,16 @@ class UniAssistProcessor:
         best     = int(np.argmax(ml_proba))
         label    = self.ml_model.classes_[best]
         conf     = float(ml_proba[best])
-        method   = "ml" if conf >= CONFIDENCE_THRESHOLD else "rule_based"
-        if method == "rule_based":
-            label, conf = _rule_classify(text)
+        # ML-only: top-2 comparison when confidence is low
+        if conf < CONFIDENCE_THRESHOLD:
+            sorted_idx  = np.argsort(ml_proba)[::-1]
+            second_conf = float(ml_proba[sorted_idx[1]])
+            if second_conf > conf * 0.9:
+                label = self.ml_model.classes_[sorted_idx[1]]
+                conf  = second_conf
+            method = "ml_low_conf_top2" if second_conf > conf * 0.9 else "ml_low_conf"
+        else:
+            method = "ml"
         return {
             "doc_type":   label,
             "confidence": round(conf, 3),

@@ -14,7 +14,7 @@ WHAT CHANGED FROM YOUR ORIGINAL document_processing_agent.py:
   ✓ KEPT     All validation logic in dataclasses
   ✓ KEPT     DocumentProcessingAgent.manual_entry() method
   ✓ KEPT     Same output structure (OCR and manual entry produce identical dicts)
-  ✓ ADDED    ML model fallback to rule-based when confidence < 0.40
+  ✓ ADDED    ML-only classification: top-2 comparison when confidence < 0.40
   ✓ ADDED    Pickle model load (shares model with api_server.py)
 
 Install:
@@ -119,36 +119,7 @@ def _get_ml_model():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RULE-BASED FALLBACK  (used when ML confidence < threshold)
-# ─────────────────────────────────────────────────────────────────────────────
-
-_KW = {
-    "alevel":    ["advanced level","gce","z score","combined maths","stream",
-                  "biology","physics","chemistry","department of examinations",
-                  "district rank","island rank","aggregate"],
-    "bachelor":  ["bachelor","bsc","beng","bba","llb","mbbs","undergraduate",
-                  "first class","second class","honours","convocation"],
-    "master":    ["master","msc","mba","mphil","postgraduate","dissertation","thesis"],
-    "diploma":   ["diploma","nibm","hnd","nvq","naita","vta","technical college","vocational"],
-    "ielts":     ["ielts","band score","british council","idp","test report form","overall band"],
-    "toefl":     ["toefl","ets","educational testing service","ibt","internet based"],
-    "pte":       ["pte","pearson","communicative skills","enabling skills","oral fluency"],
-    "passport":  ["passport","nationality","lka","date of expiry","immigration",
-                  "emigration","mrz","biometric","travel document"],
-    "financial": ["bank statement","account number","closing balance","opening balance",
-                  "debit","credit","bank of ceylon","peoples bank","hatton","sampath","certified"],
-}
-
-def _rule_classify(text: str) -> tuple[str, float]:
-    t = text.lower()
-    scores = {l: sum(1 for kw in kws if kw in t) / len(kws) for l, kws in _KW.items()}
-    best = max(scores, key=scores.get)
-    conf = min(scores[best] * 3, 1.0)
-    return (best, conf) if conf > 0 else ("unknown", 0.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ML + RULE COMBINED CLASSIFY
+# ML-ONLY CLASSIFY
 # ─────────────────────────────────────────────────────────────────────────────
 
 CONFIDENCE_THRESHOLD = 0.40
@@ -156,7 +127,7 @@ CONFIDENCE_THRESHOLD = 0.40
 def classify_document(text: str) -> tuple[str, float, str]:
     """
     Returns (doc_type, confidence, method).
-    method is 'ml', 'ml_low_conf', or 'rule_based'.
+    Uses ML only: top-1 prediction, or top-2 when top-1 confidence is low.
     """
     model   = _get_ml_model()
     proba   = model.predict_proba([text])[0]
@@ -167,9 +138,11 @@ def classify_document(text: str) -> tuple[str, float, str]:
     if ml_conf >= CONFIDENCE_THRESHOLD:
         return ml_lbl, ml_conf, "ml"
 
-    rb_lbl, rb_conf = _rule_classify(text)
-    if rb_conf > ml_conf:
-        return rb_lbl, rb_conf, "rule_based"
+    # Low confidence: compare top-1 vs top-2 ML probabilities
+    sorted_idx   = np.argsort(proba)[::-1]
+    second_conf  = float(proba[sorted_idx[1]])
+    if second_conf > ml_conf * 0.9:
+        return model.classes_[sorted_idx[1]], second_conf, "ml_low_conf_top2"
     return ml_lbl, ml_conf, "ml_low_conf"
 
 
@@ -543,7 +516,7 @@ class DocumentProcessingAgent:
 
         return {
             "doc_type":              doc_type,
-            "classification_method": method,        # ← NEW: tells you ml vs rule_based
+            "classification_method": method,        # ml / ml_low_conf / ml_low_conf_top2
             "ml_confidence":         round(ml_conf, 3),
             "ocr_confidence":        round(ocr_conf, 3),
             "data":                  asdict(result_obj) if hasattr(result_obj, "__dataclass_fields__") else result_obj,

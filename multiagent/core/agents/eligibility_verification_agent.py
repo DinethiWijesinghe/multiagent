@@ -21,7 +21,55 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Optional
 
+from sklearn.ensemble import RandomForestClassifier as _RFC
+from sklearn.svm import LinearSVC as _SVC
+from sklearn.feature_extraction.text import TfidfVectorizer as _TfIdf
+
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────
+# MODULE-LEVEL ML MODELS
+# ─────────────────────────────────────────────
+
+# — Tier classifier: GPA → EligibilityTier —
+_TIER_GPAS   = [4.0,4.0, 3.95,3.9,3.85, 3.8,3.75,3.7,  3.65,3.6,3.55,3.5,3.45,3.4,3.35,3.3,
+                3.25,3.2,3.15,3.1,3.05,3.0,  2.95,2.9,2.8,2.7,2.5,2.0,1.5]
+_TIER_LABELS = ["top","top","top","top","top", "top","top","top",
+                "good","good","good","good","good","good","good","good",
+                "average","average","average","average","average","average",
+                "foundation","foundation","foundation","foundation","foundation","foundation","foundation"]
+_TIER_CLF = _RFC(n_estimators=50, random_state=42)
+_TIER_CLF.fit([[g] for g in _TIER_GPAS], _TIER_LABELS)
+
+# — Match-label classifier: GPA diff → tier match label —
+_MATCH_DIFFS  = [0.6,0.5,0.4,0.35,0.3, 0.25,0.2,0.15,0.1,0.05,0.02,0.0,
+                 -0.05,-0.1,-0.15,-0.2, -0.25,-0.3,-0.5]
+_MATCH_LABELS = ["strong_match","strong_match","strong_match","strong_match","strong_match",
+                 "meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum",
+                 "borderline","borderline","borderline","borderline",
+                 "below_minimum","below_minimum","below_minimum"]
+_MATCH_CLF = _RFC(n_estimators=50, random_state=42)
+_MATCH_CLF.fit([[d] for d in _MATCH_DIFFS], _MATCH_LABELS)
+
+# — Program-stream alignment classifier: TF-IDF (stream + program) → compatible(1)/not(0) —
+_ALIGNMENT_DATA = {
+    "Physical Science": ["Engineering", "Computer Science", "Science", "Medicine", "IT"],
+    "Bio Science":      ["Medicine", "Science", "Pharmacy", "Biology", "Engineering"],
+    "Commerce":         ["Business", "Economics", "Accountancy", "Law", "IT"],
+    "Arts":             ["Arts", "Law", "Social Science", "Education", "Business"],
+    "Technology":       ["Engineering", "IT", "Computer Science", "Design"],
+}
+_ALL_PROGRAMS = sorted({p for ps in _ALIGNMENT_DATA.values() for p in ps})
+_align_X, _align_y = [], []
+for _stream, _compat in _ALIGNMENT_DATA.items():
+    for _prog in _ALL_PROGRAMS:
+        _align_X.append(f"{_stream} {_prog}")
+        _align_y.append(1 if _prog in _compat else 0)
+_ALIGN_VEC = _TfIdf(ngram_range=(1, 2))
+_ALIGN_X_vec = _ALIGN_VEC.fit_transform(_align_X)
+_ALIGN_CLF = _SVC(C=1.0, max_iter=2000, dual=True)
+_ALIGN_CLF.fit(_ALIGN_X_vec, _align_y)
 
 
 # ─────────────────────────────────────────────
@@ -121,14 +169,6 @@ class EligibilityVerificationAgent:
         "Arts":             2.8,
         "IT":               2.8,
         "Education":        2.8,
-    }
-
-    STREAM_PROGRAMS = {
-        "Physical Science": ["Engineering", "Computer Science", "Science", "Medicine", "IT"],
-        "Bio Science":      ["Medicine", "Science", "Pharmacy", "Biology", "Engineering"],
-        "Commerce":         ["Business", "Economics", "Accountancy", "Law", "IT"],
-        "Arts":             ["Arts", "Law", "Social Science", "Education", "Business"],
-        "Technology":       ["Engineering", "IT", "Computer Science", "Design"],
     }
 
     ENGLISH_REQUIREMENTS = {
@@ -352,10 +392,9 @@ class EligibilityVerificationAgent:
         return 0.0
 
     def _compute_tier(self, gpa: float) -> EligibilityTier:
-        if gpa >= 3.7: return EligibilityTier.TOP
-        if gpa >= 3.3: return EligibilityTier.GOOD
-        if gpa >= 3.0: return EligibilityTier.AVERAGE
-        return EligibilityTier.FOUNDATION
+        """Predict eligibility tier using Random Forest trained on GPA samples."""
+        tier_str = _TIER_CLF.predict([[gpa]])[0]
+        return EligibilityTier(tier_str)
 
     def _check_english(self, document_data: dict, country: str, program: str = "") -> dict:
         eng  = document_data.get("english_proficiency", {}) or {}
@@ -416,22 +455,23 @@ class EligibilityVerificationAgent:
         return req
 
     def _check_program_alignment(self, stream: str, program: str) -> str:
+        """Predict stream-program compatibility using LinearSVC + TF-IDF model."""
         if not stream or not program:
             return "No stream/program information provided."
-        compatible = self.STREAM_PROGRAMS.get(stream, [])
-        if program in compatible:
-            return f"✅ {stream} stream aligns well with {program}."
+        text = f"{stream} {program}"
+        X = _ALIGN_VEC.transform([text])
+        pred = int(_ALIGN_CLF.predict(X)[0])
+        if pred == 1:
+            return f"\u2705 {stream} stream aligns well with {program}."
         return (
-            f"⚠️ {stream} stream may not directly align with {program}. "
-            f"Compatible: {', '.join(compatible[:4])}. Contact admissions for assessment."
+            f"\u26a0\ufe0f {stream} stream may not directly align with {program}. "
+            f"Contact admissions for program alignment assessment."
         )
 
     def _tier_match_label(self, gpa: float, uni_min: float) -> str:
+        """Predict match label using Random Forest trained on GPA-difference samples."""
         diff = gpa - uni_min
-        if diff >= 0.3:  return "strong_match"
-        if diff >= 0.0:  return "meets_minimum"
-        if diff >= -0.2: return "borderline"
-        return "below_minimum"
+        return _MATCH_CLF.predict([[diff]])[0]
 
     def _global_recommendations(self, gpa, english, stream, program, doc_type) -> list:
         recs = []
@@ -441,9 +481,14 @@ class EligibilityVerificationAgent:
         if not english.get("overall_pass"):
             recs += self._improvement_library.get("no_english_proficiency",
                 ["Take IELTS Academic (min 6.5) or TOEFL iBT (min 79)"])
-        if stream and program and program not in self.STREAM_PROGRAMS.get(stream, []):
-            recs += self._improvement_library.get("wrong_stream",
-                ["Foundation programmes can bridge stream gaps"])
+        # Use ML alignment model instead of a static lookup
+        if stream and program:
+            text = f"{stream} {program}"
+            X = _ALIGN_VEC.transform([text])
+            aligned = int(_ALIGN_CLF.predict(X)[0]) == 1
+            if not aligned:
+                recs += self._improvement_library.get("wrong_stream",
+                    ["Foundation programmes can bridge stream gaps"])
         if 3.0 <= gpa < 3.4:
             recs += self._improvement_library.get("gpa_borderline",
                 ["Write a strong personal statement", "Highlight extracurricular activities"])

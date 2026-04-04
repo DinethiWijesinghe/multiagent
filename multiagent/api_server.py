@@ -459,40 +459,6 @@ def _load_model():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RULE-BASED FALLBACK
-# ─────────────────────────────────────────────────────────────────────────────
-
-_KW = {
-    "alevel":    ["advanced level", "gce", "z score", "combined maths", "stream",
-                  "biology", "physics", "chemistry", "department of examinations",
-                  "district rank", "island rank", "aggregate", "certificate of qualification",
-                  "commissioner general"],
-    "bachelor":  ["bachelor", "bsc", "beng", "bba", "llb", "mbbs", "undergraduate",
-                  "first class", "second class", "honours", "convocation"],
-    "master":    ["master", "msc", "mba", "mphil", "postgraduate", "dissertation", "thesis"],
-    "diploma":   ["diploma", "nibm", "hnd", "nvq", "naita", "vta",
-                  "technical college", "vocational"],
-    "ielts":     ["ielts", "band score", "british council", "idp",
-                  "test report form", "overall band"],
-    "toefl":     ["toefl", "ets", "educational testing service", "ibt", "internet based"],
-    "pte":       ["pte", "pearson", "communicative skills", "enabling skills", "oral fluency"],
-    "passport":  ["passport", "nationality", "lka", "date of expiry", "immigration",
-                  "emigration", "mrz", "biometric", "travel document"],
-    "financial": ["bank statement", "account number", "closing balance", "opening balance",
-                  "debit", "credit", "bank of ceylon", "peoples bank", "hatton",
-                  "sampath", "certified"],
-}
-
-
-def _rule_classify(text):
-    t = text.lower()
-    scores = {l: sum(1 for kw in kws if kw in t) / len(kws) for l, kws in _KW.items()}
-    best = max(scores, key=scores.get)
-    conf = min(scores[best] * 3, 1.0)
-    return (best, conf) if conf > 0 else ("unknown", 0.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # OCR ERROR CORRECTOR
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1023,16 +989,20 @@ async def ocr_endpoint(
                 "doc_type": "unknown",
             }
 
-        # ML classification
+        # ML classification — always use the trained model
         proba    = _ml.predict_proba([text])[0]
         best_idx = int(np.argmax(proba))
         ml_label = _ml.classes_[best_idx]
         ml_conf  = float(proba[best_idx])
 
+        # When top-1 confidence is low, check top-2 and pick the one
+        # with higher probability (still fully ML — no rule keywords).
         if ml_conf < CONFIDENCE_THRESHOLD:
-            rb_label, rb_conf = _rule_classify(text)
-            if rb_conf > ml_conf:
-                detected, final_conf, method = rb_label, rb_conf, "rule_based"
+            sorted_idx = np.argsort(proba)[::-1]
+            second_idx = int(sorted_idx[1])
+            second_conf = float(proba[second_idx])
+            if second_conf > ml_conf * 0.9:
+                detected, final_conf, method = _ml.classes_[second_idx], second_conf, "ml_low_conf_top2"
             else:
                 detected, final_conf, method = ml_label, ml_conf, "ml_low_conf"
         else:
@@ -1108,7 +1078,13 @@ if __name__ == "__main__":
         proba = _ml.predict_proba([text])[0]
         best  = _ml.classes_[proba.argmax()]
         conf  = proba.max()
-        detected = best if conf >= CONFIDENCE_THRESHOLD else _rule_classify(text)[0]
+        # ML-only: use top-2 when low confidence
+        if conf < CONFIDENCE_THRESHOLD:
+            sorted_idx = proba.argsort()[::-1]
+            second_conf = proba[sorted_idx[1]]
+            detected = _ml.classes_[sorted_idx[1]] if second_conf > conf * 0.9 else best
+        else:
+            detected = best
         fields = _extract(detected, text)
         print(json.dumps({
             "doc_type":           detected,

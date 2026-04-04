@@ -49,7 +49,7 @@ export function SearchFilter({
       <div className="quick-search">
         <input
           type="text"
-          placeholder="🔍 Quick search by name, email..."
+          placeholder="🔍 yesQuick search by name, email..."
           value={filters.searchTerm}
           onChange={(e) => handleFilterChange('searchTerm', e.target.value)}
           className="search-input"

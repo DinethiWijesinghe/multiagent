@@ -6,36 +6,36 @@ const STYLES = `
 
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
-  --bg:#0e0e14;
-  --bg2:#13131c;
-  --bg3:#1a1a26;
-  --surface:#1e1e2e;
-  --surface2:#252538;
-  --border:#ffffff0f;
-  --border2:#ffffff18;
-  --text:#f0eeff;
-  --text2:#a09bcc;
-  --text3:#6b6690;
-  --accent:#7c6ef7;
-  --accent2:#9d8ff8;
-  --accent-dim:#7c6ef715;
-  --accent-glow:rgba(124,110,247,0.25);
-  --green:#3ecf8e;
-  --green-dim:#3ecf8e12;
-  --amber:#f5a623;
-  --amber-dim:#f5a62312;
-  --red:#f56565;
-  --red-dim:#f5656512;
-  --teal:#22d3ee;
-  --teal-dim:#22d3ee12;
-  --pink:#e879f9;
-  --pink-dim:#e879f912;
+  --bg:#ffffff;
+  --bg2:#f8f9fc;
+  --bg3:#f2f4f8;
+  --surface:#ffffff;
+  --surface2:#eef1f6;
+  --border:#d8deea;
+  --border2:#c8d1e0;
+  --text:#1a2233;
+  --text2:#3d4a63;
+  --text3:#667691;
+  --accent:#4f7cff;
+  --accent2:#6b8fff;
+  --accent-dim:#4f7cff14;
+  --accent-glow:rgba(79,124,255,0.2);
+  --green:#2da66f;
+  --green-dim:#2da66f12;
+  --amber:#c58a2a;
+  --amber-dim:#c58a2a12;
+  --red:#d16a6a;
+  --red-dim:#d16a6a12;
+  --teal:#2c9fb0;
+  --teal-dim:#2c9fb012;
+  --pink:#c97cb6;
+  --pink-dim:#c97cb612;
   --r:8px;--r2:14px;--r3:20px;
   --mono:'DM Mono',monospace;
   --sans:'Syne',sans-serif;
   --serif:'Instrument Serif',serif;
-  --shadow:0 4px 24px rgba(0,0,0,0.4);
-  --shadow2:0 8px 40px rgba(0,0,0,0.5);
+  --shadow:0 8px 24px rgba(15,30,60,0.08);
+  --shadow2:0 14px 38px rgba(15,30,60,0.12);
 }
 html,body,#root{height:100%;background:var(--bg);}
 body{font-family:var(--sans);font-size:14px;line-height:1.6;color:var(--text);-webkit-font-smoothing:antialiased;}
@@ -45,7 +45,7 @@ body{font-family:var(--sans);font-size:14px;line-height:1.6;color:var(--text);-w
 
 /* LAYOUT */
 .app{min-height:100vh;display:flex;flex-direction:column;}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:.875rem 2rem;border-bottom:1px solid var(--border);background:rgba(14,14,20,0.8);backdrop-filter:blur(20px);position:sticky;top:0;z-index:200;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:.875rem 2rem;border-bottom:1px solid var(--border);background:rgba(255,255,255,0.88);backdrop-filter:blur(20px);position:sticky;top:0;z-index:200;}
 .logo{display:flex;align-items:center;gap:.65rem;font-family:var(--sans);font-size:1.1rem;font-weight:800;letter-spacing:-.5px;color:var(--text);}
 .logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--pink));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;box-shadow:0 0 20px var(--accent-glow);}
 .logo-sub{font-family:var(--mono);font-size:.65rem;color:var(--text3);font-weight:400;letter-spacing:1px;text-transform:uppercase;}
@@ -125,7 +125,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 /* AI EXTRACTION SPECIFIC */
 .ai-status-bar{display:flex;align-items:center;gap:.75rem;padding:.75rem 1rem;border-radius:var(--r);background:linear-gradient(135deg,var(--accent-dim),var(--pink-dim));border:1px solid #7c6ef730;margin-bottom:1rem;}
 .ai-pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 var(--accent-glow);animation:aiPulse 1.5s infinite;}
-@keyframes aiPulse{0%{box-shadow:0 0 0 0 var(--accent-glow);}70%{box-shadow:0 0 0 8px rgba(124,110,247,0);}100%{box-shadow:0 0 0 0 rgba(124,110,247,0);}}
+@keyframes aiPulse{0%{box-shadow:0 0 0 0 var(--accent-glow);}70%{box-shadow:0 0 0 8px rgba(79,124,255,0);}100%{box-shadow:0 0 0 0 rgba(79,124,255,0);}}
 .ai-status-text{font-family:var(--mono);font-size:.72rem;color:var(--accent2);flex:1;}
 .ai-conf-badge{font-family:var(--mono);font-size:.65rem;padding:.2rem .6rem;border-radius:4px;font-weight:600;}
 .conf-high{background:var(--green-dim);color:var(--green);border:1px solid #3ecf8e33;}
@@ -341,7 +341,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
   animation:fabPulse 3s ease-in-out infinite;
 }
 .chat-fab:hover{transform:scale(1.08);box-shadow:0 6px 32px var(--accent-glow);}
-@keyframes fabPulse{0%,100%{box-shadow:0 4px 24px var(--accent-glow),0 0 0 0 rgba(124,110,247,0.4);}50%{box-shadow:0 4px 24px var(--accent-glow),0 0 0 10px rgba(124,110,247,0);}}
+@keyframes fabPulse{0%,100%{box-shadow:0 4px 24px var(--accent-glow),0 0 0 0 rgba(79,124,255,0.35);}50%{box-shadow:0 4px 24px var(--accent-glow),0 0 0 10px rgba(79,124,255,0);}}
 .chat-fab-badge{
   position:absolute;top:-3px;right:-3px;
   width:16px;height:16px;border-radius:50%;
@@ -393,7 +393,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 .chat-msg.bot{align-self:flex-start;align-items:flex-start;}
 .chat-bubble{padding:.6rem .875rem;border-radius:12px;font-size:.82rem;line-height:1.5;}
 .chat-msg.bot .chat-bubble{background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:4px 12px 12px 12px;}
-.chat-msg.user .chat-bubble{background:linear-gradient(135deg,var(--accent),#6c5de8);color:#fff;border-radius:12px 4px 12px 12px;}
+.chat-msg.user .chat-bubble{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-radius:12px 4px 12px 12px;}
 .chat-time{font-family:var(--mono);font-size:.55rem;color:var(--text3);}
 .chat-typing{display:flex;gap:.3rem;padding:.6rem .875rem;align-items:center;}
 .chat-typing span{width:6px;height:6px;border-radius:50%;background:var(--text3);animation:typingDot 1.2s ease-in-out infinite;}
@@ -1212,10 +1212,10 @@ function ALevelManualForm({stream,onSubmit,onBack}){
 function DegreeManualForm({docType,data={},onSubmit,onBack}){
   const isMasters=docType==="Master's Degree";
   const [form,setForm]=useState({university_name:"",degree_program:"",graduation_year:"",gpa_system:"",gpa_value:"",degree_class:"",thesis_title:"",...data});
-  const [eng,setEng]=useState(data.english_proficiency||{});const [err,setErr]=useState("");
+  const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));const years=Array.from({length:25},(_,i)=>2024-i);
-  const submit=()=>{if(!form.university_name||!form.degree_program||!form.graduation_year||!form.gpa_system||!form.gpa_value){setErr("Fill all required fields.");return;}onSubmit({document_type:docType,...form,graduation_year:+form.graduation_year,gpa_normalized:normalizeGpa(form.gpa_value,form.gpa_system),english_proficiency:eng});};
-  return(<div><div className="fgrid"><div className="field"><label className="flabel">University <span className="req">*</span></label><input value={form.university_name} onChange={e=>f("university_name",e.target.value)} /></div><div className="field"><label className="flabel">Degree Program <span className="req">*</span></label><input value={form.degree_program} onChange={e=>f("degree_program",e.target.value)} /></div>{isMasters&&<div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Thesis Title</label><input value={form.thesis_title} onChange={e=>f("thesis_title",e.target.value)} /></div>}<div className="field"><label className="flabel">Graduation Year <span className="req">*</span></label><select value={form.graduation_year} onChange={e=>f("graduation_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div><div className="field"><label className="flabel">Grading System <span className="req">*</span></label><select value={form.gpa_system} onChange={e=>{f("gpa_system",e.target.value);f("gpa_value","");}}><option value="">— Select —</option>{["GPA (4.0 scale)","GPA (5.0 scale)","UK Class","Percentage"].map(s=><option key={s}>{s}</option>)}</select></div>{form.gpa_system==="GPA (4.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={4} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–4.00" /></div>}{form.gpa_system==="GPA (5.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={5} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–5.00" /></div>}{form.gpa_system==="UK Class"&&<div className="field"><label className="flabel">Classification <span className="req">*</span></label><select value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)}><option value="">— Select —</option>{["First Class","Upper Second (2:1)","Lower Second (2:2)","Third Class"].map(c=><option key={c}>{c}</option>)}</select></div>}{form.gpa_system==="Percentage"&&<div className="field"><label className="flabel">Percentage <span className="req">*</span></label><input type="number" min={0} max={100} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} /></div>}</div><div style={{marginTop:"1.5rem"}}><EnglishSection value={eng} onChange={setEng} /></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
+  const submit=()=>{if(!form.university_name||!form.degree_program||!form.graduation_year||!form.gpa_system||!form.gpa_value){setErr("Fill all required fields.");return;}onSubmit({document_type:docType,...form,graduation_year:+form.graduation_year,gpa_normalized:normalizeGpa(form.gpa_value,form.gpa_system)});};
+  return(<div><div className="fgrid"><div className="field"><label className="flabel">University <span className="req">*</span></label><input value={form.university_name} onChange={e=>f("university_name",e.target.value)} /></div><div className="field"><label className="flabel">Degree Program <span className="req">*</span></label><input value={form.degree_program} onChange={e=>f("degree_program",e.target.value)} /></div>{isMasters&&<div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Thesis Title</label><input value={form.thesis_title} onChange={e=>f("thesis_title",e.target.value)} /></div>}<div className="field"><label className="flabel">Graduation Year <span className="req">*</span></label><select value={form.graduation_year} onChange={e=>f("graduation_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div><div className="field"><label className="flabel">Grading System <span className="req">*</span></label><select value={form.gpa_system} onChange={e=>{f("gpa_system",e.target.value);f("gpa_value","");}}><option value="">— Select —</option>{["GPA (4.0 scale)","GPA (5.0 scale)","UK Class","Percentage"].map(s=><option key={s}>{s}</option>)}</select></div>{form.gpa_system==="GPA (4.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={4} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–4.00" /></div>}{form.gpa_system==="GPA (5.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={5} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–5.00" /></div>}{form.gpa_system==="UK Class"&&<div className="field"><label className="flabel">Classification <span className="req">*</span></label><select value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)}><option value="">— Select —</option>{["First Class","Upper Second (2:1)","Lower Second (2:2)","Third Class"].map(c=><option key={c}>{c}</option>)}</select></div>}{form.gpa_system==="Percentage"&&<div className="field"><label className="flabel">Percentage <span className="req">*</span></label><input type="number" min={0} max={100} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} /></div>}</div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
 
 function DiplomaManualForm({onSubmit,onBack}){
@@ -1289,8 +1289,7 @@ const DOC_TYPE_DEFS = {
 };
 
 const DOC_CATS = {
-  academic:  {label:"Academic",            types:["A-Level Results","Bachelor's Degree","Master's Degree","Diploma"]},
-  english:   {label:"English Proficiency", types:["IELTS Certificate","TOEFL Certificate","PTE Certificate"]},
+  academic:  {label:"Academic",            types:["A-Level Results","Bachelor's Degree","Master's Degree","Diploma","IELTS Certificate","TOEFL Certificate","PTE Certificate"]},
   identity:  {label:"Identity",            types:["Passport"]},
   financial: {label:"Financial",           types:["Financial Statement"]},
 };
@@ -1359,26 +1358,7 @@ function DocChecklist({uploadedDocs, onSelectType}) {
   );
 }
 
-// NEW v6: Banner shown after A/L is uploaded — prompts user to upload English Proficiency
-function EngNextBanner({onSelectType}) {
-  return (
-    <div className="eng-next-banner">
-      <div className="eng-next-icon">📌</div>
-      <div>
-        <div className="eng-next-title">A/L Results uploaded — next: English Proficiency</div>
-        <div className="eng-next-desc">
-          Your A/L certificate does not include an English proficiency score.
-          Upload one of the following as a separate document to complete your profile:
-        </div>
-        <div className="eng-next-btns">
-          <button className="eng-next-btn eng-next-btn-ielts" onClick={()=>onSelectType("IELTS Certificate")}>🇬🇧 IELTS</button>
-          <button className="eng-next-btn eng-next-btn-toefl" onClick={()=>onSelectType("TOEFL Certificate")}>🌐 TOEFL</button>
-          <button className="eng-next-btn eng-next-btn-pte"   onClick={()=>onSelectType("PTE Certificate")}>📝 PTE Academic</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 function DocumentStep({profile,docData,onNext,onBack,user}){
   const qual=profile.current_qualification;
@@ -1534,7 +1514,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
       <DocChecklist uploadedDocs={uploadedDocs} onSelectType={switchType} />
 
       {/* v6: Eng-next banner — shown after A/L is done, before any English cert */}
-      {showEngBanner && <EngNextBanner onSelectType={switchType} />}
+
 
       <div className="panel">
         <div className="panel-title">Academic & Supporting Documents</div>
@@ -1574,24 +1554,8 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
           })}
         </div>
 
-        {/* v6: 9-type doc grid with upload-done indicators */}
-        <div className="slabel" style={{marginTop:0}}>Document Type</div>
-        <div className="doctype-grid">
-          {DOC_TYPE_LIST.map(dt=>{
-            const done = !!uploadedDocs[dt.id];
-            return (
-              <div
-                key={dt.id}
-                className={`doctype-card${selectedType===dt.id?" selected":""}${done?" uploaded":""}`}
-                onClick={()=>switchType(dt.id)}
-              >
-                {done && <div className="doctype-done-dot"/>}
-                <div className="doctype-icon">{dt.icon}</div>
-                <div className="doctype-name">{dt.label}</div>
-              </div>
-            );
-          })}
-        </div>
+        {/* Document type selector removed - using auto-identification instead */}
+        {/* Stored documents and file upload sections only */}
 
         {tab==="upload"&&(
           <div>
