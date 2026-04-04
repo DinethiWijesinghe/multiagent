@@ -431,12 +431,22 @@ const BOT_INTRO = [
 
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
 
-const CHAT_HISTORY_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/chat/history`;
-const CHAT_RESPOND_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/chat/respond`;
-const USER_STATE_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/user/state`;
-const AUTH_REGISTER_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/register`;
-const AUTH_LOGIN_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/auth/login`;
-const DOCUMENTS_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/documents`;
+const CONFIGURED_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/,"");
+const DEFAULT_LOCAL_API_URL = "http://127.0.0.1:8000";
+const API_BASES = Array.from(new Set([CONFIGURED_API_URL, DEFAULT_LOCAL_API_URL].filter(Boolean)));
+
+async function fetchApi(path, options){
+  let lastError;
+  for(const baseUrl of API_BASES){
+    try{
+      return await fetch(`${baseUrl}${path}`, options);
+    }catch(error){
+      lastError = error;
+    }
+  }
+  const targets = API_BASES.join(", ");
+  throw new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
+}
 
 function createMessage(role,text,metadata){
   return {
@@ -498,7 +508,7 @@ function authHeaders(token, includeJsonContentType = false){
 }
 
 async function fetchChatHistory(userId,token){
-  const response = await fetch(`${CHAT_HISTORY_API}?user_id=${encodeURIComponent(userId)}`, {
+  const response = await fetchApi(`/chat/history?user_id=${encodeURIComponent(userId)}`, {
     headers: authHeaders(token),
   });
   if(!response.ok) throw new Error(`Failed to load chat history (${response.status})`);
@@ -508,7 +518,7 @@ async function fetchChatHistory(userId,token){
 
 async function appendChatHistory(userId,messages,token){
   if(!messages.length) return;
-  await fetch(CHAT_HISTORY_API,{
+  await fetchApi("/chat/history",{
     method:"POST",
     headers:authHeaders(token, true),
     body:JSON.stringify({user_id:userId,messages}),
@@ -516,14 +526,14 @@ async function appendChatHistory(userId,messages,token){
 }
 
 async function clearChatHistory(userId,token){
-  await fetch(`${CHAT_HISTORY_API}?user_id=${encodeURIComponent(userId)}`,{
+  await fetchApi(`/chat/history?user_id=${encodeURIComponent(userId)}`,{
     method:"DELETE",
     headers:authHeaders(token),
   });
 }
 
 async function fetchUserState(userId,token){
-  const response = await fetch(`${USER_STATE_API}?user_id=${encodeURIComponent(userId)}`, {
+  const response = await fetchApi(`/user/state?user_id=${encodeURIComponent(userId)}`, {
     headers: authHeaders(token),
   });
   if(!response.ok) throw new Error(`Failed to load user state (${response.status})`);
@@ -532,7 +542,7 @@ async function fetchUserState(userId,token){
 }
 
 async function saveUserState(userId,state,token){
-  await fetch(USER_STATE_API, {
+  await fetchApi("/user/state", {
     method: "POST",
     headers: authHeaders(token, true),
     body: JSON.stringify({ user_id: userId, state }),
@@ -540,7 +550,7 @@ async function saveUserState(userId,state,token){
 }
 
 async function fetchUserDocuments(token){
-  const response = await fetch(DOCUMENTS_API, {
+  const response = await fetchApi("/documents", {
     headers: authHeaders(token),
   });
   if(!response.ok) throw new Error(`Failed to load documents (${response.status})`);
@@ -549,7 +559,7 @@ async function fetchUserDocuments(token){
 }
 
 async function deleteUserDocument(documentId,token){
-  const response = await fetch(`${DOCUMENTS_API}/${encodeURIComponent(documentId)}`, {
+  const response = await fetchApi(`/documents/${encodeURIComponent(documentId)}`, {
     method: "DELETE",
     headers: authHeaders(token),
   });
@@ -560,7 +570,7 @@ async function deleteUserDocument(documentId,token){
 }
 
 async function openUserDocument(documentId,token){
-  const response = await fetch(`${DOCUMENTS_API}/${encodeURIComponent(documentId)}/content`, {
+  const response = await fetchApi(`/documents/${encodeURIComponent(documentId)}/content`, {
     headers: authHeaders(token),
   });
   if(!response.ok){
@@ -574,7 +584,7 @@ async function openUserDocument(documentId,token){
 }
 
 async function registerUser({name,email,password}){
-  const response = await fetch(AUTH_REGISTER_API, {
+  const response = await fetchApi("/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, email, password }),
@@ -585,7 +595,7 @@ async function registerUser({name,email,password}){
 }
 
 async function loginUser({email,password}){
-  const response = await fetch(AUTH_LOGIN_API, {
+  const response = await fetchApi("/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -600,7 +610,7 @@ async function fetchBackendChatReply(message, token, timeoutMs = 12000){
   const timeoutId = setTimeout(()=>controller.abort(), timeoutMs);
   let response;
   try{
-    response = await fetch(CHAT_RESPOND_API, {
+    response = await fetchApi("/chat/respond", {
       method: "POST",
       headers: authHeaders(token, true),
       signal: controller.signal,
@@ -817,7 +827,6 @@ function ChatBot({user}){
 }
 
 // ── OCR BACKEND ─────────────────────────────────────────────────────────────
-const OCR_API = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 const API_DOC_TYPE_MAP = {
   "A-Level Results": "alevel",
   "Bachelor's Degree": "bachelor",
@@ -848,9 +857,9 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
   let response;
   try {
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    response = await fetch(`${OCR_API}/ocr`, { method: "POST", headers, body: formData });
+    response = await fetchApi("/ocr", { method: "POST", headers, body: formData });
   } catch (netErr) {
-    throw new Error("Cannot reach OCR server at " + OCR_API + ". Set VITE_API_URL for Colab/ngrok or start the API locally on port 8000.");
+    throw new Error(netErr?.message || "Cannot reach OCR server. Start the API locally on port 8000 or update VITE_API_URL.");
   }
   if (!response.ok) {
     const errBody = await response.json().catch(() => ({}));
@@ -891,7 +900,7 @@ function assessEligibility(profile, doc) {
   return{...base,eligible:true,grade_point:2.0,eligibility_tier:"average",eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:["Document processed. Check individual university requirements."]};
 }
 
-const UNIVERSITIES_API = `${(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/,"")}/universities`;
+const UNIVERSITIES_API = "/universities";
 
 const TUITION_RATES = { UK: 400, Singapore: 235, Australia: 210 };
 
@@ -920,7 +929,7 @@ function _mapUniversity(u, country, budgetLKR) {
 
 async function fetchUniversities(country, minGpa, program, budgetLKR) {
   const url = country ? `${UNIVERSITIES_API}?country=${encodeURIComponent(country)}` : UNIVERSITIES_API;
-  const res = await fetch(url);
+  const res = await fetchApi(url);
   if (!res.ok) throw new Error("Failed to load universities.");
   const { universities } = await res.json();
   return universities
@@ -1314,7 +1323,7 @@ function DocChecklist({uploadedDocs, onSelectType}) {
   return (
     <div className="doc-checklist">
       <div className="doc-checklist-title">
-        📁 Document Checklist
+         Document Checklist
         <span style={{marginLeft:"auto",fontFamily:"var(--mono)",fontSize:".65rem",
           color:"var(--text3)",fontWeight:400}}>
           {doneCount} / {allTypes.length} uploaded
@@ -1352,7 +1361,7 @@ function DocChecklist({uploadedDocs, onSelectType}) {
         </div>
       )}
       {doneCount === allTypes.length && (
-        <div className="checklist-complete">✅ All 9 documents uploaded!</div>
+        <div className="checklist-complete"> All 9 documents uploaded!</div>
       )}
     </div>
   );
@@ -1761,7 +1770,7 @@ function AuthPage({onLogin}){
     <div className="auth-wrap">
       <div className="auth-card fade-up">
         <div className="auth-logo"><div className="auth-icon">🎓</div><span>UniAssist</span></div>
-        <div className="auth-sub" style={{marginTop:".4rem"}}>EasyOCR + ML-powered study abroad advisor · 9 document types</div>
+        
         <div className="tabs" style={{marginTop:"1.5rem"}}><button className={`tab${tab==="login"?" active":""}`} onClick={()=>{setTab("login");setErr("");}}>Login</button><button className={`tab${tab==="register"?" active":""}`} onClick={()=>{setTab("register");setErr("");}}>Register</button></div>
         {tab==="login" ? (
           <div>

@@ -266,10 +266,10 @@ Application-level persistence (auth users, chat history, and user state) support
 Tables are auto-created on backend startup when a DB URL is configured:
 
 - users
+- sessions
 - chat_history
 - user_state
 - document_uploads
-- user_profile
 
 Supported env vars (either one):
 
@@ -287,7 +287,6 @@ PowerShell quick start:
 
 ```powershell
 $env:NEON_DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?channel_binding=require"
-$env:AUTH_SECRET = "replace-with-a-strong-secret"
 $env:DB_STRICT_MODE = "true"
 uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
@@ -325,6 +324,8 @@ When a user logs in, the app now persists all key data per user account:
 
 - Chat messages and agent metadata
   - Saved via `/chat/history`
+  - `/chat/history` now requires Bearer auth and only allows access to the current logged-in user
+  - Chatbot replies are served by `/chat/respond` (backend chatbot agent)
 
 - Uploaded files (images and PDFs)
   - OCR uploads (`/ocr`) now auto-store files when Authorization token is present
@@ -340,11 +341,19 @@ Storage behavior:
 
 How to use with current frontend:
 
-1. Start backend with `NEON_DATABASE_URL` (or `DATABASE_URL`) and `AUTH_SECRET`.
+1. Start backend with `NEON_DATABASE_URL` (or `DATABASE_URL`).
 2. Register and log in from the app.
 3. Fill profile (personal/education/financial) and upload docs.
 4. Data is persisted automatically for that user.
 5. In the Documents step, use the "My Stored Documents" panel to refresh, open, and delete saved files.
+
+## Current API Notes (April 2026)
+
+- Frontend uses `/chat/respond` for live chatbot responses.
+- Frontend and backend both use token-authenticated `/chat/history` for chat persistence.
+- `/ocr` accepts optional Bearer auth. If token is present, uploaded file metadata is saved for that user.
+- `/health` now returns DB mode fields: `db`, `db_url_set`, and `db_strict_mode` in addition to OCR status.
+- If PostgreSQL/Neon is not configured, backend falls back to JSON persistence unless `DB_STRICT_MODE=true`.
 
 Optional overrides:
 

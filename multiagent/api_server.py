@@ -32,8 +32,12 @@ import sys
 import json
 import pickle
 import random
+import secrets
 import time
+from datetime import datetime, timezone
+from hashlib import pbkdf2_hmac
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import cv2
@@ -732,14 +736,103 @@ def _extract(doc_type, text):
 # FASTAPI
 # ─────────────────────────────────────────────────────────────────────────────
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import tempfile
 from typing import Any
+from sqlalchemy import Column, DateTime, String, Text, create_engine, func
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+try:
+    from .core.agents.chatbot_agent import ChatbotAgent
+except Exception:
+    try:
+        from core.agents.chatbot_agent import ChatbotAgent
+    except Exception:
+        ChatbotAgent = None
+
+Base = declarative_base()
+
+
+class DBUser(Base):
+    __tablename__ = "users"
+
+    email = Column(String(255), primary_key=True, index=True)
+    data = Column(Text, nullable=False, default="{}")
+
+
+class DBSession(Base):
+    __tablename__ = "sessions"
+
+    token = Column(String(255), primary_key=True, index=True)
+    data = Column(Text, nullable=False, default="{}")
+
+
+class DBChatHistory(Base):
+    __tablename__ = "chat_history"
+
+    user_id = Column(String(255), primary_key=True, index=True)
+    data = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class DBUserState(Base):
+    __tablename__ = "user_state"
+
+    user_id = Column(String(255), primary_key=True, index=True)
+    data = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class DBDocumentUpload(Base):
+    __tablename__ = "document_uploads"
+
+    document_id = Column(String(64), primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    data = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+def _normalize_database_url(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if url.startswith("postgresql://"):
+        converted = f"postgresql+psycopg://{url[len('postgresql://'):]}"
+    elif url.startswith("postgres://"):
+        converted = f"postgresql+psycopg://{url[len('postgres://'):]}"
+    else:
+        converted = url
+
+    if converted.startswith("postgresql+psycopg://") and "sslmode=" not in converted:
+        glue = "&" if "?" in converted else "?"
+        converted = f"{converted}{glue}sslmode=require"
+    return converted
+
+
+def _env_true(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+DATABASE_URL = _normalize_database_url(
+    os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
+)
+DB_STRICT_MODE = _env_true("DB_STRICT_MODE", False)
+
+_db_engine = None
+_SessionLocal = None
+_db_backend = "json"
+_chatbot_agent = None
 
 CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
+USERS_DIR = Path(__file__).resolve().parent / "data" / "users"
+USER_STATE_DIR = Path(__file__).resolve().parent / "data" / "user_state"
+DOCUMENTS_DIR = Path(__file__).resolve().parent / "data" / "documents"
 CHAT_HISTORY_LIMIT = 500
+PASSWORD_HASH_ROUNDS = 200_000
 
 
 class ChatMessage(BaseModel):
@@ -756,11 +849,320 @@ class ChatHistoryPayload(BaseModel):
     agent_data: dict[str, Any] | None = None
 
 
-def _chat_history_path(user_id: str) -> Path:
-    safe_user_id = re.sub(r"[^a-zA-Z0-9_.@-]", "_", user_id.strip().lower())
-    if not safe_user_id:
+class RegisterPayload(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+class UserStatePayload(BaseModel):
+    user_id: str
+    state: dict[str, Any]
+
+
+class ChatRespondPayload(BaseModel):
+    user_message: str
+    context: dict[str, Any] = {}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_email(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _safe_user_key(value: str) -> str:
+    safe_value = re.sub(r"[^a-zA-Z0-9_.@-]", "_", (value or "").strip().lower())
+    if not safe_value:
         raise HTTPException(status_code=400, detail="user_id is required")
-    return CHAT_HISTORY_DIR / f"{safe_user_id}.json"
+    return safe_value
+
+
+def _read_json(path: Path, default: Any):
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return default
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _users_path() -> Path:
+    return USERS_DIR / "users.json"
+
+
+def _sessions_path() -> Path:
+    return USERS_DIR / "sessions.json"
+
+
+def _user_state_path(user_id: str) -> Path:
+    return USER_STATE_DIR / f"{_safe_user_key(user_id)}.json"
+
+
+def _user_documents_path(user_id: str) -> Path:
+    return DOCUMENTS_DIR / _safe_user_key(user_id)
+
+
+def _user_documents_index_path(user_id: str) -> Path:
+    return _user_documents_path(user_id) / "index.json"
+
+
+def _load_users() -> dict[str, dict[str, Any]]:
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            rows = session.query(DBUser).all()
+            users: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                payload = _read_json_text(row.data, {})
+                users[row.email] = payload if isinstance(payload, dict) else {}
+            return users
+    data = _read_json(_users_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_users(users: dict[str, dict[str, Any]]) -> None:
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            for email, payload in users.items():
+                row = session.get(DBUser, email)
+                data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+                if row is None:
+                    session.add(DBUser(email=email, data=data))
+                else:
+                    row.data = data
+            session.commit()
+        return
+    _write_json(_users_path(), users)
+
+
+def _load_sessions() -> dict[str, dict[str, Any]]:
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            rows = session.query(DBSession).all()
+            sessions: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                payload = _read_json_text(row.data, {})
+                sessions[row.token] = payload if isinstance(payload, dict) else {}
+            return sessions
+    data = _read_json(_sessions_path(), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_sessions(sessions: dict[str, dict[str, Any]]) -> None:
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            for token, payload in sessions.items():
+                row = session.get(DBSession, token)
+                data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+                if row is None:
+                    session.add(DBSession(token=token, data=data))
+                else:
+                    row.data = data
+            session.commit()
+        return
+    _write_json(_sessions_path(), sessions)
+
+
+def _hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), PASSWORD_HASH_ROUNDS)
+    return f"{salt}${digest.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    if "$" not in stored_hash:
+        return False
+    salt, expected_hash = stored_hash.split("$", 1)
+    candidate_hash = _hash_password(password, salt).split("$", 1)[1]
+    return secrets.compare_digest(candidate_hash, expected_hash)
+
+
+def _issue_session_token(email: str) -> str:
+    token = secrets.token_urlsafe(32)
+    sessions = _load_sessions()
+    sessions[token] = {
+        "email": email,
+        "created_at": _utc_now(),
+    }
+    _save_sessions(sessions)
+    return token
+
+
+def _authenticate_token(authorization: str | None, *, required: bool = True) -> str | None:
+    if not authorization:
+        if required:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    session = _load_sessions().get(token.strip())
+    if not session or not session.get("email"):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return _normalize_email(session["email"])
+
+
+def _require_current_user(authorization: str | None = Header(default=None)) -> str:
+    return _authenticate_token(authorization, required=True) or ""
+
+
+def _ensure_user_access(user_id: str, current_user_email: str) -> str:
+    normalized_user_id = _normalize_email(user_id)
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    if normalized_user_id != current_user_email:
+        raise HTTPException(status_code=403, detail="You can only access your own data")
+    return normalized_user_id
+
+
+def _load_user_state_record(user_id: str) -> dict[str, Any]:
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            row = session.get(DBUserState, _safe_user_key(user_id))
+            if row is None:
+                return {}
+            payload = _read_json_text(row.data, {})
+            return payload if isinstance(payload, dict) else {}
+    data = _read_json(_user_state_path(user_id), {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_user_state_record(user_id: str, state: dict[str, Any]) -> None:
+    if _SessionLocal:
+        safe_id = _safe_user_key(user_id)
+        with _SessionLocal() as session:
+            row = session.get(DBUserState, safe_id)
+            data = json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False)
+            if row is None:
+                session.add(DBUserState(user_id=safe_id, data=data))
+            else:
+                row.data = data
+            session.commit()
+        return
+    _write_json(_user_state_path(user_id), state)
+
+
+def _load_document_records(user_id: str) -> list[dict[str, Any]]:
+    if _SessionLocal:
+        safe_id = _safe_user_key(user_id)
+        with _SessionLocal() as session:
+            rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
+            records: list[dict[str, Any]] = []
+            for row in rows:
+                payload = _read_json_text(row.data, {})
+                if isinstance(payload, dict):
+                    records.append(payload)
+            return sorted(records, key=lambda item: item.get("stored_at", ""), reverse=True)
+    data = _read_json(_user_documents_index_path(user_id), [])
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _save_document_records(user_id: str, records: list[dict[str, Any]]) -> None:
+    if _SessionLocal:
+        safe_id = _safe_user_key(user_id)
+        clean_records = [item for item in records if isinstance(item, dict)]
+        with _SessionLocal() as session:
+            existing_rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
+            existing_ids = {row.document_id for row in existing_rows}
+            incoming_ids = set()
+
+            for record in clean_records:
+                doc_id = record.get("document_id")
+                if not doc_id:
+                    continue
+                incoming_ids.add(doc_id)
+                data = json.dumps(record, ensure_ascii=False)
+                row = session.get(DBDocumentUpload, doc_id)
+                if row is None:
+                    session.add(DBDocumentUpload(document_id=doc_id, user_id=safe_id, data=data))
+                else:
+                    row.user_id = safe_id
+                    row.data = data
+
+            for doc_id in existing_ids - incoming_ids:
+                stale = session.get(DBDocumentUpload, doc_id)
+                if stale is not None:
+                    session.delete(stale)
+
+            session.commit()
+        return
+    _write_json(_user_documents_index_path(user_id), records)
+
+
+def _read_json_text(raw_text: str, default: Any):
+    if not raw_text:
+        return default
+    try:
+        return json.loads(raw_text)
+    except Exception:
+        return default
+
+
+def _sanitize_filename(filename: str | None) -> str:
+    candidate = Path(filename or "document").name.strip()
+    candidate = re.sub(r"[^a-zA-Z0-9._ -]", "_", candidate)
+    return candidate or "document"
+
+
+def _store_user_document(
+    user_id: str,
+    *,
+    filename: str | None,
+    content_type: str | None,
+    file_bytes: bytes,
+    extracted_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    user_dir = _user_documents_path(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    document_id = uuid4().hex
+    safe_name = _sanitize_filename(filename)
+    stored_name = f"{document_id}_{safe_name}"
+    file_path = user_dir / stored_name
+    with open(file_path, "wb") as handle:
+        handle.write(file_bytes)
+
+    record = {
+        "document_id": document_id,
+        "filename": safe_name,
+        "content_type": content_type or "application/octet-stream",
+        "file_size": len(file_bytes),
+        "stored_at": _utc_now(),
+        "stored_name": stored_name,
+    }
+    if extracted_data:
+        record["document_type"] = extracted_data.get("document_type")
+
+    records = _load_document_records(user_id)
+    records.insert(0, record)
+    _save_document_records(user_id, records)
+    return record
+
+
+def _find_document_record(user_id: str, document_id: str) -> dict[str, Any]:
+    for record in _load_document_records(user_id):
+        if record.get("document_id") == document_id:
+            return record
+    raise HTTPException(status_code=404, detail="Document not found")
+
+
+def _chat_history_path(user_id: str) -> Path:
+    return CHAT_HISTORY_DIR / f"{_safe_user_key(user_id)}.json"
 
 
 def _load_chat_history(user_id: str) -> list[dict]:
@@ -775,6 +1177,29 @@ def _save_chat_history(user_id: str, messages: list[dict]) -> None:
 
 
 def _load_chat_record(user_id: str) -> dict[str, Any]:
+    if _SessionLocal:
+        safe_id = _safe_user_key(user_id)
+        with _SessionLocal() as session:
+            row = session.get(DBChatHistory, safe_id)
+            if row is None:
+                return {"messages": [], "agent_data": {}}
+            payload = _read_json_text(row.data, {"messages": [], "agent_data": {}})
+            if isinstance(payload, list):
+                messages = [item for item in payload if isinstance(item, dict)]
+                return {"messages": messages[-CHAT_HISTORY_LIMIT:], "agent_data": {}}
+            if not isinstance(payload, dict):
+                return {"messages": [], "agent_data": {}}
+            messages = payload.get("messages", [])
+            agent_data = payload.get("agent_data", {})
+            if not isinstance(messages, list):
+                messages = []
+            if not isinstance(agent_data, dict):
+                agent_data = {}
+            return {
+                "messages": [item for item in messages if isinstance(item, dict)][-CHAT_HISTORY_LIMIT:],
+                "agent_data": agent_data,
+            }
+
     path = _chat_history_path(user_id)
     if not path.exists():
         return {"messages": [], "agent_data": {}}
@@ -808,6 +1233,22 @@ def _load_chat_record(user_id: str) -> dict[str, Any]:
 
 
 def _save_chat_record(user_id: str, record: dict[str, Any]) -> None:
+    if _SessionLocal:
+        safe_id = _safe_user_key(user_id)
+        payload = {
+            "messages": record.get("messages", [])[-CHAT_HISTORY_LIMIT:],
+            "agent_data": record.get("agent_data", {}),
+        }
+        with _SessionLocal() as session:
+            row = session.get(DBChatHistory, safe_id)
+            data = json.dumps(payload, ensure_ascii=False)
+            if row is None:
+                session.add(DBChatHistory(user_id=safe_id, data=data))
+            else:
+                row.data = data
+            session.commit()
+        return
+
     path = _chat_history_path(user_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -868,7 +1309,34 @@ _ml: Pipeline = None
 
 @app.on_event("startup")
 def startup():
-    global _ml, _OCR_ENGINE
+    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent
+
+    if DB_STRICT_MODE and not DATABASE_URL:
+        raise RuntimeError("DB_STRICT_MODE=true but DATABASE_URL/NEON_DATABASE_URL is not set")
+
+    if DATABASE_URL:
+        try:
+            _db_engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+            Base.metadata.create_all(bind=_db_engine)
+            _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
+            _db_backend = "postgresql"
+            print("[DB] Connected to PostgreSQL/Neon.")
+        except Exception as exc:
+            _db_engine = None
+            _SessionLocal = None
+            _db_backend = "json"
+            print(f"[DB] PostgreSQL init failed: {exc}")
+            if DB_STRICT_MODE:
+                raise RuntimeError("DB_STRICT_MODE=true and PostgreSQL connection failed") from exc
+    else:
+        _db_backend = "json"
+        if DB_STRICT_MODE:
+            raise RuntimeError("DB_STRICT_MODE=true requires DATABASE_URL or NEON_DATABASE_URL")
+
+    if ChatbotAgent:
+        _chatbot_agent = ChatbotAgent()
+    else:
+        _chatbot_agent = None
 
     # 1. Train / load ML model
     _ml = _load_model()
@@ -906,6 +1374,9 @@ def health():
     return {
         "status": "ok" if _OCR_ENGINE else "degraded",
         "version": "7.1",
+        "db": _db_backend,
+        "db_url_set": bool(DATABASE_URL),
+        "db_strict_mode": DB_STRICT_MODE,
         "ocr_engine": _OCR_ENGINE or "none",
         "use_easyocr_flag": USE_EASYOCR,
         "ml_model": "TF-IDF bigrams + MultinomialNB",
@@ -914,30 +1385,165 @@ def health():
     }
 
 
-@app.get("/chat/history")
-def get_chat_history(user_id: str):
-    record = _load_chat_record(user_id)
+@app.post("/auth/register")
+def register(payload: RegisterPayload):
+    name = (payload.name or "").strip()
+    email = _normalize_email(payload.email)
+    password = payload.password or ""
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    users = _load_users()
+    if email in users:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    users[email] = {
+        "name": name,
+        "email": email,
+        "password_hash": _hash_password(password),
+        "created_at": _utc_now(),
+    }
+    _save_users(users)
     return {
-        "user_id": user_id,
+        "success": True,
+        "user": {
+            "name": name,
+            "email": email,
+        },
+    }
+
+
+@app.post("/auth/login")
+def login(payload: LoginPayload):
+    email = _normalize_email(payload.email)
+    password = payload.password or ""
+    users = _load_users()
+    user = users.get(email)
+    if not user or not _verify_password(password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = _issue_session_token(email)
+    return {
+        "token": token,
+        "user": {
+            "name": user.get("name") or email.split("@")[0],
+            "email": email,
+        },
+    }
+
+
+@app.get("/user/state")
+def get_user_state(user_id: str, current_user_email: str = Depends(_require_current_user)):
+    normalized_user_id = _ensure_user_access(user_id, current_user_email)
+    return {
+        "user_id": normalized_user_id,
+        "state": _load_user_state_record(normalized_user_id),
+    }
+
+
+@app.post("/user/state")
+def save_user_state(payload: UserStatePayload, current_user_email: str = Depends(_require_current_user)):
+    normalized_user_id = _ensure_user_access(payload.user_id, current_user_email)
+    _save_user_state_record(normalized_user_id, payload.state or {})
+    return {
+        "success": True,
+        "user_id": normalized_user_id,
+        "state": payload.state or {},
+    }
+
+
+@app.get("/documents")
+def list_documents(current_user_email: str = Depends(_require_current_user)):
+    return {
+        "documents": _load_document_records(current_user_email),
+    }
+
+
+@app.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user_email: str = Depends(_require_current_user),
+):
+    file_bytes = await file.read()
+    record = _store_user_document(
+        current_user_email,
+        filename=file.filename,
+        content_type=file.content_type,
+        file_bytes=file_bytes,
+    )
+    return {
+        "success": True,
+        "document": record,
+    }
+
+
+@app.get("/documents/{document_id}/content")
+def get_document_content(document_id: str, current_user_email: str = Depends(_require_current_user)):
+    record = _find_document_record(current_user_email, document_id)
+    file_path = _user_documents_path(current_user_email) / record.get("stored_name", "")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Document file is missing")
+    return FileResponse(
+        path=file_path,
+        media_type=record.get("content_type") or "application/octet-stream",
+        filename=record.get("filename") or file_path.name,
+    )
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(document_id: str, current_user_email: str = Depends(_require_current_user)):
+    records = _load_document_records(current_user_email)
+    remaining_records = []
+    deleted_record = None
+    for record in records:
+        if record.get("document_id") == document_id and deleted_record is None:
+            deleted_record = record
+            continue
+        remaining_records.append(record)
+
+    if deleted_record is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_path = _user_documents_path(current_user_email) / deleted_record.get("stored_name", "")
+    if file_path.exists():
+        file_path.unlink()
+    _save_document_records(current_user_email, remaining_records)
+    return {
+        "success": True,
+        "document_id": document_id,
+    }
+
+
+@app.get("/chat/history")
+def get_chat_history(user_id: str, current_user_email: str = Depends(_require_current_user)):
+    normalized_user_id = _ensure_user_access(user_id, current_user_email)
+    record = _load_chat_record(normalized_user_id)
+    return {
+        "user_id": normalized_user_id,
         "messages": record.get("messages", []),
         "agent_data": record.get("agent_data", {}),
     }
 
 
 @app.post("/chat/history")
-def append_chat_history(payload: ChatHistoryPayload):
-    record = _load_chat_record(payload.user_id)
+def append_chat_history(payload: ChatHistoryPayload, current_user_email: str = Depends(_require_current_user)):
+    normalized_user_id = _ensure_user_access(payload.user_id, current_user_email)
+    record = _load_chat_record(normalized_user_id)
     existing = record.get("messages", [])
     incoming = [message.model_dump() for message in payload.messages]
     merged = _merge_chat_messages(existing, incoming)
     merged_agent_data = _merge_agent_data(record.get("agent_data", {}), payload.agent_data or {})
-    _save_chat_record(payload.user_id, {
+    _save_chat_record(normalized_user_id, {
         "messages": merged,
         "agent_data": merged_agent_data,
     })
     return {
         "success": True,
-        "user_id": payload.user_id,
+        "user_id": normalized_user_id,
         "messages": merged,
         "agent_data": merged_agent_data,
         "count": len(merged),
@@ -945,15 +1551,60 @@ def append_chat_history(payload: ChatHistoryPayload):
 
 
 @app.delete("/chat/history")
-def clear_chat_history(user_id: str):
-    path = _chat_history_path(user_id)
-    if path.exists():
-        path.unlink()
+def clear_chat_history(user_id: str, current_user_email: str = Depends(_require_current_user)):
+    normalized_user_id = _ensure_user_access(user_id, current_user_email)
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            row = session.get(DBChatHistory, _safe_user_key(normalized_user_id))
+            if row is not None:
+                session.delete(row)
+                session.commit()
+    else:
+        path = _chat_history_path(normalized_user_id)
+        if path.exists():
+            path.unlink()
     return {
         "success": True,
-        "user_id": user_id,
+        "user_id": normalized_user_id,
         "messages": [],
         "agent_data": {},
+    }
+
+
+@app.post("/chat/respond")
+def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header(default=None)):
+    message = (payload.user_message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="user_message is required")
+
+    current_user_email = _authenticate_token(authorization, required=False)
+    context = payload.context if isinstance(payload.context, dict) else {}
+    if current_user_email:
+        context = {
+            **context,
+            "profile_data": context.get("profile_data") or _load_user_state_record(current_user_email),
+            "document_data": context.get("document_data") or {
+                "documents": _load_document_records(current_user_email),
+            },
+        }
+
+    if _chatbot_agent:
+        result = _chatbot_agent.process_message(message, context)
+        response_text = result.get("response") or "I'm here to help with your application journey."
+        return {
+            "response": response_text,
+            "intent": result.get("intent"),
+            "actions": result.get("actions", []),
+            "agent_data": result.get("agent_data", {}),
+            "source": "backend_agent",
+        }
+
+    return {
+        "response": "I can help with eligibility, costs, and university recommendations. Upload your documents and ask your question.",
+        "intent": "general",
+        "actions": ["Upload academic documents", "Complete profile", "Ask a specific question"],
+        "agent_data": {},
+        "source": "backend_fallback",
     }
 
 
@@ -961,6 +1612,7 @@ def clear_chat_history(user_id: str):
 async def ocr_endpoint(
     file: UploadFile = File(...),
     doc_type: str = Form(default="auto"),
+    authorization: str | None = Header(default=None),
 ):
     if _OCR_ENGINE is None:
         raise HTTPException(
@@ -972,9 +1624,10 @@ async def ocr_endpoint(
             ),
         )
 
+    file_bytes = await file.read()
     suffix = os.path.splitext(file.filename or "doc.jpg")[1] or ".jpg"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(file_bytes)
         tmp_path = tmp.name
 
     try:
@@ -1028,7 +1681,7 @@ async def ocr_endpoint(
             "financial": "Financial Statement",
         }
 
-        return {
+        response_payload = {
             "success":                True,
             "data":                   {**fields, "document_type": _TYPE_MAP.get(detected, detected)},
             "confidence":             conf,
@@ -1047,6 +1700,16 @@ async def ocr_endpoint(
                 if conf < 0.5 else []
             ),
         }
+        current_user_email = _authenticate_token(authorization, required=False)
+        if current_user_email:
+            response_payload["document"] = _store_user_document(
+                current_user_email,
+                filename=file.filename,
+                content_type=file.content_type,
+                file_bytes=file_bytes,
+                extracted_data=response_payload["data"],
+            )
+        return response_payload
 
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))

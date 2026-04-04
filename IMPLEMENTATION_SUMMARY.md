@@ -257,6 +257,31 @@ useEffect(() => {
 4. ✅ Filter data with advanced criteria UI
 5. ✅ Show version/history comparisons
 
+---
+
+## Backend Status (April 2026)
+
+Current backend behavior in `multiagent/api_server.py` now includes:
+
+- ✅ Live chatbot endpoint: `POST /chat/respond`
+- ✅ Auth-protected chat persistence:
+  - `GET /chat/history?user_id=...`
+  - `POST /chat/history`
+  - `DELETE /chat/history?user_id=...`
+  - access is restricted to the logged-in user
+- ✅ OCR upload with optional auth on `POST /ocr`
+  - if Authorization token is present, document metadata is stored for that user
+- ✅ User document APIs:
+  - `GET /documents`
+  - `POST /documents/upload`
+  - `GET /documents/{document_id}/content`
+  - `DELETE /documents/{document_id}`
+- ✅ Neon/PostgreSQL support using `DATABASE_URL` or `NEON_DATABASE_URL`
+  - tables auto-created: `users`, `sessions`, `chat_history`, `user_state`, `document_uploads`
+  - automatic JSON fallback when DB URL is not set (unless `DB_STRICT_MODE=true`)
+- ✅ Health endpoint shows DB mode:
+  - `GET /health` includes `db`, `db_url_set`, `db_strict_mode`
+
 **Example - Works immediately:**
 
 ```jsx
