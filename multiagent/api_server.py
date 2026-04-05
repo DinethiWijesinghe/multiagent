@@ -747,11 +747,23 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 try:
     from .core.agents.chatbot_agent import ChatbotAgent
+    from .core.agents.eligibility_verification_agent import EligibilityVerificationAgent
+    from .core.agents.financial_feasibility_agent import FinancialFeasibilityAgent
+    from .core.agents.recommendation_agent import RecommendationAgent
+    from .core.rag_system import RAGSystem
 except Exception:
     try:
         from core.agents.chatbot_agent import ChatbotAgent
+        from core.agents.eligibility_verification_agent import EligibilityVerificationAgent
+        from core.agents.financial_feasibility_agent import FinancialFeasibilityAgent
+        from core.agents.recommendation_agent import RecommendationAgent
+        from core.rag_system import RAGSystem
     except Exception:
         ChatbotAgent = None
+        EligibilityVerificationAgent = None
+        FinancialFeasibilityAgent = None
+        RecommendationAgent = None
+        RAGSystem = None
 
 Base = declarative_base()
 
@@ -831,6 +843,7 @@ CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
 USERS_DIR = Path(__file__).resolve().parent / "data" / "users"
 USER_STATE_DIR = Path(__file__).resolve().parent / "data" / "user_state"
 DOCUMENTS_DIR = Path(__file__).resolve().parent / "data" / "documents"
+UNIVERSITIES_DB_PATH = Path(__file__).resolve().parent / "data" / "databases" / "universities_database.json"
 CHAT_HISTORY_LIMIT = 500
 PASSWORD_HASH_ROUNDS = 200_000
 
@@ -899,6 +912,31 @@ def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _normalize_country_name(country: str | None) -> str | None:
+    if not country:
+        return None
+    normalized = country.strip().lower()
+    aliases = {
+        "uk": "UK",
+        "u.k.": "UK",
+        "united kingdom": "UK",
+        "gb": "UK",
+        "great britain": "UK",
+        "sg": "Singapore",
+        "au": "Australia",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    return country.strip()
+
+
+def _load_universities_database() -> dict[str, Any]:
+    data = _read_json(UNIVERSITIES_DB_PATH, {})
+    if isinstance(data, dict):
+        return data
+    return {}
 
 
 def _users_path() -> Path:
@@ -1334,7 +1372,24 @@ def startup():
             raise RuntimeError("DB_STRICT_MODE=true requires DATABASE_URL or NEON_DATABASE_URL")
 
     if ChatbotAgent:
-        _chatbot_agent = ChatbotAgent()
+        eligibility_agent = EligibilityVerificationAgent() if EligibilityVerificationAgent else None
+        financial_agent = FinancialFeasibilityAgent() if FinancialFeasibilityAgent else None
+        recommendation_agent = RecommendationAgent() if RecommendationAgent else None
+
+        rag_system = None
+        if RAGSystem:
+            try:
+                rag_system = RAGSystem()
+            except Exception as exc:
+                rag_system = None
+                print(f"[Chat] RAG init failed: {exc}")
+
+        _chatbot_agent = ChatbotAgent(
+            eligibility_agent=eligibility_agent,
+            financial_agent=financial_agent,
+            recommendation_agent=recommendation_agent,
+            rag_system=rag_system,
+        )
     else:
         _chatbot_agent = None
 
@@ -1382,6 +1437,45 @@ def health():
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
+    }
+
+
+@app.get("/universities")
+def get_universities(country: str | None = None):
+    if not UNIVERSITIES_DB_PATH.exists():
+        raise HTTPException(status_code=500, detail="Universities database is missing")
+
+    database = _load_universities_database()
+    available_countries = sorted(
+        key for key, value in database.items()
+        if key != "metadata" and isinstance(value, list)
+    )
+
+    normalized_country = _normalize_country_name(country)
+    if normalized_country:
+        universities = database.get(normalized_country)
+        if not isinstance(universities, list):
+            return {
+                "universities": [],
+                "count": 0,
+                "country": normalized_country,
+                "available_countries": available_countries,
+            }
+        return {
+            "universities": universities,
+            "count": len(universities),
+            "country": normalized_country,
+            "available_countries": available_countries,
+        }
+
+    universities = []
+    for key in available_countries:
+        universities.extend(database.get(key, []))
+
+    return {
+        "universities": universities,
+        "count": len(universities),
+        "available_countries": available_countries,
     }
 
 
@@ -1579,6 +1673,19 @@ def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header
 
     current_user_email = _authenticate_token(authorization, required=False)
     context = payload.context if isinstance(payload.context, dict) else {}
+
+    if not isinstance(context.get("universities"), list):
+        database = _load_universities_database()
+        all_universities: list[dict[str, Any]] = []
+        for country_name, country_universities in database.items():
+            if country_name == "metadata" or not isinstance(country_universities, list):
+                continue
+            all_universities.extend([item for item in country_universities if isinstance(item, dict)])
+        context = {
+            **context,
+            "universities": all_universities,
+        }
+
     if current_user_email:
         context = {
             **context,
@@ -1599,13 +1706,7 @@ def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header
             "source": "backend_agent",
         }
 
-    return {
-        "response": "I can help with eligibility, costs, and university recommendations. Upload your documents and ask your question.",
-        "intent": "general",
-        "actions": ["Upload academic documents", "Complete profile", "Ask a specific question"],
-        "agent_data": {},
-        "source": "backend_fallback",
-    }
+    raise HTTPException(status_code=503, detail="Chat agent is unavailable. Check server startup logs.")
 
 
 @app.post("/ocr")

@@ -435,17 +435,29 @@ const CONFIGURED_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/
 const DEFAULT_LOCAL_API_URL = "http://127.0.0.1:8000";
 const API_BASES = Array.from(new Set([CONFIGURED_API_URL, DEFAULT_LOCAL_API_URL].filter(Boolean)));
 
+const PER_URL_TIMEOUT_MS = 5000; // max wait per URL before trying the next one
+
 async function fetchApi(path, options){
   let lastError;
+  const outerSignal = options?.signal;
   for(const baseUrl of API_BASES){
+    if(outerSignal?.aborted) break;
+    // Each URL gets its own 5s timeout so a hung URL doesn't consume the whole budget
+    const perCtrl = new AbortController();
+    const timerId = setTimeout(()=>perCtrl.abort(), PER_URL_TIMEOUT_MS);
+    const onOuterAbort = ()=>perCtrl.abort();
+    outerSignal?.addEventListener("abort", onOuterAbort);
     try{
-      return await fetch(`${baseUrl}${path}`, options);
+      return await fetch(`${baseUrl}${path}`, {...options, signal: perCtrl.signal});
     }catch(error){
       lastError = error;
+    }finally{
+      clearTimeout(timerId);
+      outerSignal?.removeEventListener("abort", onOuterAbort);
     }
   }
   const targets = API_BASES.join(", ");
-  throw new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
+  throw lastError || new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
 }
 
 function createMessage(role,text,metadata){
@@ -621,8 +633,12 @@ async function fetchBackendChatReply(message, token, timeoutMs = 12000){
   }
   if(!response.ok) throw new Error(`Chat backend failed (${response.status})`);
   const payload = await response.json();
+  const text = (payload?.response || "").trim();
+  if(!text){
+    throw new Error("Chat backend returned an empty response");
+  }
   return {
-    text: (payload?.response || "").trim(),
+    text,
     source: payload?.source || "backend_agent",
     intent: payload?.intent,
     actions: payload?.actions,
@@ -635,25 +651,6 @@ const QUICK_REPLIES = [
   "Scholarships for Sri Lankans",
   "Cost of living in Singapore",
 ];
-
-const BOT_RESPONSES = {
-  "ielts": "For most UK and Australian universities, you need IELTS 6.5+. Top universities like Cambridge require 7.0–7.5. Singapore universities typically accept 6.0+. Make sure all section bands are above 6.0 for competitive programs.",
-  "scholarship": "Great options for Sri Lankan students include: **Commonwealth Scholarship** (UK), **Chevening** (UK — fully funded), **ASEAN Scholarships** (Singapore), **Australia Awards** (fully funded), and **NUS/NTU Merit Scholarships**. Apply early — deadlines are usually 12–18 months before intake.",
-  "cost": "Estimated annual costs: 🇬🇧 UK — £15,000–£25,000 tuition + £12,000 living. 🇸🇬 Singapore — SGD 20,000–35,000 tuition + SGD 15,000 living. 🇦🇺 Australia — AUD 25,000–45,000 tuition + AUD 20,000 living.",
-  "visa": "For UK — Student Visa (formerly Tier 4), requires CAS from your university. Singapore — Student Pass via ICA. Australia — Student Visa (subclass 500). Processing time is typically 4–8 weeks. Apply only after receiving your unconditional offer.",
-  "cs": "Top CS universities: 🇬🇧 Imperial College (QS #6), Edinburgh (#22), Manchester (#32). 🇸🇬 NUS (#8), NTU (#26). 🇦🇺 Melbourne (#14), Sydney (#18). For entry, you typically need GPA 3.5+ and IELTS 6.5+.",
-  "default": "That's a great question! I'd recommend uploading your documents in the Documents step so I can give you personalized recommendations. You can also check individual university websites for the most up-to-date entry requirements. Is there anything specific I can help clarify?"
-};
-
-function getBotReply(msg){
-  const m = msg.toLowerCase();
-  if(m.includes("ielts")||m.includes("toefl")||m.includes("english")) return BOT_RESPONSES.ielts;
-  if(m.includes("scholar")) return BOT_RESPONSES.scholarship;
-  if(m.includes("cost")||m.includes("living")||m.includes("expense")) return BOT_RESPONSES.cost;
-  if(m.includes("visa")) return BOT_RESPONSES.visa;
-  if(m.includes("cs")||m.includes("computer")||m.includes("software")||m.includes("best uni")) return BOT_RESPONSES.cs;
-  return BOT_RESPONSES.default;
-}
 
 function ChatBot({user}){
   const [open,setOpen]=useState(false);
@@ -727,7 +724,7 @@ function ChatBot({user}){
     setTyping(true);
     await new Promise(r=>setTimeout(r,350));
     let replyText = "";
-    let replySource = "frontend_fallback";
+    let replySource = "backend_agent";
     let replyIntent = undefined;
     let replyActions = undefined;
     try{
@@ -736,13 +733,12 @@ function ChatBot({user}){
       replySource = backendReply.source || "backend_agent";
       replyIntent = backendReply.intent;
       replyActions = backendReply.actions;
-    }catch{
-      replyText = getBotReply(msg);
-      await new Promise(r=>setTimeout(r,550+Math.random()*450));
-    }
-    if(!replyText){
-      replyText = getBotReply(msg);
-      replySource = "frontend_fallback";
+    }catch(error){
+      const message = error instanceof Error ? error.message : "Live chat unavailable";
+      replyText = `Live backend chat is unavailable right now. ${message}. Please check the API server and try again.`;
+      replySource = "backend_error";
+      replyIntent = "error";
+      replyActions = ["Verify API server is running", "Retry your message"];
     }
     setTyping(false);
     const botMessage = createMessage("bot",replyText,{
@@ -1892,12 +1888,7 @@ export default function App(){
           <div className="hero">
             <div className="hero-eyebrow"><span className="hero-dot" />EasyOCR + ML Powered</div>
             <h1>Find Your <em>Ideal</em><br />University Abroad</h1>
-            <div className="hero-desc">
-              <span className="hero-tag">EasyOCR + OpenCV</span>
-              <span className="hero-tag">TF-IDF + Naive Bayes ML</span>
-              <span className="hero-tag">A/L · Degree · Master's · IELTS · TOEFL · PTE · Passport · Diploma · Bank</span>
-              <span className="hero-tag">Sri Lanka → UK · Singapore · Australia</span>
-            </div>
+          
           </div>
           <div className="step-rail">
             {STEPS.map(s=>(<div key={s.num} className={`step-seg${step>s.num?" done":step===s.num?" active":""}`}><div className="step-circle">{step>s.num?"✓":s.num}</div><div className="step-name">{s.name}</div></div>))}
