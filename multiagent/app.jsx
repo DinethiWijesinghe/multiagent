@@ -433,30 +433,47 @@ function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2
 
 const CONFIGURED_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/,"");
 const DEFAULT_LOCAL_API_URL = "http://127.0.0.1:8000";
-const API_BASES = Array.from(new Set([CONFIGURED_API_URL, DEFAULT_LOCAL_API_URL].filter(Boolean)));
+const SAME_ORIGIN_API_URL = typeof window !== "undefined"
+  ? `${window.location.protocol}//${window.location.host}`.replace(/\/$/, "")
+  : "";
+const API_BASES = Array.from(
+  new Set(["", CONFIGURED_API_URL, SAME_ORIGIN_API_URL, DEFAULT_LOCAL_API_URL].filter(v=>v!==undefined&&v!==null))
+);
 
-const PER_URL_TIMEOUT_MS = 5000; // max wait per URL before trying the next one
+const PER_URL_TIMEOUT_MS = 20000; // max wait per URL before trying the next one
 
 async function fetchApi(path, options){
+  const timeoutMs = Number.isFinite(options?.timeoutMs) ? options.timeoutMs : PER_URL_TIMEOUT_MS;
+  const fetchOptions = { ...(options || {}) };
+  delete fetchOptions.timeoutMs;
   let lastError;
-  const outerSignal = options?.signal;
+  let lastResponse;
+  const outerSignal = fetchOptions?.signal;
   for(const baseUrl of API_BASES){
     if(outerSignal?.aborted) break;
-    // Each URL gets its own 5s timeout so a hung URL doesn't consume the whole budget
+    // Each URL gets its own timeout budget so a hung URL doesn't consume the whole request.
     const perCtrl = new AbortController();
-    const timerId = setTimeout(()=>perCtrl.abort(), PER_URL_TIMEOUT_MS);
+    const target = baseUrl ? `${baseUrl}${path}` : path;
+    const timerId = timeoutMs > 0 ? setTimeout(()=>perCtrl.abort(), timeoutMs) : null;
     const onOuterAbort = ()=>perCtrl.abort();
     outerSignal?.addEventListener("abort", onOuterAbort);
     try{
-      return await fetch(`${baseUrl}${path}`, {...options, signal: perCtrl.signal});
+      const response = await fetch(target, {...fetchOptions, signal: perCtrl.signal});
+      // Continue trying fallback URLs when current base clearly does not host API routes.
+      if(response.status===404 && API_BASES.length>1){
+        lastResponse = response;
+        continue;
+      }
+      return response;
     }catch(error){
       lastError = error;
     }finally{
-      clearTimeout(timerId);
+      if(timerId) clearTimeout(timerId);
       outerSignal?.removeEventListener("abort", onOuterAbort);
     }
   }
-  const targets = API_BASES.join(", ");
+  if(lastResponse) return lastResponse;
+  const targets = API_BASES.map(v=>v || "<same-origin>").join(", ");
   throw lastError || new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
 }
 
@@ -643,10 +660,12 @@ async function openUserDocument(documentId,token){
 }
 
 async function registerUser({name,email,password}){
+  const normalizedName = (name || "").trim();
+  const normalizedEmail = (email || "").trim().toLowerCase();
   const response = await fetchApi("/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, email, password }),
+    body: JSON.stringify({ name: normalizedName, email: normalizedEmail, password }),
   });
   const payload = await response.json().catch(()=>({}));
   if(!response.ok) throw new Error(payload?.detail || `Register failed (${response.status})`);
@@ -654,35 +673,35 @@ async function registerUser({name,email,password}){
 }
 
 async function loginUser({email,password}){
+  const normalizedEmail = (email || "").trim().toLowerCase();
   const response = await fetchApi("/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: normalizedEmail, password }),
   });
   const payload = await response.json().catch(()=>({}));
-  if(!response.ok) throw new Error(payload?.detail || `Login failed (${response.status})`);
+  if(!response.ok){
+    const detail = payload?.detail || `Login failed (${response.status})`;
+    if(String(detail).toLowerCase().includes("invalid email or password")){
+      throw new Error("Invalid email or password. If this is a new Colab session, please register first because local users reset between sessions.");
+    }
+    throw new Error(detail);
+  }
   return payload;
 }
 
 async function fetchBackendChatReply(message, token, messages, timeoutMs = 12000){
-  const controller = new AbortController();
-  const timeoutId = setTimeout(()=>controller.abort(), timeoutMs);
   // Send last 20 turns as conversation_history so Gemini can maintain context
   const conversation_history = (messages || [])
     .filter(m => m.role === "user" || m.role === "bot")
     .slice(-20)
     .map(m => ({ role: m.role === "bot" ? "assistant" : m.role, text: m.text }));
-  let response;
-  try{
-    response = await fetchApi("/chat/respond", {
-      method: "POST",
-      headers: authHeaders(token, true),
-      signal: controller.signal,
-      body: JSON.stringify({ user_message: message, context: { conversation_history } }),
-    });
-  }finally{
-    clearTimeout(timeoutId);
-  }
+  const response = await fetchApi("/chat/respond", {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({ user_message: message, context: { conversation_history } }),
+    timeoutMs,
+  });
   if(!response.ok) throw new Error(`Chat backend failed (${response.status})`);
   const payload = await response.json();
   const text = (payload?.response || "").trim();
@@ -1266,8 +1285,8 @@ function ProfileStep({data,onNext}){
         <div className="panel-title">Your Profile</div>
         <div className="panel-sub">Complete both sections for accurate recommendations</div>
         <div className="profile-tabs">
-          <button className={`ptab${activeTab==="personal"?" active":""}`} onClick={()=>setActiveTab("personal")}>👤 Personal</button>
-          <button className={`ptab${activeTab==="financial"?" active":""}`} onClick={()=>setActiveTab("financial")}>💰 Financial</button>
+          <button className={`ptab${activeTab==="personal"?" active":""}`} onClick={()=>setActiveTab("personal")}> Personal</button>
+          <button className={`ptab${activeTab==="financial"?" active":""}`} onClick={()=>setActiveTab("financial")}> Financial</button>
         </div>
         {activeTab==="personal"&&(
           <div>
@@ -1304,12 +1323,12 @@ function ProfileStep({data,onNext}){
 
 // ── PIPELINE DISPLAY ────────────────────────────────────────────────────────
 const AI_PIPELINE=[
-  {id:"read",     label:"File decode & validation",                  icon:"📁"},
-  {id:"preproc",  label:"OpenCV preprocessing (CLAHE · deskew)",    icon:"🔧"},
-  {id:"ocr",      label:"EasyOCR text extraction (CRAFT + CRNN)",   icon:"🔍"},
-  {id:"classify", label:"TF-IDF + Naive Bayes document classifier", icon:"🧠"},
-  {id:"extract",  label:"Regex field extraction (9 doc types)",     icon:"🧩"},
-  {id:"verify",   label:"ML confidence scoring",                    icon:"✅"},
+  {id:"read",     label:"File decode & validation"                },
+  {id:"preproc",  label:"OpenCV preprocessing (CLAHE · deskew)"   },
+  {id:"ocr",      label:"EasyOCR text extraction (CRAFT + CRNN)"},
+  {id:"classify", label:"TF-IDF + Naive Bayes document classifier"},
+  {id:"extract",  label:"Regex field extraction (9 doc types)"},
+  {id:"verify",   label:"ML confidence scoring"},
 ];
 
 function PipelineView({stages,stageStatus}){
@@ -1416,15 +1435,15 @@ function BankManualForm({onSubmit,onBack}){
 
 // All 9 document type definitions with categories for the checklist
 const DOC_TYPE_DEFS = {
-  "A-Level Results":     {icon:"📄", cat:"academic"},
-  "Bachelor's Degree":   {icon:"🎓", cat:"academic"},
-  "Master's Degree":     {icon:"🏛️", cat:"academic"},
-  "Diploma":             {icon:"📜", cat:"academic"},
-  "IELTS Certificate":   {icon:"🇬🇧", cat:"english"},
-  "TOEFL Certificate":   {icon:"🌐", cat:"english"},
-  "PTE Certificate":     {icon:"📝", cat:"english"},
-  "Passport":            {icon:"🛂", cat:"identity"},
-  "Financial Statement": {icon:"🏦", cat:"financial"},
+  "A-Level Results":     {cat:"academic"},
+  "Bachelor's Degree":   { cat:"academic"},
+  "Master's Degree":     { cat:"academic"},
+  "Diploma":             {cat:"academic"},
+  "IELTS Certificate":   {cat:"english"},
+  "TOEFL Certificate":   {cat:"english"},
+  "PTE Certificate":     {cat:"english"},
+  "Passport":            {cat:"identity"},
+  "Financial Statement": {cat:"financial"},
 };
 
 const DOC_CATS = {
@@ -1434,15 +1453,15 @@ const DOC_CATS = {
 };
 
 const DOC_TYPE_LIST = [
-  {id:"A-Level Results",     icon:"📄", label:"A/L Results"},
-  {id:"Bachelor's Degree",   icon:"🎓", label:"Bachelor's"},
-  {id:"Master's Degree",     icon:"🏛️", label:"Master's"},
-  {id:"Diploma",             icon:"📜", label:"Diploma"},
-  {id:"IELTS Certificate",   icon:"🇬🇧", label:"IELTS"},
-  {id:"TOEFL Certificate",   icon:"🌐", label:"TOEFL"},
-  {id:"PTE Certificate",     icon:"📝", label:"PTE"},
-  {id:"Passport",            icon:"🛂", label:"Passport"},
-  {id:"Financial Statement", icon:"🏦", label:"Bank Stmt"},
+  {id:"A-Level Results",     label:"A/L Results"},
+  {id:"Bachelor's Degree",   label:"Bachelor's"},
+  {id:"Master's Degree",     label:"Master's"},
+  {id:"Diploma",             label:"Diploma"},
+  {id:"IELTS Certificate",   label:"IELTS"},
+  {id:"TOEFL Certificate",   label:"TOEFL"},
+  {id:"PTE Certificate",     label:"PTE"},
+  {id:"Passport",            label:"Passport"},
+  {id:"Financial Statement", label:"Bank Stmt"},
 ];
 
 // NEW v6: Checklist panel shown above doc grid
@@ -1659,8 +1678,8 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
         <div className="panel-title">Academic & Supporting Documents</div>
         <div className="panel-sub">Upload for EasyOCR + ML extraction (all 9 document types) or enter manually</div>
         <div className="tabs">
-          <button className={`tab${tab==="upload"?" active":""}`} onClick={()=>setTab("upload")}>🔍 OCR Upload & Extract</button>
-          <button className={`tab${tab==="manual"?" active":""}`} onClick={()=>setTab("manual")}>✏️ Manual Entry</button>
+          <button className={`tab${tab==="upload"?" active":""}`} onClick={()=>setTab("upload")}> OCR Upload & Extract</button>
+          <button className={`tab${tab==="manual"?" active":""}`} onClick={()=>setTab("manual")}>Manual Entry</button>
         </div>
 
         <div className="slabel">My Stored Documents</div>
@@ -1702,7 +1721,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
             <input ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.pdf" style={{display:"none"}} onChange={e=>{handleFiles(e.target.files);e.target.value="";}} />
             {!pendingUploads.length?(
               <div className={`upload-zone${drag?" drag":""}`} onClick={()=>fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFiles(e.dataTransfer.files);}} style={{marginTop:"1rem"}}>
-                <div className="upload-icon">{DOC_TYPE_LIST.find(d=>d.id===selectedType)?.icon||"📁"}</div>
+                <div className="upload-icon">{DOC_TYPE_LIST.find(d=>d.id===selectedType)?.icon||""}</div>
                 <div className="upload-title">Drop one or more documents here</div>
                 <div className="upload-sub">PNG · JPG · JPEG · PDF · Max 10 MB each</div>
               </div>
@@ -1797,7 +1816,7 @@ function EligibilityStep({elig,docData,profile,onNext,onBack}){
         <div className="panel" style={{marginBottom:0}}><div className="panel-title" style={{marginBottom:".75rem"}}>Eligible Countries</div><div className="chips-row">{elig.eligible_countries?.length?elig.eligible_countries.map(c=><span key={c} className="chip chip-green">✓ {c}</span>):<span style={{color:"var(--text3)",fontSize:".85rem"}}>None matched</span>}</div></div>
         <div className="panel" style={{marginBottom:0}}><div className="panel-title" style={{marginBottom:".75rem"}}>Recommended Programs</div><div className="chips-row">{elig.recommended_programs?.map(p=><span key={p} className="chip chip-blue">{p}</span>)}</div></div>
       </div>
-      {totalBudgetLKR>0&&<div className="panel" style={{marginTop:"1rem"}}><div className="panel-title" style={{marginBottom:".75rem"}}>💰 Financial Summary</div><DataGrid pairs={[["Total Budget",formatLKR(totalBudgetLKR)],["Funding Source",fin.funding_source]]} /></div>}
+      {totalBudgetLKR>0&&<div className="panel" style={{marginTop:"1rem"}}><div className="panel-title" style={{marginBottom:".75rem"}}> Financial Summary</div><DataGrid pairs={[["Total Budget",formatLKR(totalBudgetLKR)],["Funding Source",fin.funding_source]]} /></div>}
       <div className="panel"><div className="panel-title" style={{marginBottom:".75rem"}}>English Proficiency</div>{engBadges.length?<div style={{display:"flex",gap:".5rem",flexWrap:"wrap"}}>{engBadges}</div>:<span style={{color:"var(--text3)",fontSize:".82rem",fontFamily:"var(--mono)"}}>No scores provided</span>}</div>
       {elig.notes?.length>0&&<div className="panel"><div className="panel-title" style={{marginBottom:".75rem"}}>Assessment Notes</div>{elig.notes.map((n,i)=><Alert key={i} type={elig.eligible?"ok":"warn"}>{n}</Alert>)}</div>}
       <div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Documents</button><button className="btn btn-primary" onClick={onNext}>View Universities →</button></div>
@@ -1824,7 +1843,7 @@ function UniversitiesStep({profile,elig,onBack,onReset}){
   const UniCard=({u,idx})=>(
     <div className="uni-card">
       <div className="uni-header"><div className="uni-name">{idx}. {u.name}</div><div style={{display:"flex",gap:".4rem",flexWrap:"wrap",justifyContent:"flex-end"}}><div className="uni-qs">QS #{u.qs}</div>{u.affordable?<span className="fin-tag">✓ Within Budget</span>:<span className="fin-warn-tag">⚠ Stretch</span>}</div></div>
-      <div className="uni-meta"><span>📍 {u.location}</span><span>💰 {u.tuitionDisplay}</span></div>
+      <div className="uni-meta"><span>{u.location}</span><span>{u.tuitionDisplay}</span></div>
       <div className="uni-tags">{u.programs.map(p=><span key={p} className="uni-tag">{p}</span>)}</div>
       <div className="uni-reqs"><div className="req-box"><div className="req-lbl">Min GPA</div><div className="req-val">{u.minGpa} / 4.0</div></div><div className="req-box"><div className="req-lbl">IELTS Min</div><div className="req-val">{u.ielts}+</div></div></div>
       <a href={u.website} target="_blank" rel="noreferrer" className="uni-link">↗ Visit Website</a>
@@ -1856,16 +1875,21 @@ function AuthPage({onLogin}){
   const [loading,setLoading]=useState(false);
 
   const login=async()=>{
-    if(!email||!pw){
+    const normalizedEmail = (email || "").trim();
+    if(!normalizedEmail||!pw){
       setErr("Enter email and password.");
+      return;
+    }
+    if(pw !== pw.trim()){
+      setErr("Password contains leading or trailing spaces. Please remove extra spaces and try again.");
       return;
     }
     setErr("");
     setOk("");
     setLoading(true);
     try{
-      const payload = await loginUser({ email, password: pw });
-      const user = payload?.user || { email, name: email.split("@")[0] };
+      const payload = await loginUser({ email: normalizedEmail, password: pw });
+      const user = payload?.user || { email: normalizedEmail, name: normalizedEmail.split("@")[0] };
       onLogin({ ...user, token: payload?.token || "" });
     }catch(e){
       setErr(e.message || "Login failed.");
@@ -1875,15 +1899,21 @@ function AuthPage({onLogin}){
   };
 
   const register=async()=>{
-    if(!name||!email||!pw){
+    const normalizedName = (name || "").trim();
+    const normalizedEmail = (email || "").trim();
+    if(!normalizedName||!normalizedEmail||!pw){
       setErr("Fill all fields.");
+      return;
+    }
+    if(pw !== pw.trim()){
+      setErr("Password contains leading or trailing spaces. Please remove extra spaces and try again.");
       return;
     }
     setErr("");
     setOk("");
     setLoading(true);
     try{
-      await registerUser({ name, email, password: pw });
+      await registerUser({ name: normalizedName, email: normalizedEmail, password: pw });
       setOk("Account created. You can now sign in.");
       setTimeout(()=>{
         setOk("");
@@ -1917,6 +1947,9 @@ function AuthPage({onLogin}){
             <button className="btn btn-primary btn-full" onClick={login} style={{marginTop:"1rem"}} disabled={loading}>
               {loading ? "Signing In..." : "Sign In"}
             </button>
+            <div style={{marginTop:".7rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
+              If you are using a fresh Colab runtime, local accounts may reset. Use <strong>Register</strong> first, then sign in.
+            </div>
           </div>
         ) : (
           <div>
@@ -2011,7 +2044,6 @@ export default function App(){
           <div className="logo">
             <div className="logo-icon">🎓</div>
             <span>UniAssist</span>
-            <span className="logo-sub">AI</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
             <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
@@ -2020,7 +2052,7 @@ export default function App(){
         </div>
         <div className="main">
           <div className="hero">
-            <div className="hero-eyebrow"><span className="hero-dot" />EasyOCR + ML Powered</div>
+            
             <h1>Find Your <em>Ideal</em><br />University Abroad</h1>
           
           </div>
