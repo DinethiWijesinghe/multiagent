@@ -838,6 +838,7 @@ _db_engine = None
 _SessionLocal = None
 _db_backend = "json"
 _chatbot_agent = None
+_rag_provider = "none"
 
 CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
 USERS_DIR = Path(__file__).resolve().parent / "data" / "users"
@@ -1347,7 +1348,7 @@ _ml: Pipeline = None
 
 @app.on_event("startup")
 def startup():
-    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent
+    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent, _rag_provider
 
     if DB_STRICT_MODE and not DATABASE_URL:
         raise RuntimeError("DB_STRICT_MODE=true but DATABASE_URL/NEON_DATABASE_URL is not set")
@@ -1380,8 +1381,10 @@ def startup():
         if RAGSystem:
             try:
                 rag_system = RAGSystem()
+                _rag_provider = getattr(rag_system, "llm_provider", "none") or "none"
             except Exception as exc:
                 rag_system = None
+                _rag_provider = "none"
                 print(f"[Chat] RAG init failed: {exc}")
 
         _chatbot_agent = ChatbotAgent(
@@ -1434,6 +1437,7 @@ def health():
         "db_strict_mode": DB_STRICT_MODE,
         "ocr_engine": _OCR_ENGINE or "none",
         "use_easyocr_flag": USE_EASYOCR,
+        "rag_provider": _rag_provider,
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
@@ -1687,12 +1691,23 @@ def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header
         }
 
     if current_user_email:
+        if not isinstance(context.get("conversation_history"), list):
+            stored_record = _load_chat_record(current_user_email)
+            stored_messages = stored_record.get("messages", [])
+            history = [
+                {"role": m.get("role"), "text": m.get("text", "")}
+                for m in stored_messages[-20:]
+                if isinstance(m, dict) and m.get("role") in ("user", "bot", "assistant")
+            ]
+        else:
+            history = context["conversation_history"]
         context = {
             **context,
             "profile_data": context.get("profile_data") or _load_user_state_record(current_user_email),
             "document_data": context.get("document_data") or {
                 "documents": _load_document_records(current_user_email),
             },
+            "conversation_history": history,
         }
 
     if _chatbot_agent:

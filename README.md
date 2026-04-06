@@ -17,7 +17,7 @@ This repository contains a multi-agent system designed to help international stu
   - Provides conversational guidance, explains requirements, answers "why" questions, and supports users through the application pipeline.
 
 - **Chatbot Agent** (`multiagent/core/agents/chatbot_agent.py`)
-  - Handles conversational queries, orchestrates other agents for personalized responses, and provides guidance on eligibility, finances, recommendations, and emotional support.
+  - Handles conversational queries, orchestrates other agents for personalized responses, and acts as the integration layer that explains eligibility, finances, recommendations, documents, deadlines, visa issues, and emotional support in one conversation.
 
 - **Recommendation Agent** (`multiagent/core/agents/recommendation_agent.py`)
   - Ranks and prioritises universities based on eligibility, financial feasibility, deadlines, and risk.
@@ -28,13 +28,16 @@ This repository contains a multi-agent system designed to help international stu
 
 This section maps key external factors that impact student decision-making to the agents/components that address them.
 
+The Chatbot Agent is the cross-cutting integration layer for all factors below. It does not replace the specialised agents that perform eligibility, financial, OCR, or recommendation analysis. Instead, it combines their outputs, adds user context and conversation history, and explains the final result to the student in a clear way.
+
 ### 1. Financial Constraints
-**Handled by:** Financial Feasibility Agent + Recommendation Agent
+**Handled by:** Financial Feasibility Agent + Recommendation Agent + Chatbot Agent
 
 **How it works:**
 - Calculates tuition, living costs, and exchange-rate impact.
 - Matches student budget with university cost profiles.
 - Suggests scholarships and lower-cost alternatives.
+- Chatbot explains the financial result, answers follow-up questions, and can present Gemini-backed grounded guidance when enabled.
 
 **External factors covered:**
 - High tuition & living expenses
@@ -53,6 +56,7 @@ Avoids unsuitable universities and reduces financial risk.
 - Chatbot provides verified, up-to-date answers to common questions.
 - Recommendation Agent uses validated datasets and scraped university data only.
 - Explains eligibility, fees, deadlines clearly.
+- Chatbot integrates recommendation output with RAG-grounded answers so students receive one consistent explanation.
 
 **External factors covered:**
 - Fragmented information
@@ -65,12 +69,13 @@ Fewer incorrect applications and better-informed decisions.
 ---
 
 ### 3. Educational Background Differences
-**Handled by:** Eligibility Verification Agent + OCR Document Agent
+**Handled by:** Eligibility Verification Agent + OCR Document Agent + Chatbot Agent
 
 **How it works:**
 - OCR extracts A/L, diploma, and GPA data from uploaded documents.
 - Eligibility agent maps Sri Lankan qualifications to international requirements.
 - Identifies pathway or foundation options where required.
+- Chatbot explains whether the student is directly eligible, borderline, or should consider pathway options.
 
 **External factors covered:**
 - Curriculum mismatch
@@ -88,6 +93,7 @@ Clear eligibility understanding and reduced blind applications.
 **How it works:**
 - Eligibility agent checks IELTS/TOEFL and other language requirements.
 - Chatbot provides preparation guidance, tips, and confidence support.
+- Chatbot converts language-score checks into practical next steps for the student.
 
 **External factors covered:**
 - IELTS/TOEFL requirements
@@ -106,6 +112,7 @@ Improved confidence and better admission readiness.
 - Chatbot replaces physical consultancy visits with remote guidance.
 - OCR allows remote document upload from rural areas.
 - Prioritizes mobile-friendly access.
+- Chatbot keeps the full process accessible through one conversation-driven interface.
 
 **External factors covered:**
 - Rural access limitations
@@ -124,6 +131,7 @@ Equal access for all students.
 - Provides step-by-step guidance.
 - Reduces fear through clear explanations.
 - Offers reassurance during decision-making.
+- Chatbot uses the analysed outputs from other agents to give specific reassurance rather than generic advice.
 
 **External factors covered:**
 - Stress
@@ -141,6 +149,7 @@ Lower dropout rate and better decision quality.
 **How it works:**
 - Chatbot explains visa steps and required documents.
 - Recommendation Agent avoids high-risk countries/universities based on policies.
+- Chatbot connects university recommendations with visa-related follow-up guidance.
 
 **External factors covered:**
 - Visa rejection risk
@@ -158,6 +167,7 @@ Reduced hesitation and more informed commitment.
 **How it works:**
 - Recommendation Agent prioritizes universities by application deadlines.
 - Chatbot sends reminders and explains timelines.
+- Chatbot turns ranking and deadline data into actionable sequencing for the student.
 
 **External factors covered:**
 - Multiple deadlines
@@ -175,6 +185,7 @@ On-time submissions and higher acceptance chances.
 **How it works:**
 - Recommendation Agent explains why a university is suggested (eligibility fit, cost, deadlines).
 - Chatbot answers "why" questions clearly and without commercial bias.
+- Chatbot exposes the reasoning from the underlying agents in plain language.
 
 **External factors covered:**
 - Consultant bias
@@ -192,6 +203,7 @@ Higher trust and more confident decisions.
 **How it works:**
 - Recommendation Agent suggests online/hybrid options when appropriate.
 - Chatbot explains risks and alternatives for pandemics, travel restrictions, political instability.
+- Chatbot integrates these external-risk considerations with the student's current plan and preferences.
 
 **External factors covered:**
 - Pandemics

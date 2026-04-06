@@ -470,6 +470,52 @@ function createMessage(role,text,metadata){
   };
 }
 
+function parseBotStructuredSections(text){
+  if(typeof text !== "string" || !text.trim()){
+    return { body: text || "", options: [], links: [] };
+  }
+
+  const lines = text.split("\n");
+  const bodyLines = [];
+  const options = [];
+  const links = [];
+  let mode = "body";
+
+  for(const rawLine of lines){
+    const line = (rawLine || "").trim();
+    const lower = line.toLowerCase();
+
+    if(lower === "suggested options:"){
+      mode = "options";
+      continue;
+    }
+    if(lower === "relevant links:"){
+      mode = "links";
+      continue;
+    }
+
+    if(mode === "options" && line.startsWith("- ")){
+      const value = line.slice(2).trim();
+      if(value) options.push(value);
+      continue;
+    }
+
+    if(mode === "links" && line.startsWith("- ")){
+      const value = line.slice(2).trim();
+      if(value) links.push(value);
+      continue;
+    }
+
+    bodyLines.push(rawLine);
+  }
+
+  return {
+    body: bodyLines.join("\n").trim(),
+    options,
+    links,
+  };
+}
+
 function createIntroMessages(){
   return [{...BOT_INTRO[0]}];
 }
@@ -502,6 +548,7 @@ function normalizeMessages(messages){
       role:message.role,
       text:message.text,
       time:message.time || now(),
+      metadata: message.metadata || undefined,
     }));
   if(!valid.length) return createIntroMessages();
   const withIntro = valid.some(isIntroMessage) ? valid : [createIntroMessages()[0],...valid];
@@ -617,16 +664,21 @@ async function loginUser({email,password}){
   return payload;
 }
 
-async function fetchBackendChatReply(message, token, timeoutMs = 12000){
+async function fetchBackendChatReply(message, token, messages, timeoutMs = 12000){
   const controller = new AbortController();
   const timeoutId = setTimeout(()=>controller.abort(), timeoutMs);
+  // Send last 20 turns as conversation_history so Gemini can maintain context
+  const conversation_history = (messages || [])
+    .filter(m => m.role === "user" || m.role === "bot")
+    .slice(-20)
+    .map(m => ({ role: m.role === "bot" ? "assistant" : m.role, text: m.text }));
   let response;
   try{
     response = await fetchApi("/chat/respond", {
       method: "POST",
       headers: authHeaders(token, true),
       signal: controller.signal,
-      body: JSON.stringify({ user_message: message, context: {} }),
+      body: JSON.stringify({ user_message: message, context: { conversation_history } }),
     });
   }finally{
     clearTimeout(timeoutId);
@@ -642,6 +694,8 @@ async function fetchBackendChatReply(message, token, timeoutMs = 12000){
     source: payload?.source || "backend_agent",
     intent: payload?.intent,
     actions: payload?.actions,
+    agentData: payload?.agent_data,
+    externalFactors: payload?.agent_data?.external_factors || [],
   };
 }
 
@@ -650,6 +704,15 @@ const QUICK_REPLIES = [
   "IELTS requirements?",
   "Scholarships for Sri Lankans",
   "Cost of living in Singapore",
+];
+
+const FACTOR_QUICK_REPLIES = [
+  { label: "Financial", text: "My family budget is limited. Which universities are affordable with scholarship options?" },
+  { label: "Eligibility", text: "I have A/L results and IELTS. Am I eligible for UK or Australia CS programs?" },
+  { label: "Visa", text: "What visa documents should I prepare early to avoid rejection risk?" },
+  { label: "Deadlines", text: "I am late for this intake. Which universities still have open deadlines?" },
+  { label: "Trust", text: "Why are these universities recommended for me? Show the reason clearly." },
+  { label: "Global Risk", text: "If policies change or travel restrictions return, what backup plan should I use?" },
 ];
 
 function ChatBot({user}){
@@ -727,12 +790,16 @@ function ChatBot({user}){
     let replySource = "backend_agent";
     let replyIntent = undefined;
     let replyActions = undefined;
+    let replyAgentData = undefined;
+    let replyExternalFactors = [];
     try{
-      const backendReply = await fetchBackendChatReply(msg, user?.token);
+      const backendReply = await fetchBackendChatReply(msg, user?.token, messages);
       replyText = (backendReply.text || "").trim();
       replySource = backendReply.source || "backend_agent";
       replyIntent = backendReply.intent;
       replyActions = backendReply.actions;
+      replyAgentData = backendReply.agentData;
+      replyExternalFactors = backendReply.externalFactors;
     }catch(error){
       const message = error instanceof Error ? error.message : "Live chat unavailable";
       replyText = `Live backend chat is unavailable right now. ${message}. Please check the API server and try again.`;
@@ -745,6 +812,8 @@ function ChatBot({user}){
       source: replySource,
       intent: replyIntent,
       actions: replyActions,
+      agentData: replyAgentData,
+      externalFactors: replyExternalFactors,
     });
     setMessages(p=>[...p,botMessage]);
     if(user?.email){
@@ -795,7 +864,65 @@ function ChatBot({user}){
         <div className="chat-messages">
           {messages.map((m,i)=>(
             <div key={m.id||i} className={`chat-msg ${m.role}`}>
-              <div className="chat-bubble">{m.text}</div>
+              <div className="chat-bubble">
+                {(()=>{
+                  const parsed = m.role === "bot" ? parseBotStructuredSections(m.text) : null;
+                  const displayText = parsed ? (parsed.body || m.text) : m.text;
+                  return <div>{displayText}</div>;
+                })()}
+                {m.role === "bot" && Array.isArray(m.metadata?.externalFactors) && m.metadata.externalFactors.length > 0 && (
+                  <div style={{marginTop:".55rem", display:"flex", gap:".35rem", flexWrap:"wrap"}}>
+                    {m.metadata.externalFactors.map(f => (
+                      <span
+                        key={f.id || f.label}
+                        style={{fontSize:".72rem", padding:".15rem .45rem", borderRadius:"999px", background:"rgba(255,255,255,.12)", border:"1px solid rgba(255,255,255,.18)"}}
+                      >
+                        {f.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {m.role === "bot" && (()=>{
+                  const parsed = parseBotStructuredSections(m.text);
+                  if(!parsed.options.length) return null;
+                  return (
+                    <div style={{marginTop:".55rem", display:"flex", gap:".35rem", flexWrap:"wrap"}}>
+                      {parsed.options.slice(0,3).map(option => (
+                        <span
+                          key={option}
+                          style={{fontSize:".72rem", padding:".15rem .45rem", borderRadius:"999px", background:"rgba(79,124,255,0.12)", border:"1px solid rgba(79,124,255,0.35)"}}
+                        >
+                          {option}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {m.role === "bot" && (()=>{
+                  const parsed = parseBotStructuredSections(m.text);
+                  if(!parsed.links.length) return null;
+                  return (
+                    <div style={{marginTop:".55rem", display:"flex", gap:".35rem", flexWrap:"wrap"}}>
+                      {parsed.links.slice(0,3).map(url => (
+                        <a
+                          key={url}
+                          href={url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{fontSize:".72rem", padding:".15rem .45rem", borderRadius:"999px", textDecoration:"none", color:"#dbe7ff", background:"rgba(44,159,176,0.18)", border:"1px solid rgba(44,159,176,0.42)"}}
+                        >
+                          Open source
+                        </a>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {m.role === "bot" && Array.isArray(m.metadata?.actions) && m.metadata.actions.length > 0 && (
+                  <div style={{marginTop:".5rem", fontSize:".78rem", opacity:.9}}>
+                    Next: {m.metadata.actions.slice(0, 3).join(" • ")}
+                  </div>
+                )}
+              </div>
               <div className="chat-time">{m.time}</div>
             </div>
           ))}
@@ -811,6 +938,13 @@ function ChatBot({user}){
         <div className="chat-suggestions">
           {QUICK_REPLIES.map(q=>(
             <button key={q} className="chat-sug" onClick={()=>sendMessage(q)}>{q}</button>
+          ))}
+        </div>
+        <div className="chat-suggestions" style={{borderTop:"1px solid rgba(255,255,255,.08)", paddingTop:".5rem"}}>
+          {FACTOR_QUICK_REPLIES.map(item=>(
+            <button key={item.label} className="chat-sug" onClick={()=>sendMessage(item.text)} title={item.text}>
+              {item.label}
+            </button>
           ))}
         </div>
         <div className="chat-input-area">

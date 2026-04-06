@@ -22,6 +22,7 @@ Components:
 import os
 import json
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import importlib
@@ -200,13 +201,46 @@ class RAGSystem:
                     + "\n".join(f"  {k}: {v}" for k, v in profile.items() if v is not None)
                 )
 
+        agent_results_lines = ""
+        if context:
+            agent_results = context.get("agent_results") or {}
+            if agent_results:
+                parts = []
+                for key, value in agent_results.items():
+                    if value and isinstance(value, dict):
+                        snippet = json.dumps(value, ensure_ascii=False)
+                        parts.append(f"  {key}: {snippet[:600]}")
+                if parts:
+                    agent_results_lines = (
+                        "\n\nSpecialized agent analysis (use this to personalise your answer):\n"
+                        + "\n".join(parts)
+                    )
+
+        external_factor_lines = ""
+        if context:
+            external_factors = context.get("external_factors") or []
+            if external_factors:
+                labels = [
+                    factor.get("label", "")
+                    for factor in external_factors
+                    if isinstance(factor, dict) and factor.get("label")
+                ]
+                if labels:
+                    external_factor_lines = (
+                        "\n\nPriority external factors to address in the answer:\n"
+                        + "\n".join(f"  - {label}" for label in labels[:6])
+                    )
+
         system_content = (
             "You are UniAssist, a helpful and empathetic study-abroad advisor for Sri Lankan students. "
             "Use the knowledge base context below to give accurate, personalised answers about "
             "university eligibility, tuition costs, scholarships, visa requirements, and applications. "
-            "If the context doesn't cover the question, say so honestly rather than guessing."
+            "If the context doesn't cover the question, say so honestly rather than guessing. "
+            "When external factors are provided, explicitly connect your advice to them and end with practical next steps."
             "\n\nKnowledge base context:\n" + context_text
             + profile_lines
+            + agent_results_lines
+            + external_factor_lines
         )
 
         messages: list = [SystemMessage(content=system_content)]
@@ -249,6 +283,77 @@ class RAGSystem:
             + "\n\n"
             "Tip: Set RAG_LLM_PROVIDER=gemini with a valid API key if you want generated narrative answers."
         )
+
+    def _extract_relevant_urls(self, relevant_docs: List[Any], limit: int = 5) -> List[str]:
+        """Extract unique relevant URLs from retrieved documents."""
+        urls: List[str] = []
+        seen = set()
+
+        for doc in relevant_docs or []:
+            metadata = getattr(doc, "metadata", {}) or {}
+
+            # Prefer explicit URL metadata if present.
+            for key in ("website", "url", "source_url"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.startswith(("http://", "https://")) and value not in seen:
+                    seen.add(value)
+                    urls.append(value)
+                    if len(urls) >= limit:
+                        return urls
+
+            # Fallback: parse URLs from the text body.
+            body = getattr(doc, "page_content", "") or ""
+            matches = re.findall(r"https?://[^\s)\]>\"']+", body)
+            for url in matches:
+                cleaned = url.rstrip(".,;")
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    urls.append(cleaned)
+                    if len(urls) >= limit:
+                        return urls
+
+        return urls
+
+    def _extract_question_options(self, query: str, relevant_docs: List[Any], limit: int = 4) -> List[Dict[str, str]]:
+        """Build concise option cards from retrieved docs for UI-friendly follow-up choices."""
+        options: List[Dict[str, str]] = []
+        seen_names = set()
+        _ = query  # reserved for future query-aware ranking refinements
+
+        for doc in relevant_docs or []:
+            body = (getattr(doc, "page_content", "") or "").strip()
+            if not body:
+                continue
+
+            metadata = getattr(doc, "metadata", {}) or {}
+
+            name_match = re.search(r"University:\s*(.+)", body, flags=re.IGNORECASE)
+            country_match = re.search(r"Country:\s*(.+)", body, flags=re.IGNORECASE)
+            website_match = re.search(r"Website:\s*(https?://\S+)", body, flags=re.IGNORECASE)
+
+            name = (name_match.group(1).strip() if name_match else metadata.get("university_id") or "Option").strip()
+            if name in seen_names:
+                continue
+
+            country = (country_match.group(1).strip() if country_match else metadata.get("country") or "").strip()
+            website = ""
+            if website_match:
+                website = website_match.group(1).rstrip(".,;")
+            elif isinstance(metadata.get("website"), str):
+                website = metadata.get("website", "")
+
+            option = {
+                "name": name,
+                "country": country,
+                "website": website,
+            }
+            options.append(option)
+            seen_names.add(name)
+
+            if len(options) >= limit:
+                break
+
+        return options
 
     def index_universities_database(self, json_path: str):
         """
@@ -431,6 +536,9 @@ class RAGSystem:
             if relevant_docs is None:
                 relevant_docs = self.retrieve_relevant_info(query=query, k=k)
 
+            relevant_urls = self._extract_relevant_urls(relevant_docs=relevant_docs)
+            options = self._extract_question_options(query=query, relevant_docs=relevant_docs)
+
             context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
 
             # Generate response using selected provider; keyless mode is default.
@@ -451,6 +559,8 @@ class RAGSystem:
                 "source_documents": relevant_docs,
                 "query": query,
                 "llm_provider": self.llm_provider,
+                "relevant_urls": relevant_urls,
+                "options": options,
             }
 
         except Exception as e:
@@ -458,7 +568,9 @@ class RAGSystem:
             return {
                 "response": "I'm sorry, I encountered an error while processing your request. Please try again.",
                 "source_documents": [],
-                "query": query
+                "query": query,
+                "relevant_urls": [],
+                "options": [],
             }
 
     def answer_with_context(self, query: str, context: Optional[Dict[str, Any]] = None, k: Optional[int] = None, conversation_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
