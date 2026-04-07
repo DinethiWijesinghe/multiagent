@@ -1,29 +1,18 @@
 """
-UniAssist API Server v7.1 — Windows-Fixed Edition
-===================================================
-FIXES vs v7.0:
-  ✓ FIXED   Tesseract "not found" on Windows
-            → Auto-detects common Windows install paths
-            → Falls back to EasyOCR if Tesseract unavailable
-  ✓ ADDED   _configure_tesseract() called at startup
-  ✓ ADDED   OCR_ENGINE auto-selection logic:
-              1. Try Tesseract (fast, low RAM)
-              2. If not found → try EasyOCR (CPU mode)
-              3. If neither → clear error message with install guide
-  ✓ KEPT    All ML classifier, field extractors, FastAPI endpoints
+UniAssist API Server v7.3 — Dual OCR Edition
+============================================
+Highlights:
+    ✓ Tesseract OCR with Windows auto-detection
+    ✓ EasyOCR fallback (CPU mode) when Tesseract is unavailable
+    ✓ TF-IDF + Naive Bayes document classifier
+    ✓ FastAPI endpoints for OCR and multi-agent flows
 
-WINDOWS INSTALL (choose one):
-  Option A — Tesseract (recommended, fast):
+Windows install:
     Download: https://github.com/UB-Mannheim/tesseract/wiki
     Install to: C:\\Program Files\\Tesseract-OCR\\tesseract.exe
-    Then restart this server.
-
-  Option B — EasyOCR (no extra install):
-    Set USE_EASYOCR = True below.
-    First run downloads ~100 MB model weights.
 
 Run:
-  uvicorn api_server:app --host 0.0.0.0 --port 8000
+    uvicorn api_server:app --host 0.0.0.0 --port 8000
 """
 
 import os
@@ -52,7 +41,6 @@ from sklearn.model_selection import cross_val_score
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-USE_EASYOCR          = False   # Set True to force EasyOCR (overrides Tesseract)
 MODEL_PATH           = "uniassist_classifier.pkl"
 CONFIDENCE_THRESHOLD = 0.40
 MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
@@ -71,6 +59,10 @@ _WINDOWS_TESSERACT_PATHS = [
     ),
 ]
 
+USE_EASYOCR = False  # legacy switch; prefer OCR_ENGINE env var
+OCR_ENGINE_MODE = os.environ.get("OCR_ENGINE", "auto").strip().lower()
+if OCR_ENGINE_MODE not in {"auto", "tesseract", "easyocr"}:
+    OCR_ENGINE_MODE = "auto"
 _OCR_ENGINE = None  # will be set to "tesseract", "easyocr", or None after startup
 
 
@@ -137,9 +129,8 @@ def _print_tesseract_install_guide():
     print()
     print("  Alternative: Set environment variable before running:")
     print("    set TESSERACT_CMD=C:\\path\\to\\tesseract.exe")
+    print("  Fallback: install EasyOCR (pip install easyocr)")
     print()
-    print("  OR: Set USE_EASYOCR = True in api_server.py")
-    print("      to use EasyOCR instead (no extra install)")
     print("=" * 60)
     print()
 
@@ -514,26 +505,33 @@ def _preprocess(image_path):
     return gray
 
 
+def _tesseract_config_for_doc(doc_type_hint):
+    """Return OCR preset key and tesseract config based on doc type hint."""
+    hint = (doc_type_hint or "auto").strip().lower()
+
+    # Table-heavy docs benefit from sparse text layout mode.
+    if hint == "financial":
+        return "statement", "--oem 1 --psm 4"
+
+    # MRZ + compact personal fields are typically line/block text.
+    if hint == "passport":
+        return "passport", "--oem 1 --psm 6"
+
+    # Score reports and certificates are generally dense block text.
+    if hint in {"ielts", "toefl", "pte", "alevel"}:
+        return "score_report", "--oem 1 --psm 6"
+
+    if hint in {"bachelor", "master", "diploma"}:
+        return "certificate", "--oem 1 --psm 3"
+
+    return "default", "--oem 1 --psm 3"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# OCR ENGINES
+# OCR ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
 _easyocr_reader = None
-
-
-def _run_tesseract(image_path):
-    """Run Tesseract OCR. Raises if unavailable."""
-    import pytesseract
-    gray = _preprocess(image_path)
-    text = pytesseract.image_to_string(gray, config="--oem 1 --psm 3")
-    data = pytesseract.image_to_data(
-        gray, config="--oem 1 --psm 3",
-        output_type=pytesseract.Output.DICT,
-    )
-    confs = [int(c) for c in data["conf"] if int(c) > 0]
-    conf = (sum(confs) / len(confs) / 100) if confs else 0.0
-    text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
-    return _correct(text.strip()), conf
 
 
 def _run_easyocr_engine(image_path):
@@ -541,67 +539,115 @@ def _run_easyocr_engine(image_path):
     global _easyocr_reader
     if _easyocr_reader is None:
         import easyocr
-        print("[EasyOCR] Loading model (first time ~5 sec) ...")
+        print("[EasyOCR] Loading model (first run may take a few seconds) ...")
         _easyocr_reader = easyocr.Reader(
-            ["en"], gpu=False,
+            ["en"],
+            gpu=False,
             model_storage_directory=os.path.join(
-                os.path.expanduser("~"), ".EasyOCR", "model"),
+                os.path.expanduser("~"), ".EasyOCR", "model"
+            ),
             download_enabled=True,
             verbose=False,
         )
         print("[EasyOCR] Ready.")
+
     img = _preprocess(image_path)
+    bgr_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     results = _easyocr_reader.readtext(
-        cv2.cvtColor(img, cv2.COLOR_GRAY2BGR),
-        detail=1, batch_size=1, workers=0, beamWidth=3,
+        bgr_img,
+        detail=1,
+        batch_size=1,
+        workers=0,
+        beamWidth=3,
     )
+
     words = [t for (_, t, c) in results if t.strip() and c > 0.25]
     confs = [c for (_, t, c) in results if t.strip() and c > 0.25]
     text = " ".join(words)
     conf = float(np.mean(confs)) if confs else 0.0
     text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
-    return _correct(text.strip()), conf
+    return _correct(text.strip()), conf, "easyocr_default"
 
 
-def _run_ocr(image_path):
-    """
-    Smart OCR dispatcher:
-      - USE_EASYOCR=True  → EasyOCR always
-      - _OCR_ENGINE set to "tesseract" → use Tesseract
-      - _OCR_ENGINE set to "easyocr"   → use EasyOCR
-      - Neither available → raise with clear instructions
-    """
+def _run_tesseract(image_path, doc_type_hint="auto"):
+    """Run Tesseract OCR. Raises if unavailable."""
+    import pytesseract
+    gray = _preprocess(image_path)
+    preset_key, config = _tesseract_config_for_doc(doc_type_hint)
+    text = pytesseract.image_to_string(gray, config=config)
+    data = pytesseract.image_to_data(
+        gray, config=config,
+        output_type=pytesseract.Output.DICT,
+    )
+    confs = [int(c) for c in data["conf"] if int(c) > 0]
+    conf = (sum(confs) / len(confs) / 100) if confs else 0.0
+    text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
+    return _correct(text.strip()), conf, preset_key
+
+
+def _run_ocr(image_path, doc_type_hint="auto"):
+    """Run OCR via selected engine with Tesseract-first fallback logic."""
     global _OCR_ENGINE
 
-    if USE_EASYOCR or _OCR_ENGINE == "easyocr":
-        return _run_easyocr_engine(image_path)
+    force_easyocr = OCR_ENGINE_MODE == "easyocr" or USE_EASYOCR
+    force_tesseract = OCR_ENGINE_MODE == "tesseract"
 
-    if _OCR_ENGINE == "tesseract":
-        return _run_tesseract(image_path)
-
-    # Engine not yet determined — try both
-    try:
-        result = _run_tesseract(image_path)
-        _OCR_ENGINE = "tesseract"
-        return result
-    except Exception as te:
-        print(f"[Tesseract] Failed: {te}")
-        print("[OCR] Falling back to EasyOCR ...")
+    if force_easyocr:
         try:
             result = _run_easyocr_engine(image_path)
             _OCR_ENGINE = "easyocr"
             return result
-        except ImportError:
+        except Exception as ee:
+            raise RuntimeError(f"EasyOCR failed while OCR mode is forced to easyocr: {ee}")
+
+    if _OCR_ENGINE == "easyocr" and not force_tesseract:
+        return _run_easyocr_engine(image_path)
+
+    if _OCR_ENGINE == "tesseract":
+        try:
+            return _run_tesseract(image_path, doc_type_hint=doc_type_hint)
+        except Exception:
+            if force_tesseract:
+                raise RuntimeError("Tesseract failed while OCR mode is forced to tesseract.")
+            # Keep service resilient: when Tesseract fails on a specific file,
+            # attempt EasyOCR as a fallback before returning an error.
+            try:
+                result = _run_easyocr_engine(image_path)
+                _OCR_ENGINE = "easyocr"
+                return result
+            except Exception:
+                pass
+
+    try:
+        result = _run_tesseract(image_path, doc_type_hint=doc_type_hint)
+        _OCR_ENGINE = "tesseract"
+        return result
+    except Exception as te:
+        if force_tesseract:
+            _OCR_ENGINE = None
             raise RuntimeError(
-                "No OCR engine available!\n\n"
-                "To fix this, choose ONE of:\n"
-                "  Option A (Tesseract — recommended):\n"
+                "Tesseract OCR unavailable while OCR_ENGINE=tesseract.\n\n"
+                "To fix this:\n"
+                "  1. Download: https://github.com/UB-Mannheim/tesseract/wiki\n"
+                "  2. Install to C:\\Program Files\\Tesseract-OCR\\\n"
+                "  3. Restart server\n"
+                f"\nDetails: {te}"
+            )
+        try:
+            result = _run_easyocr_engine(image_path)
+            _OCR_ENGINE = "easyocr"
+            return result
+        except Exception as ee:
+            _OCR_ENGINE = None
+            raise RuntimeError(
+                "No OCR engine available.\n\n"
+                "To fix this:\n"
+                "  Option A (Tesseract):\n"
                 "    1. Download: https://github.com/UB-Mannheim/tesseract/wiki\n"
                 "    2. Install to C:\\Program Files\\Tesseract-OCR\\\n"
-                "    3. Restart server\n\n"
-                "  Option B (EasyOCR — no extra install):\n"
+                "  Option B (EasyOCR):\n"
                 "    pip install easyocr\n"
-                "    Set USE_EASYOCR = True in api_server.py\n"
+                f"\nDetails: tesseract_error={te} | easyocr_error={ee}"
             )
 
 
@@ -635,6 +681,82 @@ def _score(doc_type, fields, ocr_conf, ml_conf):
     return round(min(fs * 0.50 + ocr_conf * 0.25 + ml_conf * 0.25, 1.0), 3)
 
 
+_REQUIRED_FIELDS = {
+    "alevel": ["subjects", "grades"],
+    "bachelor": ["degree", "university"],
+    "master": ["degree", "university"],
+    "diploma": ["degree"],
+    "ielts": ["overall"],
+    "toefl": ["total"],
+    "pte": ["overall"],
+    "passport": ["passport_no", "surname", "given_names"],
+    "financial": ["bank_name", "account_no", "closing_bal"],
+}
+
+
+def _has_value(v):
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return bool(v.strip())
+    if isinstance(v, (list, tuple, set, dict)):
+        return len(v) > 0
+    return True
+
+
+def _field_diagnostics(doc_type, fields, ocr_conf, ml_conf):
+    fw = _FW.get(doc_type, {})
+    required = _REQUIRED_FIELDS.get(doc_type, [])
+
+    field_confidence = {}
+    missing_reasons = {}
+
+    for key, value in fields.items():
+        present = _has_value(value)
+        base_w = fw.get(key, 0.15)
+        if present:
+            field_confidence[key] = round(min(1.0, 0.35 + base_w * 0.35 + ocr_conf * 0.15 + ml_conf * 0.15), 3)
+        else:
+            field_confidence[key] = 0.0
+
+    for key in required:
+        if not _has_value(fields.get(key)):
+            missing_reasons[key] = (
+                "required_field_not_detected_from_ocr_text"
+                if ocr_conf >= 0.4 else
+                "low_ocr_confidence_image_quality_or_layout"
+            )
+
+    return field_confidence, missing_reasons
+
+
+def _normalize_fields(doc_type, fields):
+    """Add normalized schema keys while keeping existing keys for compatibility."""
+    normalized = dict(fields)
+    normalized["schema_version"] = "2.0"
+    normalized["doc_type_key"] = doc_type
+
+    if doc_type == "alevel":
+        subjects = normalized.get("subjects") or []
+        grades = normalized.get("grades") or []
+
+        if isinstance(subjects, dict):
+            subject_grade_map = {str(k): str(v).upper() for k, v in subjects.items()}
+        else:
+            subject_grade_map = {}
+            if isinstance(subjects, list):
+                if isinstance(grades, list):
+                    for idx, subject in enumerate(subjects):
+                        if not subject:
+                            continue
+                        grade = grades[idx] if idx < len(grades) else None
+                        subject_grade_map[str(subject)] = str(grade).upper() if grade else ""
+
+        normalized["subject_grade_map"] = subject_grade_map
+
+    return normalized
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FIELD EXTRACTORS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,24 +770,85 @@ def _fa(p, text):
     return re.findall(p, text, re.I)
 
 
+_ALEVEL_SUBJECT_MAP = [
+    ("Combined Mathematics", r"combined\s+mathematic(?:s|z)|combined\s+maths?"),
+    ("Physics", r"physics"),
+    ("Chemistry", r"chemistr(?:y|v)"),
+    ("Biology", r"biolog(?:y|v)"),
+    ("General English", r"general\s+english"),
+    ("Political Science", r"political\s+science"),
+    ("Logic & Scientific Method", r"logic.*scientific\s+method"),
+    ("Common General Test", r"common\s+general\s+test"),
+    ("Economics", r"economics"),
+    ("Geography", r"geograph(?:y|v)"),
+    ("Accounting", r"accounting"),
+    ("ICT", r"\b(?:ict|information\s+and\s+communication\s+technology)\b"),
+    ("Sinhala", r"\bsinhala\b"),
+]
+
+
+def _extract_alevel_subjects_grades(text):
+    subjects = []
+    grades = []
+
+    # Line-wise parsing helps when OCR outputs table rows as plain lines.
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+
+        matched_subject = None
+        for subject_name, subject_pattern in _ALEVEL_SUBJECT_MAP:
+            if re.search(subject_pattern, line, re.I):
+                matched_subject = subject_name
+                if subject_name not in subjects:
+                    subjects.append(subject_name)
+                break
+
+        if not matched_subject:
+            continue
+
+        grade_match = re.search(r"(?:grade\s*[:\-]?\s*)?\b([ABCSF])\b", line, re.I)
+        if grade_match:
+            grades.append(grade_match.group(1).upper())
+
+    # Fallback scan for compact OCR text where lines are merged.
+    if not subjects:
+        for subject_name, subject_pattern in _ALEVEL_SUBJECT_MAP:
+            if re.search(subject_pattern, text, re.I):
+                subjects.append(subject_name)
+
+    if not grades:
+        grades = [g.upper() for g in re.findall(r"\b(?:grade\s*[:\-]?\s*)?([ABCSF])\b", text, re.I)]
+
+    return subjects, grades
+
+
 def _extract(doc_type, text):
     t = text.lower()
     if doc_type == "alevel":
+        subjects, grades = _extract_alevel_subjects_grades(text)
+
+        stream = _f(r"(?:subject\s*)?stream[:\s]+([A-Z]+)", text)
+        if not stream:
+            if any(s in subjects for s in ["Physics", "Chemistry", "Biology"]):
+                stream = "BIO SCIENCE"
+            elif "Combined Mathematics" in subjects:
+                stream = "PHYSICAL SCIENCE"
+            elif any(s in subjects for s in ["Political Science", "Sinhala", "Economics"]):
+                stream = "ARTS"
+
         return {
-            "name":          _f(r"certify that\s+([A-Z][A-Z.\s]+)\n", text),
-            "index_number":  _f(r"(?:Index\s*Number[:\s]+|Index\s*\n\s*Number[:\s]+)(\d{7})", text),
+            "name":          _f(r"(?:certify\s+that|candidate\s*name)[:\s]+([A-Z][A-Z.\s]{3,})", text),
+            "index_number":  _f(r"(?:index\s*(?:number|no\.?))[:\s]*([0-9]{6,10})", text),
             "year":          _f(r"(20\d{2})", text),
-            "subjects":      _fa(
-                r"(Physics|Chemistry|Combined Mathematic?s?|Biology|Sinhala|"
-                r"Political Science|General English|Logic.*?Method|"
-                r"Common General Test|Economics|Geography|Accounting|ICT)", text
-            ),
-            "grades":        _fa(r"\|\s*([ABCSF])\s*\||([ABCSF])\s+Pass", text),
-            "z_score":       _f(r"Z[\-\s]?Score[:\s]+([0-9.]+)", text),
+            "subjects":      subjects,
+            "grades":        grades,
+            "z_score":       _f(r"z\s*[-.]?\s*score[:\s]*([0-9.]+)", text),
             "district_rank": _f(r"District\s*Rank[:\s]+(\d+)", text),
             "island_rank":   _f(r"Island\s*Rank[:\s]+(\d+)", text),
-            "stream":        _f(r"(?:Subject\s*)?Stream[:\s]+([A-Z]+)", text),
-            "date_of_issue": _f(r"(?:Date of Issue|Date)[:\s]+(.+?\d{4})", text),
+            "stream":        stream,
+            "date_of_issue": _f(r"(?:date\s*of\s*issue|issued\s*date|date)[:\s]+(.+?\d{4})", text),
         }
     elif doc_type in ("bachelor", "master", "diploma"):
         return {
@@ -741,7 +924,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import tempfile
-from typing import Any
+from typing import Any, Literal
 from sqlalchemy import Column, DateTime, String, Text, create_engine, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -807,6 +990,17 @@ class DBDocumentUpload(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class DBApplication(Base):
+    __tablename__ = "applications"
+
+    application_id = Column(String(64), primary_key=True, index=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="submitted")
+    data = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 def _normalize_database_url(raw_url: str) -> str:
     url = (raw_url or "").strip()
     if url.startswith("postgresql://"):
@@ -833,10 +1027,13 @@ DATABASE_URL = _normalize_database_url(
     os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 )
 DB_STRICT_MODE = _env_true("DB_STRICT_MODE", False)
+RAG_ENABLED = _env_true("RAG_ENABLED", True)
+SQLITE_DB_PATH = Path(__file__).resolve().parent / "data" / "app.db"
+SQLITE_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH.as_posix()}"
 
 _db_engine = None
 _SessionLocal = None
-_db_backend = "json"
+_db_backend = "uninitialized"
 _chatbot_agent = None
 _rag_provider = "none"
 
@@ -844,6 +1041,8 @@ CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
 USERS_DIR = Path(__file__).resolve().parent / "data" / "users"
 USER_STATE_DIR = Path(__file__).resolve().parent / "data" / "user_state"
 DOCUMENTS_DIR = Path(__file__).resolve().parent / "data" / "documents"
+APPLICATIONS_DIR = Path(__file__).resolve().parent / "data" / "applications"
+HISTORICAL_OUTCOMES_PATH = Path(__file__).resolve().parent / "data" / "training" / "historical_admissions_outcomes.jsonl"
 UNIVERSITIES_DB_PATH = Path(__file__).resolve().parent / "data" / "databases" / "universities_database.json"
 CHAT_HISTORY_LIMIT = 500
 PASSWORD_HASH_ROUNDS = 200_000
@@ -867,6 +1066,7 @@ class RegisterPayload(BaseModel):
     name: str
     email: str
     password: str
+    role: Literal["student", "advisor", "admin"] = "student"
 
 
 class LoginPayload(BaseModel):
@@ -877,6 +1077,47 @@ class LoginPayload(BaseModel):
 class UserStatePayload(BaseModel):
     user_id: str
     state: dict[str, Any]
+
+
+class UpdateRolePayload(BaseModel):
+    role: Literal["student", "advisor", "admin"]
+
+
+class SubmitApplicationPayload(BaseModel):
+    university_name: str
+    university_id: str | None = None
+    program: str
+    country: str
+    eligibility_tier: str | None = None
+    grade_point: float | None = None
+    notes: str | None = None
+    university_data: dict[str, Any] | None = None
+
+
+class UpdateApplicationStatusPayload(BaseModel):
+    status: Literal["submitted", "under_review", "accepted", "rejected", "withdrawn"]
+    advisor_notes: str | None = None
+
+
+class HistoricalOutcomePayload(BaseModel):
+    application_id: str | None = None
+    user_id: str | None = None
+    country: str | None = None
+    university_id: str | None = None
+    university_name: str | None = None
+    program: str | None = None
+    stream: str | None = None
+    gpa: float | None = None
+    university_min_gpa: float | None = None
+    gpa_diff: float | None = None
+    tier_label: Literal["top", "good", "average", "foundation"] | None = None
+    match_label: Literal["strong_match", "meets_minimum", "borderline", "below_minimum"] | None = None
+    alignment_label: Literal[0, 1] | None = None
+    admission_outcome: Literal["accepted", "rejected"]
+
+
+class ImportHistoricalOutcomesPayload(BaseModel):
+    records: list[HistoricalOutcomePayload]
 
 
 class ChatRespondPayload(BaseModel):
@@ -890,6 +1131,13 @@ def _utc_now() -> str:
 
 def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def _normalize_user_role(value: str | None) -> str:
+    role = (value or "student").strip().lower()
+    if role not in {"student", "advisor", "admin"}:
+        raise HTTPException(status_code=400, detail="Role must be one of: student, advisor, admin")
+    return role
 
 
 def _safe_user_key(value: str) -> str:
@@ -958,6 +1206,230 @@ def _user_documents_path(user_id: str) -> Path:
 
 def _user_documents_index_path(user_id: str) -> Path:
     return _user_documents_path(user_id) / "index.json"
+
+
+def _bootstrap_db_from_json_files() -> None:
+    """Best-effort import from legacy JSON files into DB tables."""
+    if not _SessionLocal:
+        return
+
+    try:
+        with _SessionLocal() as session:
+            users_count = session.query(DBUser).count()
+            sessions_count = session.query(DBSession).count()
+            states_count = session.query(DBUserState).count()
+            if users_count == 0:
+                users_json = _read_json(_users_path(), {})
+                if isinstance(users_json, dict):
+                    for email, payload in users_json.items():
+                        data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+                        session.merge(DBUser(email=_normalize_email(email), data=data))
+
+            if sessions_count == 0:
+                sessions_json = _read_json(_sessions_path(), {})
+                if isinstance(sessions_json, dict):
+                    for token, payload in sessions_json.items():
+                        data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+                        session.merge(DBSession(token=str(token), data=data))
+
+            if states_count == 0 and USER_STATE_DIR.exists():
+                for state_file in USER_STATE_DIR.glob("*.json"):
+                    key = state_file.stem
+                    payload = _read_json(state_file, {})
+                    data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+                    session.merge(DBUserState(user_id=key, data=data))
+
+            session.commit()
+    except Exception as exc:
+        print(f"[DB] JSON bootstrap skipped: {exc}")
+
+
+def _applications_index_path() -> Path:
+    return APPLICATIONS_DIR / "applications.json"
+
+
+def _load_applications() -> list[dict[str, Any]]:
+    """Load all applications (DB or JSON fallback)."""
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            rows = session.query(DBApplication).all()
+            result = []
+            for row in rows:
+                payload = _read_json_text(row.data, {})
+                if isinstance(payload, dict):
+                    payload["application_id"] = row.application_id
+                    payload["user_id"] = row.user_id
+                    payload["status"] = row.status
+                    result.append(payload)
+            return result
+    data = _read_json(_applications_index_path(), [])
+    return data if isinstance(data, list) else []
+
+
+def _save_application(app_record: dict[str, Any]) -> None:
+    """Upsert a single application record."""
+    app_id = app_record.get("application_id", "")
+    if _SessionLocal:
+        with _SessionLocal() as session:
+            row = session.get(DBApplication, app_id)
+            data_str = json.dumps(app_record, ensure_ascii=False)
+            if row is None:
+                session.add(DBApplication(
+                    application_id=app_id,
+                    user_id=app_record.get("user_id", ""),
+                    status=app_record.get("status", "submitted"),
+                    data=data_str,
+                ))
+            else:
+                row.status = app_record.get("status", row.status)
+                row.data = data_str
+            session.commit()
+        return
+    all_apps = _load_applications()
+    idx = next((i for i, a in enumerate(all_apps) if a.get("application_id") == app_id), None)
+    if idx is None:
+        all_apps.append(app_record)
+    else:
+        all_apps[idx] = app_record
+    _write_json(_applications_index_path(), all_apps)
+
+
+def _append_historical_outcome(app_record: dict[str, Any], status: str) -> None:
+    """Append a real admissions outcome record for ML training (JSONL)."""
+    if status not in {"accepted", "rejected"}:
+        return
+
+    user_id = app_record.get("user_id", "")
+    state = _load_user_state_record(user_id) if user_id else {}
+    profile = state.get("profile") if isinstance(state, dict) else {}
+    if not isinstance(profile, dict):
+        profile = {}
+    elig = state.get("elig") if isinstance(state, dict) else {}
+    if not isinstance(elig, dict):
+        elig = {}
+
+    gpa = elig.get("grade_point")
+    try:
+        gpa = float(gpa) if gpa is not None else None
+    except Exception:
+        gpa = None
+
+    uni_data = app_record.get("university_data") if isinstance(app_record.get("university_data"), dict) else {}
+    uni_min = uni_data.get("minGpa")
+    try:
+        uni_min = float(uni_min) if uni_min is not None else None
+    except Exception:
+        uni_min = None
+
+    gpa_diff = (gpa - uni_min) if (gpa is not None and uni_min is not None) else None
+
+    app_id = str(app_record.get("application_id", "")).strip()
+    # Deduplicate by (application_id, admission_outcome)
+    existing_keys: set[str] = set()
+    if HISTORICAL_OUTCOMES_PATH.exists():
+        try:
+            with open(HISTORICAL_OUTCOMES_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    raw = (line or "").strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        key = f"{row.get('application_id','')}::{row.get('admission_outcome','')}"
+                        existing_keys.add(key)
+        except Exception:
+            pass
+
+    dedupe_key = f"{app_id}::{status}"
+    if app_id and dedupe_key in existing_keys:
+        return
+
+    record = {
+        "timestamp": _utc_now(),
+        "application_id": app_id,
+        "user_id": user_id,
+        "country": app_record.get("country", ""),
+        "university_id": app_record.get("university_id", ""),
+        "university_name": app_record.get("university_name", ""),
+        "program": app_record.get("program", "") or profile.get("program_interest", ""),
+        "stream": profile.get("stream", ""),
+        "gpa": gpa,
+        "university_min_gpa": uni_min,
+        "gpa_diff": gpa_diff,
+        "qs_world": uni_data.get("qs"),
+        "the_world": uni_data.get("the"),
+        "tier_label": app_record.get("eligibility_tier") or elig.get("eligibility_tier", ""),
+        "match_label": elig.get("tier_match", ""),
+        "alignment_label": 1 if (elig.get("program_alignment", "").startswith("✅")) else None,
+        "admission_outcome": status,
+    }
+
+    HISTORICAL_OUTCOMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(HISTORICAL_OUTCOMES_PATH, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _append_imported_historical_outcome(record: dict[str, Any]) -> bool:
+    """Append imported historical outcome row with basic dedupe check."""
+    status = str(record.get("admission_outcome", "")).strip().lower()
+    if status not in {"accepted", "rejected"}:
+        return False
+
+    app_id = str(record.get("application_id", "")).strip()
+    university = str(record.get("university_name", "")).strip().lower()
+    program = str(record.get("program", "")).strip().lower()
+    dedupe_key = f"{app_id}::{status}::{university}::{program}"
+
+    existing_keys: set[str] = set()
+    if HISTORICAL_OUTCOMES_PATH.exists():
+        try:
+            with open(HISTORICAL_OUTCOMES_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    raw = (line or "").strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        k = (
+                            f"{str(row.get('application_id','')).strip()}::"
+                            f"{str(row.get('admission_outcome','')).strip().lower()}::"
+                            f"{str(row.get('university_name','')).strip().lower()}::"
+                            f"{str(row.get('program','')).strip().lower()}"
+                        )
+                        existing_keys.add(k)
+        except Exception:
+            pass
+
+    if dedupe_key in existing_keys:
+        return False
+
+    clean = dict(record)
+    clean["timestamp"] = clean.get("timestamp") or _utc_now()
+    HISTORICAL_OUTCOMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(HISTORICAL_OUTCOMES_PATH, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(clean, ensure_ascii=False) + "\n")
+    return True
+
+
+def _backfill_historical_outcomes_from_applications() -> int:
+    """Backfill outcomes file from already-decided applications."""
+    all_apps = _load_applications()
+    count = 0
+    for app in all_apps:
+        status = str(app.get("status", "")).strip().lower()
+        if status in {"accepted", "rejected"}:
+            before_size = HISTORICAL_OUTCOMES_PATH.stat().st_size if HISTORICAL_OUTCOMES_PATH.exists() else 0
+            _append_historical_outcome(app, status)
+            after_size = HISTORICAL_OUTCOMES_PATH.stat().st_size if HISTORICAL_OUTCOMES_PATH.exists() else 0
+            if after_size > before_size:
+                count += 1
+    return count
 
 
 def _load_users() -> dict[str, dict[str, Any]]:
@@ -1057,6 +1529,30 @@ def _authenticate_token(authorization: str | None, *, required: bool = True) -> 
 
 def _require_current_user(authorization: str | None = Header(default=None)) -> str:
     return _authenticate_token(authorization, required=True) or ""
+
+
+def _require_role(authorization: str | None, allowed: set[str]) -> str:
+    email = _authenticate_token(authorization, required=True) or ""
+    users = _load_users()
+    role = (users.get(email, {}).get("role") or "student").strip().lower()
+    if role not in {"student", "advisor", "admin"}:
+        role = "student"
+    if role not in allowed:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return email
+
+
+def _require_admin(authorization: str | None = Header(default=None)) -> str:
+    return _require_role(authorization, {"admin"})
+
+
+def _require_advisor_or_admin(authorization: str | None = Header(default=None)) -> str:
+    return _require_role(authorization, {"advisor", "admin"})
+
+
+def _require_auth(authorization: str | None = Header(default=None)) -> str:
+    """Any authenticated user (student, advisor, or admin)."""
+    return _require_role(authorization, {"student", "advisor", "admin"})
 
 
 def _ensure_user_access(user_id: str, current_user_email: str) -> str:
@@ -1329,10 +1825,9 @@ def _merge_agent_data(existing: dict[str, Any], incoming: dict[str, Any]) -> dic
 
 app = FastAPI(
     title="UniAssist OCR API",
-    version="7.1",
+    version="7.3",
     description=(
-        "Windows-fixed edition. "
-        "Auto-detects Tesseract; falls back to EasyOCR if not found. "
+        "Dual OCR edition with Tesseract auto-detection and EasyOCR fallback. "
         "TF-IDF + NaiveBayes ML classifier. 9 Sri Lankan document types."
     ),
 )
@@ -1350,27 +1845,34 @@ _ml: Pipeline = None
 def startup():
     global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent, _rag_provider
 
-    if DB_STRICT_MODE and not DATABASE_URL:
-        raise RuntimeError("DB_STRICT_MODE=true but DATABASE_URL/NEON_DATABASE_URL is not set")
-
-    if DATABASE_URL:
-        try:
-            _db_engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-            Base.metadata.create_all(bind=_db_engine)
-            _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
+    db_url = DATABASE_URL or SQLITE_DATABASE_URL
+    try:
+        if db_url.startswith("sqlite:///"):
+            SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _db_engine = create_engine(db_url, connect_args={"check_same_thread": False})
+            _db_backend = "sqlite"
+            print(f"[DB] Connected to SQLite ({SQLITE_DB_PATH}).")
+        else:
+            _db_engine = create_engine(db_url, pool_pre_ping=True)
             _db_backend = "postgresql"
             print("[DB] Connected to PostgreSQL/Neon.")
-        except Exception as exc:
-            _db_engine = None
-            _SessionLocal = None
-            _db_backend = "json"
-            print(f"[DB] PostgreSQL init failed: {exc}")
-            if DB_STRICT_MODE:
-                raise RuntimeError("DB_STRICT_MODE=true and PostgreSQL connection failed") from exc
-    else:
-        _db_backend = "json"
-        if DB_STRICT_MODE:
-            raise RuntimeError("DB_STRICT_MODE=true requires DATABASE_URL or NEON_DATABASE_URL")
+
+        Base.metadata.create_all(bind=_db_engine)
+        _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
+        _bootstrap_db_from_json_files()
+    except Exception as exc:
+        _db_engine = None
+        _SessionLocal = None
+        _db_backend = "unavailable"
+        print(f"[DB] Database init failed: {exc}")
+        raise RuntimeError("Database initialization failed. Set DATABASE_URL or ensure local SQLite path is writable.") from exc
+
+    try:
+        backfilled = _backfill_historical_outcomes_from_applications()
+        if backfilled:
+            print(f"[Applications] Backfilled {backfilled} historical admission outcome(s).")
+    except Exception as exc:
+        print(f"[Applications] Historical outcomes backfill skipped: {exc}")
 
     if ChatbotAgent:
         eligibility_agent = EligibilityVerificationAgent() if EligibilityVerificationAgent else None
@@ -1378,7 +1880,7 @@ def startup():
         recommendation_agent = RecommendationAgent() if RecommendationAgent else None
 
         rag_system = None
-        if RAGSystem:
+        if RAG_ENABLED and RAGSystem:
             try:
                 rag_system = RAGSystem()
                 _rag_provider = getattr(rag_system, "llm_provider", "none") or "none"
@@ -1386,6 +1888,9 @@ def startup():
                 rag_system = None
                 _rag_provider = "none"
                 print(f"[Chat] RAG init failed: {exc}")
+        elif not RAG_ENABLED:
+            _rag_provider = "disabled"
+            print("[Chat] RAG initialization skipped (RAG_ENABLED=false).")
 
         _chatbot_agent = ChatbotAgent(
             eligibility_agent=eligibility_agent,
@@ -1399,42 +1904,60 @@ def startup():
     # 1. Train / load ML model
     _ml = _load_model()
 
-    # 2. Configure Tesseract (Windows path detection)
-    if not USE_EASYOCR:
+    # 2. Configure OCR engine based on OCR_ENGINE mode.
+    if OCR_ENGINE_MODE == "easyocr" or USE_EASYOCR:
+        try:
+            import easyocr  # noqa: F401
+            _OCR_ENGINE = "easyocr"
+            print("[OCR] OCR_ENGINE=easyocr — using EasyOCR.")
+        except ImportError:
+            _OCR_ENGINE = None
+            print("[OCR] EasyOCR not installed. Run: pip install easyocr")
+    elif OCR_ENGINE_MODE == "tesseract":
         tess_ok = _configure_tesseract()
         if tess_ok:
             _OCR_ENGINE = "tesseract"
         else:
-            # Try EasyOCR as automatic fallback
+            _OCR_ENGINE = None
+            print(
+                "[OCR] WARNING: OCR_ENGINE=tesseract but Tesseract is unavailable!\n"
+                "  Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki"
+            )
+    else:
+        tess_ok = _configure_tesseract()
+        if tess_ok:
+            _OCR_ENGINE = "tesseract"
+        else:
             try:
                 import easyocr  # noqa: F401
                 _OCR_ENGINE = "easyocr"
-                print("[OCR] Tesseract unavailable — using EasyOCR as fallback.")
+                print("[OCR] Tesseract unavailable — using EasyOCR fallback.")
             except ImportError:
                 _OCR_ENGINE = None
                 print(
                     "[OCR] WARNING: Neither Tesseract nor EasyOCR available!\n"
                     "  Install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki\n"
-                    "  OR: pip install easyocr  and set USE_EASYOCR=True"
+                    "  OR run: pip install easyocr"
                 )
-    else:
-        _OCR_ENGINE = "easyocr"
 
     print(
-        f"[UniAssist v7.1] Ready | "
+        f"[UniAssist v7.3] Ready | "
+        f"Mode: {OCR_ENGINE_MODE} | "
         f"OCR: {_OCR_ENGINE or 'NONE — see warnings above'} | "
         f"ML: TF-IDF + NaiveBayes"
     )
 
 
 @app.get("/health")
-def health():
+def health(current_user_email: str = Depends(_require_auth)):
     return {
         "status": "ok" if _OCR_ENGINE else "degraded",
-        "version": "7.1",
+        "version": "7.3",
         "db": _db_backend,
         "db_url_set": bool(DATABASE_URL),
         "db_strict_mode": DB_STRICT_MODE,
+        "rag_enabled": RAG_ENABLED,
+        "ocr_mode": OCR_ENGINE_MODE,
         "ocr_engine": _OCR_ENGINE or "none",
         "use_easyocr_flag": USE_EASYOCR,
         "rag_provider": _rag_provider,
@@ -1445,7 +1968,7 @@ def health():
 
 
 @app.get("/universities")
-def get_universities(country: str | None = None):
+def get_universities(country: str | None = None, current_user_email: str = Depends(_require_auth)):
     if not UNIVERSITIES_DB_PATH.exists():
         raise HTTPException(status_code=500, detail="Universities database is missing")
 
@@ -1488,6 +2011,7 @@ def register(payload: RegisterPayload):
     name = (payload.name or "").strip()
     email = _normalize_email(payload.email)
     password = payload.password or ""
+    role = _normalize_user_role(payload.role)
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     if not email:
@@ -1503,6 +2027,7 @@ def register(payload: RegisterPayload):
         "name": name,
         "email": email,
         "password_hash": _hash_password(password),
+        "role": role,
         "created_at": _utc_now(),
     }
     _save_users(users)
@@ -1511,6 +2036,7 @@ def register(payload: RegisterPayload):
         "user": {
             "name": name,
             "email": email,
+            "role": role,
         },
     }
 
@@ -1525,11 +2051,13 @@ def login(payload: LoginPayload):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = _issue_session_token(email)
+    role = _normalize_user_role(user.get("role"))
     return {
         "token": token,
         "user": {
             "name": user.get("name") or email.split("@")[0],
             "email": email,
+            "role": role,
         },
     }
 
@@ -1670,12 +2198,11 @@ def clear_chat_history(user_id: str, current_user_email: str = Depends(_require_
 
 
 @app.post("/chat/respond")
-def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header(default=None)):
+def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(_require_auth)):
     message = (payload.user_message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="user_message is required")
 
-    current_user_email = _authenticate_token(authorization, required=False)
     context = payload.context if isinstance(payload.context, dict) else {}
 
     if not isinstance(context.get("universities"), list):
@@ -1690,25 +2217,24 @@ def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header
             "universities": all_universities,
         }
 
-    if current_user_email:
-        if not isinstance(context.get("conversation_history"), list):
-            stored_record = _load_chat_record(current_user_email)
-            stored_messages = stored_record.get("messages", [])
-            history = [
-                {"role": m.get("role"), "text": m.get("text", "")}
-                for m in stored_messages[-20:]
-                if isinstance(m, dict) and m.get("role") in ("user", "bot", "assistant")
-            ]
-        else:
-            history = context["conversation_history"]
-        context = {
-            **context,
-            "profile_data": context.get("profile_data") or _load_user_state_record(current_user_email),
-            "document_data": context.get("document_data") or {
-                "documents": _load_document_records(current_user_email),
-            },
-            "conversation_history": history,
-        }
+    if not isinstance(context.get("conversation_history"), list):
+        stored_record = _load_chat_record(current_user_email)
+        stored_messages = stored_record.get("messages", [])
+        history = [
+            {"role": m.get("role"), "text": m.get("text", "")}
+            for m in stored_messages[-20:]
+            if isinstance(m, dict) and m.get("role") in ("user", "bot", "assistant")
+        ]
+    else:
+        history = context["conversation_history"]
+    context = {
+        **context,
+        "profile_data": context.get("profile_data") or _load_user_state_record(current_user_email),
+        "document_data": context.get("document_data") or {
+            "documents": _load_document_records(current_user_email),
+        },
+        "conversation_history": history,
+    }
 
     if _chatbot_agent:
         result = _chatbot_agent.process_message(message, context)
@@ -1728,7 +2254,7 @@ def chat_respond(payload: ChatRespondPayload, authorization: str | None = Header
 async def ocr_endpoint(
     file: UploadFile = File(...),
     doc_type: str = Form(default="auto"),
-    authorization: str | None = Header(default=None),
+    current_user_email: str = Depends(_require_auth),
 ):
     if _OCR_ENGINE is None:
         raise HTTPException(
@@ -1736,7 +2262,7 @@ async def ocr_endpoint(
             detail=(
                 "No OCR engine available. "
                 "Install Tesseract (https://github.com/UB-Mannheim/tesseract/wiki) "
-                "OR install easyocr (pip install easyocr) and set USE_EASYOCR=True."
+                "or install EasyOCR (pip install easyocr)."
             ),
         )
 
@@ -1748,7 +2274,7 @@ async def ocr_endpoint(
 
     try:
         t0 = time.time()
-        text, ocr_conf = _run_ocr(tmp_path)
+        text, ocr_conf, ocr_preset = _run_ocr(tmp_path, doc_type_hint=doc_type)
         ocr_time = round(time.time() - t0, 2)
 
         if not text.strip():
@@ -1781,8 +2307,12 @@ async def ocr_endpoint(
         if doc_type != "auto" and doc_type in TRAINING_DATA:
             detected = doc_type
 
-        fields = _extract(detected, text)
-        conf   = _score(detected, fields, ocr_conf, final_conf)
+        fields_raw = _extract(detected, text)
+        fields = _normalize_fields(detected, fields_raw)
+        conf = _score(detected, fields, ocr_conf, final_conf)
+        field_confidence, missing_field_reasons = _field_diagnostics(
+            detected, fields, ocr_conf, final_conf
+        )
 
         # Map internal keys to frontend-expected keys
         _TYPE_MAP = {
@@ -1800,12 +2330,16 @@ async def ocr_endpoint(
         response_payload = {
             "success":                True,
             "data":                   {**fields, "document_type": _TYPE_MAP.get(detected, detected)},
+            "schema_version":         "2.0",
             "confidence":             conf,
             "ml_confidence":          round(final_conf, 3),
             "classification_method":  method,
             "ocr_confidence":         round(ocr_conf, 3),
             "ocr_engine":             _OCR_ENGINE,
+            "ocr_preset":             ocr_preset,
             "ocr_time_sec":           ocr_time,
+            "field_confidence":       field_confidence,
+            "missing_field_reasons":  missing_field_reasons,
             "raw_text_preview":       text[:800],
             "message":                (
                 f"{_OCR_ENGINE.capitalize()} OCR — "
@@ -1816,15 +2350,18 @@ async def ocr_endpoint(
                 if conf < 0.5 else []
             ),
         }
-        current_user_email = _authenticate_token(authorization, required=False)
-        if current_user_email:
-            response_payload["document"] = _store_user_document(
-                current_user_email,
-                filename=file.filename,
-                content_type=file.content_type,
-                file_bytes=file_bytes,
-                extracted_data=response_payload["data"],
-            )
+        if missing_field_reasons:
+            response_payload["warnings"] = [
+                *response_payload["warnings"],
+                f"Missing required fields: {', '.join(sorted(missing_field_reasons.keys()))}",
+            ]
+        response_payload["document"] = _store_user_document(
+            current_user_email,
+            filename=file.filename,
+            content_type=file.content_type,
+            file_bytes=file_bytes,
+            extracted_data=response_payload["data"],
+        )
         return response_payload
 
     except RuntimeError as e:
@@ -1836,6 +2373,369 @@ async def ocr_endpoint(
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADVISOR / ADMIN ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/advisor/students")
+def advisor_list_students(current_user_email: str = Depends(_require_advisor_or_admin)):
+    """Return all student accounts with their live application state and document counts."""
+    users = _load_users()
+    result = []
+    for email, u in users.items():
+        role = (u.get("role") or "student").strip().lower()
+        if role != "student":
+            continue
+        state = _load_user_state_record(email)
+        docs = _load_document_records(email)
+        step = state.get("step", 1) if isinstance(state, dict) else 1
+        doc_count = len(docs)
+        completion = min(int((step / 4) * 100), 100)
+        if step >= 4:
+            status = "completed"
+        elif step >= 2:
+            status = "in-progress"
+        else:
+            status = "started"
+        quality = "excellent" if doc_count >= 3 else ("good" if doc_count >= 1 else "warning")
+        elig = state.get("elig") if isinstance(state, dict) else None
+        if elig is None:
+            eligibility = "pending"
+        elif elig.get("eligible"):
+            eligibility = "eligible"
+        else:
+            eligibility = "ineligible"
+        result.append({
+            "email": email,
+            "name": u.get("name") or email,
+            "status": status,
+            "completion": completion,
+            "lastUpdated": (u.get("created_at") or "")[:10],
+            "dataQuality": quality,
+            "documents": doc_count,
+            "eligibility": eligibility,
+            "step": step,
+        })
+    result.sort(key=lambda x: x["name"].lower())
+    return {"students": result}
+
+
+@app.get("/admin/stats")
+def admin_stats(current_user_email: str = Depends(_require_admin)):
+    """Return live system statistics derived from real user and application data."""
+    users = _load_users()
+    role_counts: dict[str, int] = {"student": 0, "advisor": 0, "admin": 0}
+    completed = 0
+    pending = 0
+    for email, u in users.items():
+        role = (u.get("role") or "student").strip().lower()
+        if role not in role_counts:
+            role = "student"
+        role_counts[role] += 1
+        if role == "student":
+            state = _load_user_state_record(email)
+            step = state.get("step", 1) if isinstance(state, dict) else 1
+            if step >= 4:
+                completed += 1
+            elif step >= 2:
+                pending += 1
+    n_students = role_counts["student"]
+    return {
+        "totalUsers": len(users),
+        "totalStudents": n_students,
+        "totalAdvisors": role_counts["advisor"],
+        "totalAdmins": role_counts["admin"],
+        "completedApplications": completed,
+        "pendingApplications": pending,
+        "dataQualityScore": round((completed / n_students * 100) if n_students else 0.0, 1),
+    }
+
+
+@app.get("/admin/users")
+def admin_list_users(current_user_email: str = Depends(_require_admin)):
+    """Return the full user list for admin management."""
+    users = _load_users()
+    result = [
+        {
+            "email": email,
+            "name": u.get("name") or email,
+            "role": (u.get("role") or "student").strip().lower(),
+            "created": (u.get("created_at") or "")[:10],
+        }
+        for email, u in users.items()
+    ]
+    result.sort(key=lambda x: x["created"], reverse=True)
+    return {"users": result}
+
+
+@app.get("/admin/audit")
+def admin_audit_events(current_user_email: str = Depends(_require_admin)):
+    """Return a best-effort audit stream derived from live persisted records."""
+    events: list[dict[str, Any]] = []
+
+    users = _load_users()
+    for email, user in users.items():
+        created_at = user.get("created_at")
+        if created_at:
+            events.append({
+                "timestamp": created_at,
+                "action": "USER_REGISTER",
+                "actor": email,
+                "target": "AUTH",
+                "details": f"Registered as {(user.get('role') or 'student').strip().lower()}",
+            })
+
+    sessions = _load_sessions()
+    for _, session_data in sessions.items():
+        email = _normalize_email(session_data.get("email", ""))
+        created_at = session_data.get("created_at")
+        if email and created_at:
+            events.append({
+                "timestamp": created_at,
+                "action": "LOGIN",
+                "actor": email,
+                "target": "AUTH",
+                "details": "Logged in successfully",
+            })
+
+    for email in users.keys():
+        for doc in _load_document_records(email):
+            timestamp = doc.get("stored_at")
+            if not timestamp:
+                continue
+            doc_name = doc.get("filename") or "document"
+            events.append({
+                "timestamp": timestamp,
+                "action": "DOCUMENT_UPLOAD",
+                "actor": email,
+                "target": email,
+                "details": f"Uploaded {doc_name}",
+            })
+
+    events.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+    return {"events": events[:200]}
+
+
+@app.patch("/admin/users/{user_email}/role")
+def admin_update_user_role(
+    user_email: str,
+    payload: UpdateRolePayload,
+    current_user_email: str = Depends(_require_admin),
+):
+    """Change a user's role. Admins cannot change their own role."""
+    normalized = _normalize_email(user_email)
+    if normalized == current_user_email:
+        raise HTTPException(status_code=400, detail="You cannot change your own role")
+    users = _load_users()
+    if normalized not in users:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_role = _normalize_user_role(payload.role)
+    users[normalized]["role"] = new_role
+    users[normalized]["updated_at"] = _utc_now()
+    _save_users(users)
+    return {"success": True, "email": normalized, "role": new_role}
+
+
+@app.post("/admin/historical-outcomes/import")
+def admin_import_historical_outcomes(
+    payload: ImportHistoricalOutcomesPayload,
+    current_user_email: str = Depends(_require_admin),
+):
+    """Import real historical admissions outcomes for model training."""
+    records = payload.records or []
+    if not records:
+        raise HTTPException(status_code=400, detail="No records provided")
+
+    imported = 0
+    skipped = 0
+    for item in records:
+        ok = _append_imported_historical_outcome(item.model_dump())
+        if ok:
+            imported += 1
+        else:
+            skipped += 1
+    return {
+        "success": True,
+        "imported": imported,
+        "skipped": skipped,
+        "path": str(HISTORICAL_OUTCOMES_PATH),
+    }
+
+
+@app.get("/admin/historical-outcomes/stats")
+def admin_historical_outcomes_stats(
+    current_user_email: str = Depends(_require_admin),
+):
+    total = 0
+    accepted = 0
+    rejected = 0
+    if HISTORICAL_OUTCOMES_PATH.exists():
+        try:
+            with open(HISTORICAL_OUTCOMES_PATH, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    raw = (line or "").strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    total += 1
+                    outcome = str(row.get("admission_outcome", "")).strip().lower()
+                    if outcome == "accepted":
+                        accepted += 1
+                    elif outcome == "rejected":
+                        rejected += 1
+        except Exception:
+            pass
+    return {
+        "total": total,
+        "accepted": accepted,
+        "rejected": rejected,
+        "path": str(HISTORICAL_OUTCOMES_PATH),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APPLICATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/applications")
+def submit_application(
+    payload: SubmitApplicationPayload,
+    current_user_email: str = Depends(_require_auth),
+):
+    """Student submits an application to a university."""
+    import uuid
+    # Prevent exact duplicate submissions for same user + university + program
+    all_apps = _load_applications()
+    existing = [
+        a for a in all_apps
+        if a.get("user_id") == current_user_email
+        and a.get("university_name") == payload.university_name
+        and a.get("program") == payload.program
+        and a.get("status") not in ("withdrawn",)
+    ]
+    if existing:
+        raise HTTPException(status_code=409, detail="Application already submitted for this university and program.")
+
+    users = _load_users()
+    user_info = users.get(current_user_email, {})
+
+    app_record = {
+        "application_id": str(uuid.uuid4()),
+        "user_id": current_user_email,
+        "user_name": user_info.get("name", ""),
+        "university_name": payload.university_name,
+        "university_id": payload.university_id or "",
+        "program": payload.program,
+        "country": payload.country,
+        "eligibility_tier": payload.eligibility_tier or "",
+        "grade_point": payload.grade_point or 0.0,
+        "notes": payload.notes or "",
+        "advisor_notes": "",
+        "university_data": payload.university_data or {},
+        "status": "submitted",
+        "submitted_at": _utc_now(),
+        "updated_at": _utc_now(),
+    }
+    _save_application(app_record)
+    return {"success": True, "application": app_record}
+
+
+@app.get("/applications")
+def list_applications(
+    current_user_email: str = Depends(_require_auth),
+):
+    """List applications. Students see their own; advisors/admins see all."""
+    users = _load_users()
+    role = (users.get(current_user_email, {}).get("role") or "student").lower()
+    all_apps = _load_applications()
+    if role in ("advisor", "admin"):
+        return {"applications": sorted(all_apps, key=lambda a: a.get("submitted_at", ""), reverse=True)}
+    own = [a for a in all_apps if a.get("user_id") == current_user_email]
+    return {"applications": sorted(own, key=lambda a: a.get("submitted_at", ""), reverse=True)}
+
+
+@app.get("/applications/{application_id}")
+def get_application(
+    application_id: str,
+    current_user_email: str = Depends(_require_auth),
+):
+    all_apps = _load_applications()
+    app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application not found")
+    users = _load_users()
+    role = (users.get(current_user_email, {}).get("role") or "student").lower()
+    if role not in ("advisor", "admin") and app_record.get("user_id") != current_user_email:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return app_record
+
+
+@app.patch("/applications/{application_id}/status")
+def update_application_status(
+    application_id: str,
+    payload: UpdateApplicationStatusPayload,
+    current_user_email: str = Depends(_require_auth),
+):
+    """Advisor/admin updates status; student can only withdraw their own."""
+    all_apps = _load_applications()
+    app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application not found")
+    previous_status = str(app_record.get("status", "")).strip().lower()
+    users = _load_users()
+    role = (users.get(current_user_email, {}).get("role") or "student").lower()
+    if role not in ("advisor", "admin"):
+        # Students may only withdraw their own
+        if app_record.get("user_id") != current_user_email:
+            raise HTTPException(status_code=403, detail="Access denied")
+        if payload.status != "withdrawn":
+            raise HTTPException(status_code=403, detail="Students can only withdraw applications")
+    app_record["status"] = payload.status
+    app_record["updated_at"] = _utc_now()
+    if payload.advisor_notes is not None:
+        app_record["advisor_notes"] = payload.advisor_notes
+    _save_application(app_record)
+
+    new_status = str(payload.status).strip().lower()
+    if new_status in {"accepted", "rejected"} and new_status != previous_status:
+        try:
+            _append_historical_outcome(app_record, new_status)
+        except Exception as exc:
+            print(f"[Applications] Could not append historical outcome for {application_id}: {exc}")
+
+    return {"success": True, "application": app_record}
+
+
+@app.delete("/applications/{application_id}")
+def delete_application(
+    application_id: str,
+    current_user_email: str = Depends(_require_auth),
+):
+    """Hard-delete (admin only) or withdraw (student/advisor)."""
+    all_apps = _load_applications()
+    app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application not found")
+    users = _load_users()
+    role = (users.get(current_user_email, {}).get("role") or "student").lower()
+    if role == "admin":
+        app_record["status"] = "withdrawn"
+        app_record["updated_at"] = _utc_now()
+        _save_application(app_record)
+    elif app_record.get("user_id") == current_user_email:
+        app_record["status"] = "withdrawn"
+        app_record["updated_at"] = _utc_now()
+        _save_application(app_record)
+    else:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return {"success": True}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1853,7 +2753,7 @@ if __name__ == "__main__":
         if not os.path.isfile(image_file):
             print(f"File not found: {image_file}")
             sys.exit(1)
-        text, ocr_conf = _run_ocr(image_file)
+        text, ocr_conf, _ocr_preset = _run_ocr(image_file)
         proba = _ml.predict_proba([text])[0]
         best  = _ml.classes_[proba.argmax()]
         conf  = proba.max()

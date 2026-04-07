@@ -318,7 +318,17 @@ class RAGSystem:
         """Build concise option cards from retrieved docs for UI-friendly follow-up choices."""
         options: List[Dict[str, str]] = []
         seen_names = set()
-        _ = query  # reserved for future query-aware ranking refinements
+
+        # Query-aware ranking: score option candidates by query term overlap.
+        stop_terms = {
+            "the", "and", "for", "with", "from", "what", "which", "about", "please", "show",
+            "tell", "me", "want", "need", "university", "universities", "college", "best",
+        }
+        query_terms = [
+            t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
+            if len(t) >= 3 and t not in stop_terms
+        ]
+        candidates: List[tuple[float, Dict[str, str]]] = []
 
         for doc in relevant_docs or []:
             body = (getattr(doc, "page_content", "") or "").strip()
@@ -347,9 +357,36 @@ class RAGSystem:
                 "country": country,
                 "website": website,
             }
-            options.append(option)
+
+            # Build a searchable text for query-aware ranking.
+            searchable = " ".join([
+                name.lower(),
+                country.lower(),
+                body[:700].lower(),
+            ])
+            score = 0.0
+            if query_terms:
+                for term in query_terms:
+                    if term in searchable:
+                        score += 1.0
+                # Prioritize explicit country matches.
+                if country and any(term == country.lower() for term in query_terms):
+                    score += 1.5
+            else:
+                # Preserve deterministic ordering when query has no informative terms.
+                score = 0.1
+
+            # Slight preference for options with a website link.
+            if website:
+                score += 0.05
+
+            candidates.append((score, option))
             seen_names.add(name)
 
+        # Highest query match first, then name for deterministic ties.
+        candidates.sort(key=lambda item: (-item[0], item[1].get("name", "")))
+        for _, option in candidates:
+            options.append(option)
             if len(options) >= limit:
                 break
 

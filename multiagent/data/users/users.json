@@ -1,0 +1,27 @@
+{
+  "student@test.com": {
+    "name": "Student User",
+    "email": "student@test.com",
+    "password_hash": "56848212b5094ad260acb42534a9c30b$8982e9cc3aa7f067a1492cc2861df53dfc37f6558323626b1c79dc034f370d26",
+    "role": "student"
+  },
+  "advisor@test.com": {
+    "name": "Advisor User",
+    "email": "advisor@test.com",
+    "password_hash": "92a761dd3509cb78702a0cb8ce265fdc$0d2ee4e2563507410ccd65fb7fda212fbbb07c500aa9b112910f26d08501acda",
+    "role": "advisor"
+  },
+  "admin@test.com": {
+    "name": "Admin User",
+    "email": "admin@test.com",
+    "password_hash": "5d2493202d24e44983a2c6273136d4ba$c898ba935ed3ab4f859b13ad25f440de268ffa96ea147877744f871023713228",
+    "role": "admin"
+  },
+  "admin@example.com": {
+    "name": "Admin User",
+    "email": "admin@example.com",
+    "password_hash": "fa0b005b255215bb21311b76d6ce96f6$1ad6508a8d50c7bf9329d715241d73747e191236867f87e2d883c7f1cc2452c0",
+    "role": "admin",
+    "created_at": "2026-04-07T06:08:59.798441+00:00"
+  }
+}

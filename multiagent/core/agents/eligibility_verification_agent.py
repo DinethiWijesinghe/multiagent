@@ -20,6 +20,7 @@ import os
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Optional
+from pathlib import Path
 
 from sklearn.ensemble import RandomForestClassifier as _RFC
 from sklearn.svm import LinearSVC as _SVC
@@ -32,44 +33,27 @@ logger = logging.getLogger(__name__)
 # MODULE-LEVEL ML MODELS
 # ─────────────────────────────────────────────
 
-# — Tier classifier: GPA → EligibilityTier —
-_TIER_GPAS   = [4.0,4.0, 3.95,3.9,3.85, 3.8,3.75,3.7,  3.65,3.6,3.55,3.5,3.45,3.4,3.35,3.3,
-                3.25,3.2,3.15,3.1,3.05,3.0,  2.95,2.9,2.8,2.7,2.5,2.0,1.5]
-_TIER_LABELS = ["top","top","top","top","top", "top","top","top",
-                "good","good","good","good","good","good","good","good",
-                "average","average","average","average","average","average",
-                "foundation","foundation","foundation","foundation","foundation","foundation","foundation"]
-_TIER_CLF = _RFC(n_estimators=50, random_state=42)
-_TIER_CLF.fit([[g] for g in _TIER_GPAS], _TIER_LABELS)
+# Fallback datasets are used only when real historical outcomes are not yet sufficient.
+_FALLBACK_TIER_GPAS = [4.0,4.0,3.95,3.9,3.85,3.8,3.75,3.7,3.65,3.6,3.55,3.5,3.45,3.4,3.35,3.3,
+                       3.25,3.2,3.15,3.1,3.05,3.0,2.95,2.9,2.8,2.7,2.5,2.0,1.5]
+_FALLBACK_TIER_LABELS = ["top","top","top","top","top","top","top","top",
+                         "good","good","good","good","good","good","good","good",
+                         "average","average","average","average","average","average",
+                         "foundation","foundation","foundation","foundation","foundation","foundation","foundation"]
 
-# — Match-label classifier: GPA diff → tier match label —
-_MATCH_DIFFS  = [0.6,0.5,0.4,0.35,0.3, 0.25,0.2,0.15,0.1,0.05,0.02,0.0,
-                 -0.05,-0.1,-0.15,-0.2, -0.25,-0.3,-0.5]
-_MATCH_LABELS = ["strong_match","strong_match","strong_match","strong_match","strong_match",
-                 "meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum",
-                 "borderline","borderline","borderline","borderline",
-                 "below_minimum","below_minimum","below_minimum"]
-_MATCH_CLF = _RFC(n_estimators=50, random_state=42)
-_MATCH_CLF.fit([[d] for d in _MATCH_DIFFS], _MATCH_LABELS)
+_FALLBACK_MATCH_DIFFS = [0.6,0.5,0.4,0.35,0.3,0.25,0.2,0.15,0.1,0.05,0.02,0.0,-0.05,-0.1,-0.15,-0.2,-0.25,-0.3,-0.5]
+_FALLBACK_MATCH_LABELS = ["strong_match","strong_match","strong_match","strong_match","strong_match",
+                          "meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum",
+                          "borderline","borderline","borderline","borderline",
+                          "below_minimum","below_minimum","below_minimum"]
 
-# — Program-stream alignment classifier: TF-IDF (stream + program) → compatible(1)/not(0) —
-_ALIGNMENT_DATA = {
+_FALLBACK_ALIGNMENT_DATA = {
     "Physical Science": ["Engineering", "Computer Science", "Science", "Medicine", "IT"],
-    "Bio Science":      ["Medicine", "Science", "Pharmacy", "Biology", "Engineering"],
-    "Commerce":         ["Business", "Economics", "Accountancy", "Law", "IT"],
-    "Arts":             ["Arts", "Law", "Social Science", "Education", "Business"],
-    "Technology":       ["Engineering", "IT", "Computer Science", "Design"],
+    "Bio Science": ["Medicine", "Science", "Pharmacy", "Biology", "Engineering"],
+    "Commerce": ["Business", "Economics", "Accountancy", "Law", "IT"],
+    "Arts": ["Arts", "Law", "Social Science", "Education", "Business"],
+    "Technology": ["Engineering", "IT", "Computer Science", "Design"],
 }
-_ALL_PROGRAMS = sorted({p for ps in _ALIGNMENT_DATA.values() for p in ps})
-_align_X, _align_y = [], []
-for _stream, _compat in _ALIGNMENT_DATA.items():
-    for _prog in _ALL_PROGRAMS:
-        _align_X.append(f"{_stream} {_prog}")
-        _align_y.append(1 if _prog in _compat else 0)
-_ALIGN_VEC = _TfIdf(ngram_range=(1, 2))
-_ALIGN_X_vec = _ALIGN_VEC.fit_transform(_align_X)
-_ALIGN_CLF = _SVC(C=1.0, max_iter=2000, dual=True)
-_ALIGN_CLF.fit(_ALIGN_X_vec, _align_y)
 
 
 # ─────────────────────────────────────────────
@@ -184,6 +168,11 @@ class EligibilityVerificationAgent:
         if not training_data_path:
             _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             training_data_path = os.path.join(_root, "data", "training", "eligibility_training_data.json")
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self._historical_outcomes_path = os.environ.get(
+            "ELIGIBILITY_OUTCOMES_PATH",
+            os.path.join(root_dir, "data", "training", "historical_admissions_outcomes.jsonl"),
+        )
         self.training_data = self._load_training_data(training_data_path)
         if self.training_data:
             self._special_reqs        = self.training_data.get("university_specific_requirements", {})
@@ -195,6 +184,122 @@ class EligibilityVerificationAgent:
             self._country_english_reqs = {}
             self._program_reqs        = {}
             self._improvement_library = {}
+        self._init_models()
+
+    def _init_models(self) -> None:
+        """Train ML models from real outcomes when possible, else fallback datasets."""
+        self._tier_clf = _RFC(n_estimators=80, random_state=42)
+        self._match_clf = _RFC(n_estimators=80, random_state=42)
+        self._align_vec = _TfIdf(ngram_range=(1, 2))
+        self._align_clf = _SVC(C=1.0, max_iter=3000, dual=True)
+
+        outcomes = self._load_historical_outcomes(self._historical_outcomes_path)
+        if outcomes:
+            trained_all = self._train_from_real_outcomes(outcomes)
+            if trained_all:
+                logger.info("Eligibility ML models trained from real historical admissions outcomes.")
+                return
+            logger.warning("Historical outcomes found but insufficient diversity; using fallback ML priors.")
+        else:
+            logger.warning("No historical admissions outcomes found; using fallback ML priors.")
+
+        self._train_fallback_models()
+
+    def _train_fallback_models(self) -> None:
+        self._tier_clf.fit([[g] for g in _FALLBACK_TIER_GPAS], _FALLBACK_TIER_LABELS)
+        self._match_clf.fit([[d] for d in _FALLBACK_MATCH_DIFFS], _FALLBACK_MATCH_LABELS)
+
+        all_programs = sorted({p for ps in _FALLBACK_ALIGNMENT_DATA.values() for p in ps})
+        align_x: list[str] = []
+        align_y: list[int] = []
+        for stream, compatible in _FALLBACK_ALIGNMENT_DATA.items():
+            for prog in all_programs:
+                align_x.append(f"{stream} {prog}")
+                align_y.append(1 if prog in compatible else 0)
+        self._align_clf.fit(self._align_vec.fit_transform(align_x), align_y)
+
+    def _load_historical_outcomes(self, path: str) -> list[dict]:
+        """Load historical outcomes JSONL records for model training."""
+        p = Path(path)
+        if not p.exists():
+            return []
+        rows: list[dict] = []
+        try:
+            with p.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    if isinstance(rec, dict):
+                        rows.append(rec)
+        except Exception as exc:
+            logger.error(f"Failed to parse historical outcomes file {path}: {exc}")
+            return []
+        return rows
+
+    def _train_from_real_outcomes(self, outcomes: list[dict]) -> bool:
+        tier_x: list[list[float]] = []
+        tier_y: list[str] = []
+        match_x: list[list[float]] = []
+        match_y: list[str] = []
+        align_texts: list[str] = []
+        align_y: list[int] = []
+
+        for rec in outcomes:
+            try:
+                gpa_raw = rec.get("gpa")
+                gpa = float(gpa_raw) if gpa_raw is not None else None
+            except Exception:
+                gpa = None
+
+            tier_label = str(rec.get("tier_label", "")).strip().lower()
+            if gpa is not None and tier_label in {"top", "good", "average", "foundation"}:
+                tier_x.append([gpa])
+                tier_y.append(tier_label)
+
+            diff = rec.get("gpa_diff")
+            if diff is None and gpa is not None:
+                try:
+                    uni_min = float(rec.get("university_min_gpa"))
+                    diff = gpa - uni_min
+                except Exception:
+                    diff = None
+            outcome = str(rec.get("admission_outcome", "")).strip().lower()
+            if diff is not None:
+                diff_val = float(diff)
+                label = str(rec.get("match_label", "")).strip().lower()
+                if label not in {"strong_match", "meets_minimum", "borderline", "below_minimum"}:
+                    if outcome == "accepted":
+                        label = "strong_match" if diff_val >= 0.25 else "meets_minimum"
+                    elif outcome == "rejected":
+                        label = "below_minimum" if diff_val <= -0.2 else "borderline"
+                    else:
+                        label = "meets_minimum" if diff_val >= 0 else "borderline"
+                match_x.append([diff_val])
+                match_y.append(label)
+
+            stream = str(rec.get("stream", "")).strip()
+            program = str(rec.get("program", "")).strip()
+            if stream and program:
+                raw_align = rec.get("alignment_label")
+                if raw_align is None:
+                    raw_align = 1 if outcome == "accepted" else (0 if outcome == "rejected" else None)
+                if raw_align in (0, 1):
+                    align_texts.append(f"{stream} {program}")
+                    align_y.append(int(raw_align))
+
+        can_train_tier = len(set(tier_y)) >= 2 and len(tier_y) >= 20
+        can_train_match = len(set(match_y)) >= 2 and len(match_y) >= 20
+        can_train_align = len(set(align_y)) >= 2 and len(align_y) >= 20
+
+        if not (can_train_tier and can_train_match and can_train_align):
+            return False
+
+        self._tier_clf.fit(tier_x, tier_y)
+        self._match_clf.fit(match_x, match_y)
+        self._align_clf.fit(self._align_vec.fit_transform(align_texts), align_y)
+        return True
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -378,6 +483,24 @@ class EligibilityVerificationAgent:
         doc_type = document_data.get("document_type", "")
         if "A-Level" in doc_type:
             subjects = document_data.get("subjects", {})
+            subject_grade_map = document_data.get("subject_grade_map")
+            grades_list = document_data.get("grades", [])
+
+            if isinstance(subject_grade_map, dict) and subject_grade_map:
+                subjects = subject_grade_map
+            elif isinstance(subjects, list):
+                # Backward-compatible pairing when OCR provides separate lists.
+                paired = {}
+                for idx, subject in enumerate(subjects):
+                    if not subject:
+                        continue
+                    grade = grades_list[idx] if isinstance(grades_list, list) and idx < len(grades_list) else None
+                    paired[str(subject)] = str(grade).upper() if grade is not None else ""
+                subjects = paired
+
+            if not isinstance(subjects, dict):
+                return 0.0
+
             SPECIAL  = {"general english", "common general test", "cgt"}
             grades   = [
                 self.GRADE_MAP.get(str(g).upper(), 0.0)
@@ -392,8 +515,8 @@ class EligibilityVerificationAgent:
         return 0.0
 
     def _compute_tier(self, gpa: float) -> EligibilityTier:
-        """Predict eligibility tier using Random Forest trained on GPA samples."""
-        tier_str = _TIER_CLF.predict([[gpa]])[0]
+        """Predict eligibility tier using model trained from historical outcomes."""
+        tier_str = self._tier_clf.predict([[gpa]])[0]
         return EligibilityTier(tier_str)
 
     def _check_english(self, document_data: dict, country: str, program: str = "") -> dict:
@@ -455,12 +578,12 @@ class EligibilityVerificationAgent:
         return req
 
     def _check_program_alignment(self, stream: str, program: str) -> str:
-        """Predict stream-program compatibility using LinearSVC + TF-IDF model."""
+        """Predict stream-program compatibility using outcomes-informed text model."""
         if not stream or not program:
             return "No stream/program information provided."
         text = f"{stream} {program}"
-        X = _ALIGN_VEC.transform([text])
-        pred = int(_ALIGN_CLF.predict(X)[0])
+        X = self._align_vec.transform([text])
+        pred = int(self._align_clf.predict(X)[0])
         if pred == 1:
             return f"\u2705 {stream} stream aligns well with {program}."
         return (
@@ -469,9 +592,9 @@ class EligibilityVerificationAgent:
         )
 
     def _tier_match_label(self, gpa: float, uni_min: float) -> str:
-        """Predict match label using Random Forest trained on GPA-difference samples."""
+        """Predict GPA-match label using historical outcomes."""
         diff = gpa - uni_min
-        return _MATCH_CLF.predict([[diff]])[0]
+        return self._match_clf.predict([[diff]])[0]
 
     def _global_recommendations(self, gpa, english, stream, program, doc_type) -> list:
         recs = []
@@ -484,8 +607,8 @@ class EligibilityVerificationAgent:
         # Use ML alignment model instead of a static lookup
         if stream and program:
             text = f"{stream} {program}"
-            X = _ALIGN_VEC.transform([text])
-            aligned = int(_ALIGN_CLF.predict(X)[0]) == 1
+            X = self._align_vec.transform([text])
+            aligned = int(self._align_clf.predict(X)[0]) == 1
             if not aligned:
                 recs += self._improvement_library.get("wrong_stream",
                     ["Foundation programmes can bridge stream gaps"])

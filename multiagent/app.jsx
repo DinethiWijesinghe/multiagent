@@ -1,4 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import AdvisorDashboard from "./AdvisorDashboard.jsx";
+import AdminDashboard from "./AdminDashboard.jsx";
+import StudentDashboard from "./StudentDashboard.jsx";
+import AdvisorDashboard from "./AdvisorDashboard.jsx";
+import AdminDashboard from "./AdminDashboard.jsx";
+import { apiFetch as fetchApi } from "./apiClient.js";
 
 // ── STYLES ─────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -204,6 +210,8 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 .chip{padding:.25rem .65rem;border-radius:4px;font-family:var(--mono);font-size:.68rem;font-weight:600;}
 .chip-green{background:var(--green-dim);color:var(--green);border:1px solid #3ecf8e22;}
 .chip-blue{background:var(--teal-dim);color:var(--teal);border:1px solid #22d3ee22;}
+.chip-amber{background:var(--amber-dim);color:var(--amber);border:1px solid #c58a2a22;}
+.chip-red{background:var(--red-dim);color:var(--red);border:1px solid #d16a6a22;}
 
 /* UNIVERSITIES */
 .uni-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);padding:1.5rem;margin-bottom:1rem;transition:all .2s;}
@@ -370,6 +378,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
   opacity:1;
   pointer-events:all;
 }
+.chat-panel.expanded{
+  right:1rem;
+  bottom:1rem;
+  width:min(920px,calc(100vw - 2rem));
+  height:min(82vh,760px);
+  max-height:none;
+  border-radius:var(--r2);
+  transform-origin:bottom right;
+}
 .chat-header{
   display:flex;align-items:center;gap:.75rem;
   padding:.875rem 1.25rem;
@@ -409,6 +426,15 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 .chat-suggestions{display:flex;gap:.4rem;flex-wrap:wrap;padding:.5rem 1rem;border-top:1px solid var(--border);background:var(--bg2);}
 .chat-sug{font-family:var(--mono);font-size:.6rem;padding:.25rem .6rem;border-radius:12px;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;transition:all .15s;white-space:nowrap;}
 .chat-sug:hover{border-color:var(--accent);color:var(--accent);}
+@media (max-width: 768px){
+  .chat-panel.expanded{
+    right:0;
+    bottom:0;
+    width:100vw;
+    height:100vh;
+    border-radius:0;
+  }
+}
 `;
 
 // ── UTILS ──────────────────────────────────────────────────────────────────
@@ -430,52 +456,6 @@ const BOT_INTRO = [
 ];
 
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
-
-const CONFIGURED_API_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/,"");
-const DEFAULT_LOCAL_API_URL = "http://127.0.0.1:8000";
-const SAME_ORIGIN_API_URL = typeof window !== "undefined"
-  ? `${window.location.protocol}//${window.location.host}`.replace(/\/$/, "")
-  : "";
-const API_BASES = Array.from(
-  new Set(["", CONFIGURED_API_URL, SAME_ORIGIN_API_URL, DEFAULT_LOCAL_API_URL].filter(v=>v!==undefined&&v!==null))
-);
-
-const PER_URL_TIMEOUT_MS = 20000; // max wait per URL before trying the next one
-
-async function fetchApi(path, options){
-  const timeoutMs = Number.isFinite(options?.timeoutMs) ? options.timeoutMs : PER_URL_TIMEOUT_MS;
-  const fetchOptions = { ...(options || {}) };
-  delete fetchOptions.timeoutMs;
-  let lastError;
-  let lastResponse;
-  const outerSignal = fetchOptions?.signal;
-  for(const baseUrl of API_BASES){
-    if(outerSignal?.aborted) break;
-    // Each URL gets its own timeout budget so a hung URL doesn't consume the whole request.
-    const perCtrl = new AbortController();
-    const target = baseUrl ? `${baseUrl}${path}` : path;
-    const timerId = timeoutMs > 0 ? setTimeout(()=>perCtrl.abort(), timeoutMs) : null;
-    const onOuterAbort = ()=>perCtrl.abort();
-    outerSignal?.addEventListener("abort", onOuterAbort);
-    try{
-      const response = await fetch(target, {...fetchOptions, signal: perCtrl.signal});
-      // Continue trying fallback URLs when current base clearly does not host API routes.
-      if(response.status===404 && API_BASES.length>1){
-        lastResponse = response;
-        continue;
-      }
-      return response;
-    }catch(error){
-      lastError = error;
-    }finally{
-      if(timerId) clearTimeout(timerId);
-      outerSignal?.removeEventListener("abort", onOuterAbort);
-    }
-  }
-  if(lastResponse) return lastResponse;
-  const targets = API_BASES.map(v=>v || "<same-origin>").join(", ");
-  throw lastError || new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
-}
 
 function createMessage(role,text,metadata){
   return {
@@ -659,13 +639,13 @@ async function openUserDocument(documentId,token){
   setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
 }
 
-async function registerUser({name,email,password}){
+async function registerUser({name,email,password,role="student"}){
   const normalizedName = (name || "").trim();
   const normalizedEmail = (email || "").trim().toLowerCase();
   const response = await fetchApi("/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: normalizedName, email: normalizedEmail, password }),
+    body: JSON.stringify({ name: normalizedName, email: normalizedEmail, password, role }),
   });
   const payload = await response.json().catch(()=>({}));
   if(!response.ok) throw new Error(payload?.detail || `Register failed (${response.status})`);
@@ -736,6 +716,7 @@ const FACTOR_QUICK_REPLIES = [
 
 function ChatBot({user}){
   const [open,setOpen]=useState(false);
+  const [expanded,setExpanded]=useState(false);
   const [messages,setMessages]=useState(()=>createIntroMessages());
   const [input,setInput]=useState("");
   const [typing,setTyping]=useState(false);
@@ -793,6 +774,12 @@ function ChatBot({user}){
       setTimeout(()=>inputRef.current?.focus(),200);
     }
   },[open,messages]);
+
+  useEffect(()=>{
+    if(!open && expanded){
+      setExpanded(false);
+    }
+  },[open,expanded]);
 
   const sendMessage=async(text)=>{
     const msg=text||input.trim();
@@ -870,7 +857,7 @@ function ChatBot({user}){
         {open ? "✕" : "💬"}
         {!open && unread>0 && <div className="chat-fab-badge">{unread}</div>}
       </button>
-      <div className={`chat-panel${open?" open":""}`}>
+      <div className={`chat-panel${open?" open":""}${expanded?" expanded":""}`}>
         <div className="chat-header">
           <div className="chat-avatar">🎓</div>
           <div className="chat-header-info">
@@ -878,6 +865,15 @@ function ChatBot({user}){
             <div className="chat-header-status"><div className="chat-header-dot"/>Online · Always ready</div>
           </div>
           <button className="chat-close" onClick={handleClearChat} type="button">Clear</button>
+          <button
+            className="chat-close"
+            onClick={()=>setExpanded(p=>!p)}
+            type="button"
+            aria-label={expanded?"Collapse chat":"Expand chat"}
+            title={expanded?"Collapse chat":"Expand chat"}
+          >
+            {expanded ? "Collapse" : "Expand"}
+          </button>
           <button className="chat-close" onClick={()=>setOpen(false)}>✕</button>
         </div>
         <div className="chat-messages">
@@ -1000,7 +996,7 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
   formData.append("doc_type", docType || "auto");
   onProgress("Preprocessing image with OpenCV...", 25);
   await new Promise(r => setTimeout(r, 180));
-  onProgress("Running EasyOCR text extraction...", 45);
+  onProgress("Running OCR text extraction...", 45);
   await new Promise(r => setTimeout(r, 120));
   onProgress("Classifying document with ML model...", 60);
   let response;
@@ -1025,7 +1021,8 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
     data:result.data,
     confidence:result.confidence??0.75,
     rawPreview:result.raw_text_preview||"",
-    message:result.message||`EasyOCR — ${Math.round((result.confidence??0.75)*100)}% confidence`,
+    message:result.message||`OCR — ${Math.round((result.confidence??0.75)*100)}% confidence`,
+    ocrEngine:result.ocr_engine||"auto",
     warnings:result.warnings||[],
     requested_doc_type:docType||"auto",
     classification_method:result.classification_method,
@@ -1033,20 +1030,135 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
 }
 
 // ── ELIGIBILITY ENGINE ──────────────────────────────────────────────────────
-function assessEligibility(profile, doc) {
-  if(!doc||!doc.document_type) return {eligible:false,grade_point:0,eligible_countries:[],recommended_programs:[],eligibility_tier:"foundation",notes:["Document not recognized."]};
-  const fin=profile.financial||{};
-  const totalBudgetLKR=toLKR(parseFloat(fin.total_budget)||0,fin.budget_currency||"LKR");
-  const base={eligible:false,grade_point:0,eligible_countries:[],recommended_programs:[],eligibility_tier:"",notes:[],financial_ok:totalBudgetLKR>0};
-  const dt=doc.document_type;
-  if(dt==="A-Level Results"){const GV={A:4,B:3,C:2,S:1,F:0};const subjects=doc.subjects||{};const vals=Object.values(subjects).map(g=>GV[String(g).trim()]??0);if(!vals.length)return{...base,eligible:true,grade_point:2.0,eligibility_tier:"average",notes:["Grades not fully detected."]};const avg=vals.reduce((a,b)=>a+b,0)/vals.length,gp=+avg.toFixed(2);if(avg>=3.7)return{...base,eligible:true,grade_point:gp,eligibility_tier:"top",eligible_countries:["UK","Singapore","Australia"],recommended_programs:["Engineering","Computer Science","Medicine","Business"],notes:["Excellent A/L grades — top-tier universities available."]};if(avg>=3.3)return{...base,eligible:true,grade_point:gp,eligibility_tier:"good",eligible_countries:["UK","Singapore","Australia"],recommended_programs:["Engineering","Business","Science"],notes:["Strong results — wide range of universities."]};if(avg>=3.0)return{...base,eligible:true,grade_point:gp,eligibility_tier:"average",eligible_countries:["UK","Australia"],recommended_programs:["Business","IT","Science"],notes:["Solid qualification — good range of options."]};return{...base,grade_point:gp,eligibility_tier:"foundation",eligible_countries:["UK","Australia"],recommended_programs:["Foundation Program","Pathway"],notes:["Consider a foundation or pathway program."]};}
-  if(dt==="Bachelor's Degree"||dt==="Master's Degree"||dt==="Diploma"){const gpa=parseFloat(doc.gpa_normalized??doc.gpa_value??doc.gpa??0);const isMasters=dt==="Master's Degree";if(gpa>=3.5)return{...base,eligible:true,grade_point:gpa,eligibility_tier:"top",eligible_countries:["UK","Singapore","Australia"],recommended_programs:isMasters?["PhD","Research Programs","Postdoc"]:["Master's","MBA","PhD"],notes:[`Excellent ${dt} — competitive postgraduate programs available.`]};if(gpa>=3.0)return{...base,eligible:true,grade_point:gpa,eligibility_tier:"good",eligible_countries:["UK","Singapore","Australia"],recommended_programs:isMasters?["PhD","Second Master's"]:["Master's","MBA"],notes:[`Good result — broad selection available.`]};if(gpa>=2.5)return{...base,eligible:true,grade_point:gpa,eligibility_tier:"average",eligible_countries:["Australia","UK"],recommended_programs:["Master's","Graduate Diploma"],notes:["Eligible for several programs."]};return{...base,grade_point:gpa,eligibility_tier:"foundation",eligible_countries:["Australia"],recommended_programs:["Graduate Diploma","Foundation"],notes:["Consider a bridging or diploma course."]};}
-  if(dt==="IELTS Certificate"){const o=parseFloat(doc.overall||0);const tier=o>=7.5?"top":o>=6.5?"good":o>=6.0?"average":"foundation";return{...base,eligible:o>=5.5,grade_point:o/9*4,eligibility_tier:tier,eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:[`IELTS Overall: ${o}. ${o>=6.5?"Meets most university requirements.":"May need improvement."}`]};}
-  if(dt==="TOEFL Certificate"){const t=parseInt(doc.total||0);const tier=t>=100?"top":t>=90?"good":t>=80?"average":"foundation";return{...base,eligible:t>=72,grade_point:t/120*4,eligibility_tier:tier,eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:[`TOEFL iBT: ${t}. ${t>=90?"Good score.":"May need improvement."}`]};}
-  if(dt==="PTE Certificate"){const o=parseInt(doc.overall||0);const tier=o>=79?"top":o>=65?"good":o>=50?"average":"foundation";return{...base,eligible:o>=50,grade_point:o/90*4,eligibility_tier:tier,eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:[`PTE Academic: ${o}. ${o>=65?"Meets most requirements.":"May need improvement."}`]};}
-  if(dt==="Passport")return{...base,eligible:true,grade_point:0,eligibility_tier:"average",eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:["Passport verified. Upload academic transcripts for full eligibility."]};
-  if(dt==="Financial Statement"){const cb=parseFloat(String(doc.closing_balance||"0").replace(/[^0-9.]/g,""))||0;const cbLKR=toLKR(cb,doc.currency||"LKR");const tier=cbLKR>=10000000?"top":cbLKR>=5000000?"good":"average";return{...base,eligible:cbLKR>0,grade_point:0,eligibility_tier:tier,eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:[`Bank statement processed. Balance: ${formatLKR(cbLKR)}`]};}
-  return{...base,eligible:true,grade_point:2.0,eligibility_tier:"average",eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:["Document processed. Check individual university requirements."]};
+function assessEligibility(profile, docPayload) {
+  const asArray = (value)=>Array.isArray(value)?value.filter(Boolean):[];
+  const toTierScore = (tier)=>({foundation:1,average:2,good:3,top:4}[tier]||1);
+  const fromTierScore = (score)=>({1:"foundation",2:"average",3:"good",4:"top"}[Math.max(1,Math.min(4,Math.round(score)))]||"foundation");
+
+  const docsByType = (()=>{
+    if(docPayload?.documents && typeof docPayload.documents === "object"){
+      return docPayload.documents;
+    }
+    if(docPayload?.document_type){
+      return {[docPayload.document_type]:docPayload};
+    }
+    return {};
+  })();
+
+  const docs = Object.values(docsByType).filter((d)=>d && typeof d === "object");
+  if(!docs.length){
+    return {
+      eligible:false,
+      grade_point:0,
+      eligible_countries:[],
+      recommended_programs:[],
+      eligibility_tier:"foundation",
+      notes:["No documents available. Upload academic, English, passport, and financial documents."],
+      checks:{academic:false,english:false,passport:false,financial:false},
+      documents_considered:[],
+    };
+  }
+
+  const findDoc = (...types)=>docs.find((d)=>types.includes(d.document_type));
+  const academicDoc = findDoc("Master's Degree","Bachelor's Degree","A-Level Results","Diploma");
+  const ieltsDoc = findDoc("IELTS Certificate");
+  const toeflDoc = findDoc("TOEFL Certificate");
+  const pteDoc = findDoc("PTE Certificate");
+  const passportDoc = findDoc("Passport");
+  const financialDoc = findDoc("Financial Statement");
+
+  let academicResult = {eligible:false,grade_point:0,eligibility_tier:"foundation",eligible_countries:["UK","Singapore","Australia"],recommended_programs:[],notes:["Academic document missing."]};
+  if(academicDoc){
+    if(academicDoc.document_type==="A-Level Results"){
+      const GV={A:4,B:3,C:2,S:1,F:0};
+      const subjectMap = academicDoc.subjects && !Array.isArray(academicDoc.subjects) ? academicDoc.subjects : {};
+      const vals=Object.values(subjectMap).map(g=>GV[String(g).trim()]??0).filter((v)=>Number.isFinite(v));
+      const avg=vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 2.0;
+      const gp=+avg.toFixed(2);
+      academicResult = avg>=3.7
+        ? {eligible:true,grade_point:gp,eligibility_tier:"top",eligible_countries:["UK","Singapore","Australia"],recommended_programs:["Engineering","Computer Science","Medicine","Business"],notes:["Excellent A/L grades — strong academic eligibility."]}
+        : avg>=3.3
+          ? {eligible:true,grade_point:gp,eligibility_tier:"good",eligible_countries:["UK","Singapore","Australia"],recommended_programs:["Engineering","Business","Science"],notes:["Strong A/L profile for direct entry."]}
+          : avg>=3.0
+            ? {eligible:true,grade_point:gp,eligibility_tier:"average",eligible_countries:["UK","Australia"],recommended_programs:["Business","IT","Science"],notes:["Moderate A/L profile."]}
+            : {eligible:false,grade_point:gp,eligibility_tier:"foundation",eligible_countries:["UK","Australia"],recommended_programs:["Foundation Program","Pathway"],notes:["A/L grades indicate pathway/foundation route."]};
+    }else{
+      const gpa=parseFloat(academicDoc.gpa_normalized??academicDoc.gpa_value??academicDoc.gpa??0) || 0;
+      const isMasters=academicDoc.document_type==="Master's Degree";
+      academicResult = gpa>=3.5
+        ? {eligible:true,grade_point:gpa,eligibility_tier:"top",eligible_countries:["UK","Singapore","Australia"],recommended_programs:isMasters?["PhD","Research Programs","Postdoc"]:["Master's","MBA","PhD"],notes:[`Excellent ${academicDoc.document_type} result.`]}
+        : gpa>=3.0
+          ? {eligible:true,grade_point:gpa,eligibility_tier:"good",eligible_countries:["UK","Singapore","Australia"],recommended_programs:isMasters?["PhD","Second Master's"]:["Master's","MBA"],notes:[`Good ${academicDoc.document_type} result.`]}
+          : gpa>=2.5
+            ? {eligible:true,grade_point:gpa,eligibility_tier:"average",eligible_countries:["Australia","UK"],recommended_programs:["Master's","Graduate Diploma"],notes:["Academic profile is acceptable for selected programs."]}
+            : {eligible:false,grade_point:gpa,eligibility_tier:"foundation",eligible_countries:["Australia"],recommended_programs:["Graduate Diploma","Foundation"],notes:["Academic profile needs pathway/bridging route."]};
+    }
+  }
+
+  let englishResult = {eligible:false,grade_point:0,eligibility_tier:"foundation",notes:["English certificate missing (IELTS/TOEFL/PTE)."]};
+  if(ieltsDoc){
+    const o=parseFloat(ieltsDoc.overall||0) || 0;
+    const tier=o>=7.5?"top":o>=6.5?"good":o>=6.0?"average":"foundation";
+    englishResult={eligible:o>=5.5,grade_point:o/9*4,eligibility_tier:tier,notes:[`IELTS Overall: ${o}`]};
+  }else if(toeflDoc){
+    const t=parseInt(toeflDoc.total||0,10) || 0;
+    const tier=t>=100?"top":t>=90?"good":t>=80?"average":"foundation";
+    englishResult={eligible:t>=72,grade_point:t/120*4,eligibility_tier:tier,notes:[`TOEFL iBT: ${t}`]};
+  }else if(pteDoc){
+    const p=parseInt(pteDoc.overall||0,10) || 0;
+    const tier=p>=79?"top":p>=65?"good":p>=50?"average":"foundation";
+    englishResult={eligible:p>=50,grade_point:p/90*4,eligibility_tier:tier,notes:[`PTE Academic: ${p}`]};
+  }else if(docPayload?.english_proficiency?.ielts?.overall){
+    const o=parseFloat(docPayload.english_proficiency.ielts.overall||0) || 0;
+    const tier=o>=7.5?"top":o>=6.5?"good":o>=6.0?"average":"foundation";
+    englishResult={eligible:o>=5.5,grade_point:o/9*4,eligibility_tier:tier,notes:[`IELTS (manual): ${o}`]};
+  }
+
+  const financialProfile=profile.financial||{};
+  const profileBudgetLKR=toLKR(parseFloat(financialProfile.total_budget)||0,financialProfile.budget_currency||"LKR");
+  let financialLKR=profileBudgetLKR;
+  if(financialDoc){
+    const cb=parseFloat(String(financialDoc.closing_balance||"0").replace(/[^0-9.]/g,""))||0;
+    financialLKR=toLKR(cb,financialDoc.currency||"LKR");
+  }
+  const financialTier=financialLKR>=10000000?"top":financialLKR>=5000000?"good":financialLKR>0?"average":"foundation";
+  const financialOk=financialLKR>0;
+
+  const passportOk=!!passportDoc;
+  const checks={
+    academic:!!academicDoc && academicResult.eligible,
+    english:englishResult.eligible,
+    passport:passportOk,
+    financial:financialOk,
+  };
+
+  const combinedTierScore=(toTierScore(academicResult.eligibility_tier)*0.55)
+    +(toTierScore(englishResult.eligibility_tier)*0.25)
+    +(toTierScore(financialTier)*0.20);
+  const combinedGradePoint=((academicResult.grade_point||0)*0.8)+((englishResult.grade_point||0)*0.2);
+
+  const allCountries=["UK","Singapore","Australia"];
+  const countries=academicResult.eligible_countries?.length?academicResult.eligible_countries:allCountries;
+  const eligible = checks.academic && checks.english && checks.passport && checks.financial;
+
+  const notes=[
+    ...asArray(academicResult.notes),
+    ...asArray(englishResult.notes),
+    financialOk ? `Financial capacity assessed: ${formatLKR(financialLKR)}.` : "Financial proof missing. Upload bank statement or set profile budget.",
+    passportOk ? "Passport verified." : "Passport missing. Upload passport for full application readiness.",
+  ];
+
+  return {
+    eligible,
+    grade_point:+combinedGradePoint.toFixed(2),
+    eligible_countries:countries,
+    recommended_programs:academicResult.recommended_programs||[],
+    eligibility_tier:fromTierScore(combinedTierScore),
+    notes,
+    checks,
+    financial_ok:financialOk,
+    documents_considered:docs.map((d)=>d.document_type).filter(Boolean),
+  };
 }
 
 const UNIVERSITIES_API = "/universities";
@@ -1076,9 +1188,9 @@ function _mapUniversity(u, country, budgetLKR) {
   };
 }
 
-async function fetchUniversities(country, minGpa, program, budgetLKR) {
+async function fetchUniversities(country, minGpa, program, budgetLKR, token) {
   const url = country ? `${UNIVERSITIES_API}?country=${encodeURIComponent(country)}` : UNIVERSITIES_API;
-  const res = await fetchApi(url);
+  const res = await fetchApi(url, token);
   if (!res.ok) throw new Error("Failed to load universities.");
   const { universities } = await res.json();
   return universities
@@ -1089,6 +1201,35 @@ async function fetchUniversities(country, minGpa, program, budgetLKR) {
       return true;
     })
     .sort((a, b) => a.qs - b.qs);
+}
+
+async function submitApplication(payload, token) {
+  const res = await fetchApi("/applications", token, { method: "POST", body: JSON.stringify(payload) });
+  if (res.status === 409) throw new Error("Already applied to this university and program.");
+  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(t || "Submission failed."); }
+  return res.json();
+}
+
+async function fetchApplications(token) {
+  const res = await fetchApi("/applications", token);
+  if (!res.ok) throw new Error("Failed to load applications.");
+  const { applications } = await res.json();
+  return applications;
+}
+
+async function updateApplicationStatus(appId, status, advisorNotes, token) {
+  const res = await fetchApi(`/applications/${appId}/status`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ status, advisor_notes: advisorNotes || null }),
+  });
+  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(t || "Update failed."); }
+  return res.json();
+}
+
+async function withdrawApplication(appId, token) {
+  const res = await fetchApi(`/applications/${appId}`, token, { method: "DELETE" });
+  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(t || "Withdraw failed."); }
+  return res.json();
 }
 
 // ── SHARED UI ──────────────────────────────────────────────────────────────
@@ -1108,9 +1249,10 @@ function ScoreSections({sections,maxVal=9}){
 // ── EXTRACTED DATA DISPLAY ──────────────────────────────────────────────────
 // CHANGE v6: A-Level Results section NO LONGER shows english_proficiency.
 //            English proficiency must be uploaded as a separate document.
-function ExtractedDisplay({data,confidence}){
+function ExtractedDisplay({data,confidence,ocrEngine}){
   const [showRaw,setShowRaw]=useState(false);
   const dt=data.document_type;
+  const engineLabel=(ocrEngine||"ocr").replace(/^./,c=>c.toUpperCase());
   const pct=Math.round((confidence||0)*100);
   const confCls=pct>=80?"conf-high":pct>=60?"conf-mid":"conf-low";
   const renderContent=()=>{
@@ -1163,8 +1305,8 @@ function ExtractedDisplay({data,confidence}){
   return(
     <div>
       <div className="ai-status-bar">
-        <span className="ai-badge">🔍 EasyOCR</span>
-        <span className="ai-status-text">Document extracted via EasyOCR + ML · {dt}</span>
+        <span className="ai-badge">🔍 {engineLabel}</span>
+        <span className="ai-status-text">Document extracted via {engineLabel} + ML · {dt}</span>
         <span className={`ai-conf-badge ${confCls}`}>◆ {pct}% confidence</span>
       </div>
       {renderContent()}
@@ -1325,7 +1467,7 @@ function ProfileStep({data,onNext}){
 const AI_PIPELINE=[
   {id:"read",     label:"File decode & validation"                },
   {id:"preproc",  label:"OpenCV preprocessing (CLAHE · deskew)"   },
-  {id:"ocr",      label:"EasyOCR text extraction (CRAFT + CRNN)"},
+  {id:"ocr",      label:"OCR text extraction (Tesseract · EasyOCR fallback)"},
   {id:"classify", label:"TF-IDF + Naive Bayes document classifier"},
   {id:"extract",  label:"Regex field extraction (9 doc types)"},
   {id:"verify",   label:"ML confidence scoring"},
@@ -1526,7 +1668,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const [selectedType,setSelectedType]=useState(defaultType);
 
   // v6: track all uploaded docs so checklist + banner work
-  const [uploadedDocs,setUploadedDocs]=useState({});
+  const [uploadedDocs,setUploadedDocs]=useState(docData?.documents&&typeof docData.documents==="object"?docData.documents:{});
   const [pendingUploads,setPendingUploads]=useState([]);
 
   const fileRef=useRef();
@@ -1536,7 +1678,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const [aiResult,setAiResult]=useState(null);
   const [aiError,setAiError]=useState("");
   const [progress,setProgress]=useState("");
-  const [eng,setEng]=useState(docData.english_proficiency||{});
+  const [eng,setEng]=useState(docData?.english_proficiency||{});
   const [serverDocs,setServerDocs]=useState([]);
   const [docsLoading,setDocsLoading]=useState(false);
   const [docsError,setDocsError]=useState("");
@@ -1575,7 +1717,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     setAiResult(null);setAiError("");setPipeStatus({});
     setProgress("");
     // restore prior result for this type if already uploaded
-    if(uploadedDocs[t]) setAiResult(uploadedDocs[t]);
+    if(uploadedDocs[t]) setAiResult({data:uploadedDocs[t],confidence:0.75,ocrEngine:"stored"});
   };
 
   const handleFiles=(files)=>{
@@ -1630,12 +1772,12 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
           if(pct>=75){setStage(4,"done");setStage(5,"running");}
         },user?.token);
         lastResult=result;
-        uploadedResults[result.data.document_type]=result;
+        uploadedResults[result.data.document_type]=result.data;
       }
       setStage(4,"done");setStage(5,"done");
       setUploadedDocs(p=>({...p,...uploadedResults}));
       if(uploadedResults[selectedType]){
-        setAiResult(uploadedResults[selectedType]);
+        setAiResult({data:uploadedResults[selectedType],confidence:lastResult?.confidence??0.75,ocrEngine:lastResult?.ocrEngine||"ocr"});
       }else if(lastResult){
         setAiResult(lastResult);
         if(lastResult?.data?.document_type) setSelectedType(lastResult.data.document_type);
@@ -1652,17 +1794,40 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     setRunning(false);setProgress("");
   };
 
+  const buildEligibilityPayload = (baseDocs)=>{
+    const docs={...baseDocs};
+    if(aiResult?.data?.document_type){
+      const currentDoc={...aiResult.data};
+      if(currentDoc.gpa_value&&!currentDoc.gpa_normalized){
+        currentDoc.gpa_normalized=parseFloat(currentDoc.gpa_value)||0;
+      }
+      docs[currentDoc.document_type]=currentDoc;
+    }
+    return {
+      documents:docs,
+      primary_document_type:selectedType,
+      english_proficiency:eng,
+    };
+  };
+
   const proceed=()=>{
-    if(!aiResult)return;
-    const finalDoc=needsEng?{...aiResult.data,english_proficiency:eng}:aiResult.data;
-    if(finalDoc.gpa_value&&!finalDoc.gpa_normalized){finalDoc.gpa_normalized=parseFloat(finalDoc.gpa_value)||0;}
-    onNext(finalDoc);
+    const finalPayload=buildEligibilityPayload(uploadedDocs);
+    if(!Object.keys(finalPayload.documents||{}).length){
+      setAiError("Add at least one extracted or manually entered document before eligibility check.");
+      return;
+    }
+    onNext(finalPayload);
   };
 
   // Manual submit also marks type as uploaded
   const handleManualSubmit = (doc) => {
-    setUploadedDocs(p=>({...p,[selectedType]:{data:doc}}));
-    onNext(doc);
+    const manualDoc={...doc};
+    if(manualDoc.gpa_value&&!manualDoc.gpa_normalized){
+      manualDoc.gpa_normalized=parseFloat(manualDoc.gpa_value)||0;
+    }
+    const nextDocs={...uploadedDocs,[selectedType]:manualDoc};
+    setUploadedDocs(nextDocs);
+    onNext(buildEligibilityPayload(nextDocs));
   };
 
   return(
@@ -1676,7 +1841,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
       <div className="panel">
         <div className="panel-title">Academic & Supporting Documents</div>
-        <div className="panel-sub">Upload for EasyOCR + ML extraction (all 9 document types) or enter manually</div>
+        <div className="panel-sub">Upload for OCR + ML extraction (all 9 document types) or enter manually</div>
         <div className="tabs">
           <button className={`tab${tab==="upload"?" active":""}`} onClick={()=>setTab("upload")}> OCR Upload & Extract</button>
           <button className={`tab${tab==="manual"?" active":""}`} onClick={()=>setTab("manual")}>Manual Entry</button>
@@ -1767,7 +1932,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
               <div style={{marginTop:"1.25rem"}}>
                 <div className="slabel">Extracted Data</div>
                 {aiResult.warnings&&aiResult.warnings.length>0&&aiResult.warnings.map((w,i)=><Alert key={i} type="warn">{w}</Alert>)}
-                <ExtractedDisplay data={aiResult.data} confidence={aiResult.confidence} />
+                <ExtractedDisplay data={aiResult.data} confidence={aiResult.confidence} ocrEngine={aiResult.ocrEngine} />
                 {needsEng&&<div style={{marginTop:"1.25rem"}}><EnglishSection value={eng} onChange={setEng} /></div>}
                 <div className="btn-row" style={{marginTop:"1.5rem"}}>
                   <button className="btn btn-ghost" onClick={onBack}>← Profile</button>
@@ -1781,7 +1946,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
         {tab==="manual"&&(
           <div>
             {selectedType==="A-Level Results"&&<ALevelManualForm stream={profile.stream} onSubmit={handleManualSubmit} onBack={onBack} />}
-            {(selectedType==="Bachelor's Degree"||selectedType==="Master's Degree")&&<DegreeManualForm docType={selectedType} data={docData} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {(selectedType==="Bachelor's Degree"||selectedType==="Master's Degree")&&<DegreeManualForm docType={selectedType} data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
             {selectedType==="Diploma"&&<DiplomaManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
             {selectedType==="IELTS Certificate"&&<IELTSManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
             {selectedType==="TOEFL Certificate"&&<TOEFLManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
@@ -1797,7 +1962,15 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
 // ── ELIGIBILITY STEP ────────────────────────────────────────────────────────
 function EligibilityStep({elig,docData,profile,onNext,onBack}){
-  const eng=docData.english_proficiency||{};
+  const docs = docData?.documents||{};
+  const ieltsDoc = docs["IELTS Certificate"];
+  const toeflDoc = docs["TOEFL Certificate"];
+  const pteDoc = docs["PTE Certificate"];
+  const eng=docData.english_proficiency||{
+    ielts: ieltsDoc?.overall ? {overall: ieltsDoc.overall} : null,
+    toefl: toeflDoc?.total ? parseInt(toeflDoc.total,10) : null,
+    pte: pteDoc?.overall ? parseInt(pteDoc.overall,10) : null,
+  };
   const fin=profile.financial||{};
   const tierCls={top:"tier-top",good:"tier-good",average:"tier-average",foundation:"tier-foundation"}[elig.eligibility_tier]||"tier-average";
   const totalBudgetLKR=toLKR(parseFloat(fin.total_budget)||0,fin.budget_currency||"LKR");
@@ -1818,6 +1991,7 @@ function EligibilityStep({elig,docData,profile,onNext,onBack}){
       </div>
       {totalBudgetLKR>0&&<div className="panel" style={{marginTop:"1rem"}}><div className="panel-title" style={{marginBottom:".75rem"}}> Financial Summary</div><DataGrid pairs={[["Total Budget",formatLKR(totalBudgetLKR)],["Funding Source",fin.funding_source]]} /></div>}
       <div className="panel"><div className="panel-title" style={{marginBottom:".75rem"}}>English Proficiency</div>{engBadges.length?<div style={{display:"flex",gap:".5rem",flexWrap:"wrap"}}>{engBadges}</div>:<span style={{color:"var(--text3)",fontSize:".82rem",fontFamily:"var(--mono)"}}>No scores provided</span>}</div>
+      {Array.isArray(elig.documents_considered)&&elig.documents_considered.length>0&&<div className="panel" style={{marginBottom:"1rem"}}><div className="panel-title" style={{marginBottom:".75rem"}}>Documents Considered</div><div className="chips-row">{elig.documents_considered.map((d)=><span key={d} className="chip chip-blue">{d}</span>)}</div></div>}
       {elig.notes?.length>0&&<div className="panel"><div className="panel-title" style={{marginBottom:".75rem"}}>Assessment Notes</div>{elig.notes.map((n,i)=><Alert key={i} type={elig.eligible?"ok":"warn"}>{n}</Alert>)}</div>}
       <div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Documents</button><button className="btn btn-primary" onClick={onNext}>View Universities →</button></div>
     </div>
@@ -1825,32 +1999,179 @@ function EligibilityStep({elig,docData,profile,onNext,onBack}){
 }
 
 // ── UNIVERSITIES STEP ───────────────────────────────────────────────────────
-function UniversitiesStep({profile,elig,onBack,onReset}){
+const APP_STATUS_META = {
+  submitted:    { label: "Submitted",    cls: "chip chip-blue" },
+  under_review: { label: "Under Review", cls: "chip chip-amber" },
+  accepted:     { label: "Accepted",     cls: "chip chip-green" },
+  rejected:     { label: "Rejected",     cls: "chip chip-red" },
+  withdrawn:    { label: "Withdrawn",    cls: "chip" },
+};
+
+function ApplicationsTracker({ user, refreshKey }) {
+  const [apps, setApps] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [busyId, setBusyId] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    fetchApplications(user?.token)
+      .then(setApps)
+      .catch(e => setErr(e.message || "Failed to load applications."))
+      .finally(() => setLoading(false));
+  }, [user?.token, refreshKey]);
+
+  const doWithdraw = async (appId) => {
+    if (!window.confirm("Withdraw this application?")) return;
+    try {
+      setBusyId(appId);
+      await withdrawApplication(appId, user?.token);
+      setApps(prev => prev.map(a => a.application_id === appId ? { ...a, status: "withdrawn" } : a));
+    } catch (e) {
+      setErr(e.message || "Withdraw failed.");
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const active = apps.filter(a => a.status !== "withdrawn");
+  const withdrawn = apps.filter(a => a.status === "withdrawn");
+
+  if (loading) return <Alert type="info">Loading your applications…</Alert>;
+  if (err) return <Alert type="error">{err}</Alert>;
+  if (!apps.length) return <div style={{ fontFamily: "var(--mono)", fontSize: ".72rem", color: "var(--text3)", padding: ".75rem 0" }}>No applications submitted yet. Click "Apply Now" on a university below.</div>;
+
+  return (
+    <div>
+      {active.map(app => {
+        const sm = APP_STATUS_META[app.status] || APP_STATUS_META.submitted;
+        const busy = busyId === app.application_id;
+        return (
+          <div key={app.application_id} style={{ padding: ".85rem 1rem", border: "1px solid var(--border)", borderRadius: "var(--r)", marginBottom: ".6rem", background: "var(--bg2)", display: "grid", gridTemplateColumns: "1fr auto", gap: ".75rem", alignItems: "start" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: ".92rem" }}>{app.university_name}</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: ".68rem", color: "var(--text3)", marginTop: ".2rem" }}>{app.program} · {app.country}</div>
+              {app.advisor_notes && <div style={{ fontFamily: "var(--mono)", fontSize: ".66rem", color: "var(--amber)", marginTop: ".3rem" }}>Advisor: {app.advisor_notes}</div>}
+              <div style={{ fontFamily: "var(--mono)", fontSize: ".62rem", color: "var(--text3)", marginTop: ".2rem" }}>Submitted {new Date(app.submitted_at).toLocaleDateString()}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: ".4rem" }}>
+              <span className={sm.cls}>{sm.label}</span>
+              {app.status === "submitted" && <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => doWithdraw(app.application_id)}>{busy ? "…" : "Withdraw"}</button>}
+            </div>
+          </div>
+        );
+      })}
+      {withdrawn.length > 0 && (
+        <div style={{ fontFamily: "var(--mono)", fontSize: ".65rem", color: "var(--text3)", marginTop: ".5rem" }}>
+          {withdrawn.length} withdrawn application{withdrawn.length > 1 ? "s" : ""} not shown.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UniversitiesStep({profile, elig, onBack, onReset, user}){
   const fin=profile.financial||{};
   const budgetLKR=toLKR(parseFloat(fin.total_budget)||0,fin.budget_currency||"LKR");
   const [unis,setUnis]=useState([]);
   const [loading,setLoading]=useState(true);
   const [fetchErr,setFetchErr]=useState("");
+  const [appliedKeys,setAppliedKeys]=useState(new Set());
+  const [applyErr,setApplyErr]=useState("");
+  const [applyBusy,setApplyBusy]=useState("");
+  const [trackerKey,setTrackerKey]=useState(0);
+
   useEffect(()=>{
     setLoading(true);
     setFetchErr("");
-    fetchUniversities(profile.country,elig.grade_point,profile.program_interest,budgetLKR)
+    fetchUniversities(profile.country,elig.grade_point,profile.program_interest,budgetLKR,user?.token)
       .then(setUnis)
       .catch(e=>setFetchErr(e.message||"Failed to load universities."))
       .finally(()=>setLoading(false));
-  },[]);
+  },[profile.country,elig.grade_point,profile.program_interest,budgetLKR,user?.token]);
+
+  // Pre-fill already-applied universities on mount
+  useEffect(()=>{
+    if(!user?.token) return;
+    fetchApplications(user.token).then(apps=>{
+      const keys=new Set(apps.filter(a=>a.status!=="withdrawn").map(a=>`${a.university_name}||${a.program}`));
+      setAppliedKeys(keys);
+    }).catch(()=>{});
+  },[user?.token]);
+
+  const handleApply = async (u, program) => {
+    const key = `${u.name}||${program}`;
+    if (appliedKeys.has(key)) return;
+    setApplyErr("");
+    setApplyBusy(key);
+    try {
+      await submitApplication({
+        university_name: u.name,
+        university_id: u.id || u.name.toLowerCase().replace(/\s+/g,"-"),
+        program,
+        country: u.country || profile.country || "",
+        eligibility_tier: elig.eligibility_tier,
+        grade_point: elig.grade_point,
+        university_data: { qs: u.qs, location: u.location, website: u.website, tuitionDisplay: u.tuitionDisplay, minGpa: u.minGpa, ielts: u.ielts },
+      }, user?.token);
+      setAppliedKeys(prev => new Set([...prev, key]));
+      setTrackerKey(k => k + 1);
+    } catch(e) {
+      if (e.message?.includes("Already applied")) {
+        setAppliedKeys(prev => new Set([...prev, key]));
+      } else {
+        setApplyErr(e.message || "Application failed.");
+      }
+    } finally {
+      setApplyBusy("");
+    }
+  };
+
   const affordable=unis.filter(u=>u.affordable),stretch=unis.filter(u=>!u.affordable);
-  const UniCard=({u,idx})=>(
-    <div className="uni-card">
-      <div className="uni-header"><div className="uni-name">{idx}. {u.name}</div><div style={{display:"flex",gap:".4rem",flexWrap:"wrap",justifyContent:"flex-end"}}><div className="uni-qs">QS #{u.qs}</div>{u.affordable?<span className="fin-tag">✓ Within Budget</span>:<span className="fin-warn-tag">⚠ Stretch</span>}</div></div>
-      <div className="uni-meta"><span>{u.location}</span><span>{u.tuitionDisplay}</span></div>
-      <div className="uni-tags">{u.programs.map(p=><span key={p} className="uni-tag">{p}</span>)}</div>
-      <div className="uni-reqs"><div className="req-box"><div className="req-lbl">Min GPA</div><div className="req-val">{u.minGpa} / 4.0</div></div><div className="req-box"><div className="req-lbl">IELTS Min</div><div className="req-val">{u.ielts}+</div></div></div>
-      <a href={u.website} target="_blank" rel="noreferrer" className="uni-link">↗ Visit Website</a>
-    </div>
-  );
+
+  const UniCard=({u,idx})=>{
+    const primaryProgram = u.programs[0] || profile.program_interest || "General";
+    const key = `${u.name}||${primaryProgram}`;
+    const applied = appliedKeys.has(key);
+    const busy = applyBusy === key;
+    return (
+      <div className="uni-card">
+        <div className="uni-header">
+          <div className="uni-name">{idx}. {u.name}</div>
+          <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",justifyContent:"flex-end"}}>
+            <div className="uni-qs">QS #{u.qs}</div>
+            {u.affordable?<span className="fin-tag">✓ Within Budget</span>:<span className="fin-warn-tag">⚠ Stretch</span>}
+          </div>
+        </div>
+        <div className="uni-meta"><span>{u.location}</span><span>{u.tuitionDisplay}</span></div>
+        <div className="uni-tags">{u.programs.map(p=><span key={p} className="uni-tag">{p}</span>)}</div>
+        <div className="uni-reqs">
+          <div className="req-box"><div className="req-lbl">Min GPA</div><div className="req-val">{u.minGpa} / 4.0</div></div>
+          <div className="req-box"><div className="req-lbl">IELTS Min</div><div className="req-val">{u.ielts}+</div></div>
+        </div>
+        <div style={{display:"flex",gap:".6rem",alignItems:"center",marginTop:".75rem",flexWrap:"wrap"}}>
+          <a href={u.website} target="_blank" rel="noreferrer" className="uni-link" style={{flex:1}}>↗ Visit Website</a>
+          {user?.token && (
+            applied
+              ? <span className="chip chip-green" style={{flexShrink:0}}>✓ Applied</span>
+              : <button className="btn btn-primary btn-sm" style={{flexShrink:0}} disabled={busy} onClick={()=>handleApply(u, primaryProgram)}>
+                  {busy ? "Submitting…" : "Apply Now"}
+                </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return(
     <div className="fade-up">
+      {user?.token && (
+        <div className="panel" style={{marginBottom:"1.5rem"}}>
+          <div className="panel-title" style={{marginBottom:".75rem"}}>My Applications</div>
+          <ApplicationsTracker user={user} refreshKey={trackerKey} />
+        </div>
+      )}
+      {applyErr && <Alert type="error">{applyErr}</Alert>}
       <div style={{marginBottom:"1.25rem"}}>
         <div style={{fontFamily:"var(--sans)",fontSize:"1.05rem",fontWeight:800,marginBottom:".4rem"}}>Matched Universities — {profile.country}</div>
         {loading?<Alert type="info">Loading universities…</Alert>:fetchErr?<Alert type="error">{fetchErr}</Alert>:unis.length>0?<Alert type="ok">Found {unis.length} {unis.length===1?"university":"universities"} — {affordable.length} within budget</Alert>:<Alert type="warn">No universities matched. Adjust GPA, country, or program in your profile.</Alert>}
@@ -1870,6 +2191,7 @@ function AuthPage({onLogin}){
   const [email,setEmail]=useState("");
   const [pw,setPw]=useState("");
   const [name,setName]=useState("");
+  const [role,setRole]=useState("student");
   const [err,setErr]=useState("");
   const [ok,setOk]=useState("");
   const [loading,setLoading]=useState(false);
@@ -1913,7 +2235,7 @@ function AuthPage({onLogin}){
     setOk("");
     setLoading(true);
     try{
-      await registerUser({ name: normalizedName, email: normalizedEmail, password: pw });
+      await registerUser({ name: normalizedName, email: normalizedEmail, password: pw, role });
       setOk("Account created. You can now sign in.");
       setTimeout(()=>{
         setOk("");
@@ -1965,6 +2287,14 @@ function AuthPage({onLogin}){
               <label className="flabel">Password</label>
               <input type="password" value={pw} onChange={e=>setPw(e.target.value)} />
             </div>
+            <div className="field" style={{marginBottom:"1.5rem"}}>
+              <label className="flabel">Role</label>
+              <select value={role} onChange={e=>setRole(e.target.value)}>
+                <option value="student">Student</option>
+                <option value="advisor">Advisor</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
             {err&&<Alert type="error">{err}</Alert>}
             {ok&&<Alert type="ok">{ok}</Alert>}
             <button className="btn btn-primary btn-full" onClick={register} style={{marginTop:"1rem"}} disabled={loading}>
@@ -1994,11 +2324,22 @@ export default function App(){
   const [docData,setDocData]=useState({});
   const [elig,setElig]=useState(null);
   const [stateReady,setStateReady]=useState(false);
+  const role = (user?.role || "student").toLowerCase();
+  const dashboardLabel = role === "admin" ? "Admin Dashboard" : role === "advisor" ? "Advisor Dashboard" : "Student Dashboard";
 
-  const handleDoc=(doc)=>{
-    if(!doc||!doc.document_type)return;
-    const eligResult=assessEligibility(profile,doc);
-    setDocData(doc);setElig(eligResult);setStep(3);
+  const handleDoc=(docPayload)=>{
+    if(!docPayload) return;
+    let normalized = docPayload;
+    if(docPayload.document_type){
+      normalized = {
+        documents: {[docPayload.document_type]:docPayload},
+        primary_document_type: docPayload.document_type,
+        english_proficiency: docPayload.english_proficiency || {},
+      };
+    }
+    if(!normalized.documents || !Object.keys(normalized.documents).length) return;
+    const eligResult=assessEligibility(profile,normalized);
+    setDocData(normalized);setElig(eligResult);setStep(3);
   };
   const reset=()=>{setStep(1);setProfile({});setDocData({});setElig(null);};
   const logout=()=>{setUser(null);setStateReady(false);reset();};
@@ -2036,6 +2377,56 @@ export default function App(){
 
   if(!user) return <><style>{STYLES}</style><AuthPage onLogin={u=>{setUser(u);setProfile(p=>({...p,email:u.email}));}} /></>;
 
+  if(role === "admin"){
+    return (
+      <>
+        <style>{STYLES}</style>
+        <div className="app">
+          <div className="topbar">
+            <div className="logo">
+              <div className="logo-icon">🎓</div>
+              <span>UniAssist</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
+              <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
+              <span className="user-tag" style={{textTransform:"uppercase"}}>{role}</span>
+              <button className="btn btn-danger btn-sm" onClick={logout}>Logout</button>
+            </div>
+          </div>
+          <div className="main">
+            <AdminDashboard user={user} />
+          </div>
+        </div>
+        <ChatBot user={user} />
+      </>
+    );
+  }
+
+  if(role === "advisor"){
+    return (
+      <>
+        <style>{STYLES}</style>
+        <div className="app">
+          <div className="topbar">
+            <div className="logo">
+              <div className="logo-icon">🎓</div>
+              <span>UniAssist</span>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
+              <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
+              <span className="user-tag" style={{textTransform:"uppercase"}}>{role}</span>
+              <button className="btn btn-danger btn-sm" onClick={logout}>Logout</button>
+            </div>
+          </div>
+          <div className="main">
+            <AdvisorDashboard user={user} />
+          </div>
+        </div>
+        <ChatBot user={user} />
+      </>
+    );
+  }
+
   return(
     <>
       <style>{STYLES}</style>
@@ -2047,14 +2438,14 @@ export default function App(){
           </div>
           <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
             <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
+            <span className="user-tag" style={{textTransform:"uppercase"}}>{role}</span>
             <button className="btn btn-danger btn-sm" onClick={logout}>Logout</button>
           </div>
         </div>
         <div className="main">
           <div className="hero">
-            
+            <div className="hero-eyebrow"><span className="hero-dot" />{dashboardLabel}</div>
             <h1>Find Your <em>Ideal</em><br />University Abroad</h1>
-          
           </div>
           <div className="step-rail">
             {STEPS.map(s=>(<div key={s.num} className={`step-seg${step>s.num?" done":step===s.num?" active":""}`}><div className="step-circle">{step>s.num?"✓":s.num}</div><div className="step-name">{s.name}</div></div>))}
@@ -2064,7 +2455,7 @@ export default function App(){
           {step===2&&<DocumentStep profile={profile} docData={docData} onNext={handleDoc} onBack={()=>setStep(1)} user={user} />}
           {step===3&&elig&&<EligibilityStep elig={elig} docData={docData} profile={profile} onNext={()=>setStep(4)} onBack={()=>setStep(2)} />}
           {step===3&&!elig&&<div className="panel"><Alert type="error">Eligibility data missing. Go back and re-submit your document.</Alert><div className="btn-row btn-row-end" style={{marginTop:"1rem"}}><button className="btn btn-ghost" onClick={()=>setStep(2)}>← Back to Documents</button></div></div>}
-          {step===4&&elig&&<UniversitiesStep profile={profile} elig={elig} onBack={()=>setStep(3)} onReset={reset} />}
+          {step===4&&elig&&<UniversitiesStep profile={profile} elig={elig} onBack={()=>setStep(3)} onReset={reset} user={user} />}
         </div>
       </div>
       <ChatBot user={user} />
