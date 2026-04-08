@@ -128,14 +128,9 @@ class FinancialFeasibilityAgent:
         "Australia": {"amount": 20000, "currency": "AUD"},  # Major cities estimate
     }
 
-    # Exchange rates (approximate, should be updated regularly)
-    EXCHANGE_RATES = {
-        "GBP": {"LKR": 380, "USD": 1.27, "SGD": 1.70, "AUD": 1.90},
-        "SGD": {"LKR": 225, "USD": 0.75, "GBP": 0.59, "AUD": 1.12},
-        "AUD": {"LKR": 200, "USD": 0.67, "GBP": 0.53, "SGD": 0.89},
-        "LKR": {"GBP": 0.0026, "USD": 0.0033, "SGD": 0.0044, "AUD": 0.0050},
-        "USD": {"GBP": 0.79, "LKR": 300, "SGD": 1.33, "AUD": 1.50},
-    }
+    # Exchange rates MUST be provided via environment or configuration.
+    # Hardcoded rates become stale immediately and erode trust in financial recommendations.
+    EXCHANGE_RATES = None  # Loaded from environment at runtime
 
     # Scholarship database
     SCHOLARSHIPS = {
@@ -201,6 +196,8 @@ class FinancialFeasibilityAgent:
             _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             universities_db_path = os.path.join(_root, "data", "databases", "universities_database.json")
         self.universities_db = self._load_universities_db(universities_db_path)
+        # Load exchange rates from environment; fail fast if missing (no stale hardcoded rates)
+        self._load_exchange_rates()
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -340,22 +337,37 @@ class FinancialFeasibilityAgent:
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _convert_currency(self, amount: float, from_curr: str, to_curr: str) -> float:
-        """Convert amount from one currency to another."""
+        """Convert amount from one currency to another.
+        
+        Raises:
+            RuntimeError: If exchange rate not available. No silent fallback to 1:1;
+                returning incorrect conversions would compromise financial feasibility assessment.
+        """
         if from_curr == to_curr:
             return amount
         if from_curr in self.EXCHANGE_RATES and to_curr in self.EXCHANGE_RATES[from_curr]:
             return amount * self.EXCHANGE_RATES[from_curr][to_curr]
-        # Fallback: assume 1:1 if not found
-        logger.warning(f"Exchange rate not found: {from_curr} to {to_curr}")
-        return amount
+        raise RuntimeError(
+            f"Exchange rate {from_curr}->{to_curr} not configured. "
+            f"Cannot assess financial feasibility without accurate conversion rates. "
+            f"Update EXCHANGE_RATES environment variable with missing rate pair."
+        )
 
     def _get_exchange_rate(self, from_curr: str, to_curr: str) -> float:
-        """Get exchange rate from currency A to B."""
+        """Get exchange rate from currency A to B.
+        
+        Raises:
+            RuntimeError: If exchange rate not available (same as _convert_currency).
+        """
         if from_curr == to_curr:
             return 1.0
         if from_curr in self.EXCHANGE_RATES and to_curr in self.EXCHANGE_RATES[from_curr]:
             return self.EXCHANGE_RATES[from_curr][to_curr]
-        return 1.0  # fallback
+        raise RuntimeError(
+            f"Exchange rate {from_curr}->{to_curr} not configured. "
+            f"Cannot assess financial feasibility without accurate conversion rates. "
+            f"Update EXCHANGE_RATES environment variable with missing rate pair."
+        )
 
     def _get_scholarships(self, country: str) -> List[ScholarshipOption]:
         """Get available scholarships for a country."""
@@ -389,6 +401,33 @@ class FinancialFeasibilityAgent:
             recs.append("Consider maintaining funds in stable currencies")
 
         return recs
+
+    def _load_exchange_rates(self) -> None:
+        """Load exchange rates from environment (JSON string) or fail explicitly.
+        
+        Format: EXCHANGE_RATES='{ "GBP": {"USD": 1.27}, "USD": {"GBP": 0.79}, ...}'
+        
+        Raises:
+            RuntimeError: If EXCHANGE_RATES not set or invalid. This is intentional:
+                stale exchange rates cause incorrect cost calculations that destroy user trust.
+                Better to fail loudly at startup than produce wrong recommendations.
+        """
+        rates_str = os.environ.get("EXCHANGE_RATES", "").strip()
+        if not rates_str:
+            raise RuntimeError(
+                "EXCHANGE_RATES environment variable not configured. "
+                "Financial feasibility assessment requires current exchange rates. "
+                "Set EXCHANGE_RATES as a JSON object with currency pairs and their conversion rates. "
+                "Example: EXCHANGE_RATES='{\"GBP\": {\"USD\": 1.27}, \"USD\": {\"GBP\": 0.79}}' "
+                "Use a live rate service (OpenExchangeRates, XE, ECB) to prevent stale data."
+            )
+        try:
+            self.EXCHANGE_RATES = json.loads(rates_str)
+            if not isinstance(self.EXCHANGE_RATES, dict):
+                raise ValueError("EXCHANGE_RATES must be a JSON object")
+            logger.info(f"Loaded exchange rates for {len(self.EXCHANGE_RATES)} source currencies.")
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"EXCHANGE_RATES environment variable is not valid JSON: {e}")
 
     def _load_universities_db(self, path: str) -> Optional[dict]:
         """Load universities database."""

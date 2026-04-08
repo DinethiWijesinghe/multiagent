@@ -51,6 +51,8 @@ _PROFILE_DEFAULTS = {
         "top_k": 2,
     },
 }
+KEYLESS_EVIDENCE_LIMIT = int(os.environ.get("KEYLESS_EVIDENCE_LIMIT", "6"))
+KEYLESS_SNIPPET_CHARS = int(os.environ.get("KEYLESS_SNIPPET_CHARS", "420"))
 
 
 def _import_symbol(module_candidates: List[str], symbol: str):
@@ -262,11 +264,14 @@ class RAGSystem:
     def _generate_keyless_response(self, query: str, relevant_docs: List[Any]) -> str:
         """Return a grounded response without external LLM APIs."""
         snippets: List[str] = []
-        for idx, doc in enumerate(relevant_docs[:4], start=1):
+        snippet_limit = max(2, KEYLESS_EVIDENCE_LIMIT)
+        snippet_chars = max(160, KEYLESS_SNIPPET_CHARS)
+
+        for idx, doc in enumerate(relevant_docs[:snippet_limit], start=1):
             content = (getattr(doc, "page_content", "") or "").strip().replace("\n", " ")
             if not content:
                 continue
-            trimmed = content[:260] + ("..." if len(content) > 260 else "")
+            trimmed = content[:snippet_chars] + ("..." if len(content) > snippet_chars else "")
             source = getattr(doc, "metadata", {}).get("source", "knowledge_base")
             snippets.append(f"{idx}. ({source}) {trimmed}")
 
@@ -276,10 +281,26 @@ class RAGSystem:
                 "Please index more data and try again."
             )
 
+        q = (query or "").lower()
+        next_steps: List[str] = []
+        if any(word in q for word in ["deadline", "intake", "date", "timeline"]):
+            next_steps.append("Create an application timeline and prioritize the earliest intake deadlines.")
+        if any(word in q for word in ["visa", "immigration", "permit"]):
+            next_steps.append("Compile visa documents early and verify requirements from official embassy sources.")
+        if any(word in q for word in ["cost", "budget", "tuition", "scholarship", "fee"]):
+            next_steps.append("Compare tuition and living costs across options and shortlist scholarship-eligible programs.")
+        if any(word in q for word in ["eligibility", "requirement", "gpa", "ielts", "toefl", "pte"]):
+            next_steps.append("Check your GPA and language scores against each program minimum before applying.")
+        if not next_steps:
+            next_steps.append("Review the cited evidence and confirm details on each university's official admissions page.")
+
         return (
             f"Grounded answer (keyless mode) for: '{query}'\n\n"
             "Relevant evidence:\n"
             + "\n".join(snippets)
+            + "\n\n"
+            + "Suggested next steps:\n"
+            + "\n".join(f"- {step}" for step in next_steps[:3])
             + "\n\n"
             "Tip: Set RAG_LLM_PROVIDER=gemini with a valid API key if you want generated narrative answers."
         )

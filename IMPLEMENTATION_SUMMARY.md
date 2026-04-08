@@ -276,9 +276,10 @@ Current backend behavior in `multiagent/api_server.py` now includes:
   - `POST /documents/upload`
   - `GET /documents/{document_id}/content`
   - `DELETE /documents/{document_id}`
+  - uploaded document binaries are now stored in PostgreSQL via `document_uploads.binary_data`
 - ✅ Neon/PostgreSQL support using `DATABASE_URL` or `NEON_DATABASE_URL`
   - tables auto-created: `users`, `sessions`, `chat_history`, `user_state`, `document_uploads`
-  - automatic JSON fallback when DB URL is not set (unless `DB_STRICT_MODE=true`)
+  - backend now requires PostgreSQL/Neon at startup; JSON fallback has been removed
 - ✅ Health endpoint shows DB mode:
   - `GET /health` includes `db`, `db_url_set`, `db_strict_mode`
 

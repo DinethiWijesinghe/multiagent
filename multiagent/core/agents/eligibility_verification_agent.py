@@ -30,33 +30,6 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# MODULE-LEVEL ML MODELS
-# ─────────────────────────────────────────────
-
-# Fallback datasets are used only when real historical outcomes are not yet sufficient.
-_FALLBACK_TIER_GPAS = [4.0,4.0,3.95,3.9,3.85,3.8,3.75,3.7,3.65,3.6,3.55,3.5,3.45,3.4,3.35,3.3,
-                       3.25,3.2,3.15,3.1,3.05,3.0,2.95,2.9,2.8,2.7,2.5,2.0,1.5]
-_FALLBACK_TIER_LABELS = ["top","top","top","top","top","top","top","top",
-                         "good","good","good","good","good","good","good","good",
-                         "average","average","average","average","average","average",
-                         "foundation","foundation","foundation","foundation","foundation","foundation","foundation"]
-
-_FALLBACK_MATCH_DIFFS = [0.6,0.5,0.4,0.35,0.3,0.25,0.2,0.15,0.1,0.05,0.02,0.0,-0.05,-0.1,-0.15,-0.2,-0.25,-0.3,-0.5]
-_FALLBACK_MATCH_LABELS = ["strong_match","strong_match","strong_match","strong_match","strong_match",
-                          "meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum","meets_minimum",
-                          "borderline","borderline","borderline","borderline",
-                          "below_minimum","below_minimum","below_minimum"]
-
-_FALLBACK_ALIGNMENT_DATA = {
-    "Physical Science": ["Engineering", "Computer Science", "Science", "Medicine", "IT"],
-    "Bio Science": ["Medicine", "Science", "Pharmacy", "Biology", "Engineering"],
-    "Commerce": ["Business", "Economics", "Accountancy", "Law", "IT"],
-    "Arts": ["Arts", "Law", "Social Science", "Education", "Business"],
-    "Technology": ["Engineering", "IT", "Computer Science", "Design"],
-}
-
-
-# ─────────────────────────────────────────────
 # ENUMS & DATA MODELS
 # ─────────────────────────────────────────────
 
@@ -194,29 +167,26 @@ class EligibilityVerificationAgent:
         self._align_clf = _SVC(C=1.0, max_iter=3000, dual=True)
 
         outcomes = self._load_historical_outcomes(self._historical_outcomes_path)
-        if outcomes:
-            trained_all = self._train_from_real_outcomes(outcomes)
-            if trained_all:
-                logger.info("Eligibility ML models trained from real historical admissions outcomes.")
-                return
-            logger.warning("Historical outcomes found but insufficient diversity; using fallback ML priors.")
-        else:
-            logger.warning("No historical admissions outcomes found; using fallback ML priors.")
+        if not outcomes:
+            raise RuntimeError(
+                f"No historical admissions outcomes found at {self._historical_outcomes_path}. "
+                "Eligibility assessment requires real university admission data, not synthetic priors. "
+                "Weak priors erode trust in recommendations. "
+                "Provide historical_admissions_outcomes.jsonl with real admission records before using this agent."
+            )
+        
+        trained_all = self._train_from_real_outcomes(outcomes)
+        if trained_all:
+            logger.info("Eligibility ML models trained from real historical admissions outcomes.")
+            return
+        
+        raise RuntimeError(
+            "Historical outcomes provided but with insufficient diversity (need ≥2 classes and ≥20 samples per model). "
+            "Eligibility assessment requires diverse real university data across: tier classifications, GPA-to-requirement matches, "
+            "and stream-to-program alignments. Augment historical_admissions_outcomes.jsonl with more diverse admission records."
+        )
 
-        self._train_fallback_models()
 
-    def _train_fallback_models(self) -> None:
-        self._tier_clf.fit([[g] for g in _FALLBACK_TIER_GPAS], _FALLBACK_TIER_LABELS)
-        self._match_clf.fit([[d] for d in _FALLBACK_MATCH_DIFFS], _FALLBACK_MATCH_LABELS)
-
-        all_programs = sorted({p for ps in _FALLBACK_ALIGNMENT_DATA.values() for p in ps})
-        align_x: list[str] = []
-        align_y: list[int] = []
-        for stream, compatible in _FALLBACK_ALIGNMENT_DATA.items():
-            for prog in all_programs:
-                align_x.append(f"{stream} {prog}")
-                align_y.append(1 if prog in compatible else 0)
-        self._align_clf.fit(self._align_vec.fit_transform(align_x), align_y)
 
     def _load_historical_outcomes(self, path: str) -> list[dict]:
         """Load historical outcomes JSONL records for model training."""

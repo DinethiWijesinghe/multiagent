@@ -25,6 +25,7 @@ Intended to be integrated into the UI (app.jsx) or API for real-time chat.
 from __future__ import annotations
 
 import re
+import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 
@@ -32,6 +33,9 @@ try:
     from ..rag_system import RAGSystem
 except Exception:  # pragma: no cover - optional dependency at runtime
     RAGSystem = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChatbotAgent:
@@ -296,6 +300,7 @@ class ChatbotAgent:
                 agent_calls.append("EligibilityVerificationAgent")
                 agent_result = report.to_dict() if hasattr(report, "to_dict") else dict(report)
             except Exception as e:
+                logger.exception("Eligibility agent error")
                 response = f"Eligibility check failed: {e}. Please ensure your profile and documents are complete."
         else:
             response = self.GENERAL_RESPONSES["eligibility_help"]
@@ -316,6 +321,7 @@ class ChatbotAgent:
                 agent_calls.append("FinancialFeasibilityAgent")
                 agent_result = report.to_dict() if hasattr(report, "to_dict") else dict(report)
             except Exception as e:
+                logger.exception("Financial agent error")
                 response = f"Financial assessment failed: {e}. Please provide your budget details."
         else:
             response = self.GENERAL_RESPONSES["financial_help"]
@@ -385,6 +391,7 @@ class ChatbotAgent:
                     "financial_report": financial_report,
                 }
             except Exception as e:
+                logger.exception("Recommendation agent error")
                 response = f"Recommendation failed: {e}. Please complete eligibility and financial checks first."
         else:
             response = self.GENERAL_RESPONSES["recommendation_help"]
@@ -530,4 +537,5 @@ class ChatbotAgent:
                 return text
             return None
         except Exception:
+            logger.exception("RAG handling failed")
             return None

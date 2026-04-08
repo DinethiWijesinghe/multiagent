@@ -23,9 +23,10 @@ import pickle
 import random
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from hashlib import pbkdf2_hmac
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -44,6 +45,7 @@ from sklearn.model_selection import cross_val_score
 MODEL_PATH           = "uniassist_classifier.pkl"
 CONFIDENCE_THRESHOLD = 0.40
 MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
+OCR_STRICT_MODE = os.environ.get("OCR_STRICT_MODE", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TESSERACT WINDOWS PATH AUTO-DETECTION  ← NEW FIX
@@ -64,6 +66,13 @@ OCR_ENGINE_MODE = os.environ.get("OCR_ENGINE", "auto").strip().lower()
 if OCR_ENGINE_MODE not in {"auto", "tesseract", "easyocr"}:
     OCR_ENGINE_MODE = "auto"
 _OCR_ENGINE = None  # will be set to "tesseract", "easyocr", or None after startup
+_OCR_READINESS = {
+    "ready": False,
+    "mode": OCR_ENGINE_MODE,
+    "strict_mode": OCR_STRICT_MODE,
+    "checks": {},
+    "messages": [],
+}
 
 
 def _configure_tesseract() -> bool:
@@ -133,6 +142,40 @@ def _print_tesseract_install_guide():
     print()
     print("=" * 60)
     print()
+
+
+def _collect_ocr_readiness() -> dict[str, Any]:
+    checks: dict[str, Any] = {
+        "pytesseract_package": False,
+        "tesseract_binary": False,
+        "easyocr_package": False,
+    }
+    messages: list[str] = []
+
+    try:
+        import pytesseract  # noqa: F401
+        checks["pytesseract_package"] = True
+        checks["tesseract_binary"] = _configure_tesseract()
+    except Exception:
+        messages.append("Install pytesseract package: pip install pytesseract")
+
+    try:
+        import easyocr  # noqa: F401
+        checks["easyocr_package"] = True
+    except Exception:
+        messages.append("Install EasyOCR package: pip install easyocr")
+
+    ready = bool(checks["tesseract_binary"] or checks["easyocr_package"])
+    if not checks["tesseract_binary"]:
+        messages.append("Install Tesseract binary: https://github.com/UB-Mannheim/tesseract/wiki")
+
+    return {
+        "ready": ready,
+        "mode": OCR_ENGINE_MODE,
+        "strict_mode": OCR_STRICT_MODE,
+        "checks": checks,
+        "messages": sorted(set(messages)),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -757,6 +800,132 @@ def _normalize_fields(doc_type, fields):
     return normalized
 
 
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.replace(",", "").strip()
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except Exception:
+            return None
+    return None
+
+
+def _validate_parsed_fields(doc_type: str, fields: dict[str, Any]) -> tuple[dict[str, Any], list[str], float]:
+    validated = dict(fields or {})
+    issues: list[str] = []
+
+    year_val = validated.get("year")
+    if year_val is not None:
+        y = _to_float(year_val)
+        current_year = datetime.now(timezone.utc).year
+        if y is None or y < 1990 or y > current_year + 1:
+            issues.append("invalid_year")
+
+    if doc_type == "alevel":
+        grades = validated.get("grades") or []
+        allowed = {"A", "B", "C", "S", "F"}
+        if isinstance(grades, list):
+            bad = [g for g in grades if str(g).upper() not in allowed]
+            if bad:
+                issues.append("invalid_alevel_grades")
+
+    if doc_type == "ielts":
+        for key in ["overall", "listening", "reading", "writing", "speaking"]:
+            v = validated.get(key)
+            if v is None:
+                continue
+            f = _to_float(v)
+            if f is None or f < 0 or f > 9 or (f * 2) % 1 != 0:
+                issues.append(f"invalid_{key}_band")
+
+    if doc_type == "toefl":
+        for key in ["total", "reading", "listening", "speaking", "writing"]:
+            v = validated.get(key)
+            if v is None:
+                continue
+            f = _to_float(v)
+            if f is None or f < 0 or f > 120:
+                issues.append(f"invalid_{key}_score")
+
+    if doc_type == "pte":
+        for key in ["overall", "listening", "reading", "writing", "speaking"]:
+            v = validated.get(key)
+            if v is None:
+                continue
+            f = _to_float(v)
+            if f is None or f < 10 or f > 90:
+                issues.append(f"invalid_{key}_score")
+
+    if doc_type == "passport":
+        passport_no = str(validated.get("passport_no") or "").strip().upper()
+        if passport_no and not re.match(r"^[A-Z][0-9]{7}$", passport_no):
+            issues.append("invalid_passport_number")
+
+    if doc_type == "financial":
+        closing_bal = _to_float(validated.get("closing_bal"))
+        if closing_bal is None:
+            issues.append("invalid_closing_balance")
+        elif closing_bal <= 0:
+            issues.append("non_positive_closing_balance")
+        else:
+            validated["closing_bal"] = round(closing_bal, 2)
+
+    unique_issues = sorted(set(issues))
+    parse_confidence = round(max(0.2, 1.0 - (0.12 * len(unique_issues))), 3)
+    return validated, unique_issues, parse_confidence
+
+
+def _score_with_validation(doc_type, fields, ocr_conf, ml_conf, parse_conf):
+    base = _score(doc_type, fields, ocr_conf, ml_conf)
+    return round(max(0.0, min(1.0, base * 0.85 + parse_conf * 0.15)), 3)
+
+
+_TYPE_MAP = {
+    "alevel": "A-Level Results",
+    "bachelor": "Bachelor's Degree",
+    "master": "Master's Degree",
+    "diploma": "Diploma",
+    "ielts": "IELTS Certificate",
+    "toefl": "TOEFL Certificate",
+    "pte": "PTE Certificate",
+    "passport": "Passport",
+    "financial": "Financial Statement",
+}
+
+_TYPE_LABEL_TO_KEY = {label: key for key, label in _TYPE_MAP.items()}
+
+
+def _build_manual_review_block(
+    confidence: float,
+    missing_field_reasons: dict[str, str],
+    validation_issues: list[str],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if confidence < 0.65:
+        reasons.append("low_overall_confidence")
+    if missing_field_reasons:
+        reasons.append("missing_required_fields")
+    if validation_issues:
+        reasons.append("field_validation_issues")
+
+    required = bool(reasons)
+    return {
+        "required": required,
+        "reason_codes": reasons,
+        "recommended_action": (
+            "Review and correct extracted fields before eligibility calculations."
+            if required else
+            "No manual correction required."
+        ),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FIELD EXTRACTORS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -919,13 +1088,13 @@ def _extract(doc_type, text):
 # FASTAPI
 # ─────────────────────────────────────────────────────────────────────────────
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import tempfile
-from typing import Any, Literal
-from sqlalchemy import Column, DateTime, String, Text, create_engine, func
+from typing import Literal
+from sqlalchemy import Column, DateTime, LargeBinary, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 try:
@@ -934,6 +1103,7 @@ try:
     from .core.agents.financial_feasibility_agent import FinancialFeasibilityAgent
     from .core.agents.recommendation_agent import RecommendationAgent
     from .core.rag_system import RAGSystem
+    from .core.monitoring import get_metrics_collector
 except Exception:
     try:
         from core.agents.chatbot_agent import ChatbotAgent
@@ -941,12 +1111,14 @@ except Exception:
         from core.agents.financial_feasibility_agent import FinancialFeasibilityAgent
         from core.agents.recommendation_agent import RecommendationAgent
         from core.rag_system import RAGSystem
+        from core.monitoring import get_metrics_collector
     except Exception:
         ChatbotAgent = None
         EligibilityVerificationAgent = None
         FinancialFeasibilityAgent = None
         RecommendationAgent = None
         RAGSystem = None
+        get_metrics_collector = None
 
 Base = declarative_base()
 
@@ -987,6 +1159,7 @@ class DBDocumentUpload(Base):
     document_id = Column(String(64), primary_key=True, index=True)
     user_id = Column(String(255), nullable=False, index=True)
     data = Column(Text, nullable=False, default="{}")
+    binary_data = Column(LargeBinary, nullable=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -1023,19 +1196,64 @@ def _env_true(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except Exception:
+        return default
+
+
+def _env_csv(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or default
+
+
 DATABASE_URL = _normalize_database_url(
     os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 )
-DB_STRICT_MODE = _env_true("DB_STRICT_MODE", False)
+DB_STRICT_MODE = _env_true("DB_STRICT_MODE", True)
 RAG_ENABLED = _env_true("RAG_ENABLED", True)
-SQLITE_DB_PATH = Path(__file__).resolve().parent / "data" / "app.db"
-SQLITE_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH.as_posix()}"
+SESSION_TTL_HOURS = _env_int("SESSION_TTL_HOURS", 24 * 30)
+ALLOW_PRIVILEGED_SELF_REGISTRATION = _env_true("ALLOW_PRIVILEGED_SELF_REGISTRATION", False)
+PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 6)
+PASSWORD_REQUIRE_COMPLEXITY = _env_true("PASSWORD_REQUIRE_COMPLEXITY", False)
+AUTH_WINDOW_SECONDS = _env_int("AUTH_WINDOW_SECONDS", 300)
+AUTH_MAX_LOGIN_ATTEMPTS = _env_int("AUTH_MAX_LOGIN_ATTEMPTS", 10)
+METRICS_PUBLIC = _env_true("METRICS_PUBLIC", True)
+CORS_ALLOW_ORIGINS = _env_csv(
+    "CORS_ALLOW_ORIGINS",
+    [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
+)
+CORS_ALLOW_METHODS = _env_csv(
+    "CORS_ALLOW_METHODS",
+    ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+CORS_ALLOW_HEADERS = _env_csv(
+    "CORS_ALLOW_HEADERS",
+    ["Authorization", "Content-Type", "Accept", "Origin"],
+)
+CORS_ALLOW_CREDENTIALS = _env_true("CORS_ALLOW_CREDENTIALS", True)
+_default_cors_origin_regex = r"^https://[-a-zA-Z0-9]+\.trycloudflare\.com$" if os.environ.get("COLAB_RELEASE_TAG") else ""
+CORS_ALLOW_ORIGIN_REGEX = (os.environ.get("CORS_ALLOW_ORIGIN_REGEX") or _default_cors_origin_regex).strip() or None
 
 _db_engine = None
 _SessionLocal = None
 _db_backend = "uninitialized"
 _chatbot_agent = None
 _rag_provider = "none"
+_metrics_collector = get_metrics_collector() if get_metrics_collector else None
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 CHAT_HISTORY_DIR = Path(__file__).resolve().parent / "data" / "chat_history"
 USERS_DIR = Path(__file__).resolve().parent / "data" / "users"
@@ -1125,6 +1343,11 @@ class ChatRespondPayload(BaseModel):
     context: dict[str, Any] = {}
 
 
+class OCRManualCorrectionPayload(BaseModel):
+    corrected_fields: dict[str, Any]
+    reviewer_note: str | None = None
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1161,6 +1384,32 @@ def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _require_session_local():
+    if _SessionLocal is None:
+        raise RuntimeError(
+            "Database session is unavailable. Configure DATABASE_URL for PostgreSQL/Neon and restart the server."
+        )
+    return _SessionLocal
+
+
+def _ensure_document_upload_schema() -> None:
+    if _db_engine is None:
+        return
+
+    try:
+        columns = {column["name"] for column in inspect(_db_engine).get_columns("document_uploads")}
+    except Exception as exc:
+        print(f"[DB] Could not inspect document_uploads schema: {exc}")
+        return
+
+    if "binary_data" in columns:
+        return
+
+    with _db_engine.begin() as connection:
+        connection.execute(text("ALTER TABLE document_uploads ADD COLUMN binary_data BYTEA"))
+    print("[DB] Added document_uploads.binary_data column.")
 
 
 def _normalize_country_name(country: str | None) -> str | None:
@@ -1208,90 +1457,44 @@ def _user_documents_index_path(user_id: str) -> Path:
     return _user_documents_path(user_id) / "index.json"
 
 
-def _bootstrap_db_from_json_files() -> None:
-    """Best-effort import from legacy JSON files into DB tables."""
-    if not _SessionLocal:
-        return
-
-    try:
-        with _SessionLocal() as session:
-            users_count = session.query(DBUser).count()
-            sessions_count = session.query(DBSession).count()
-            states_count = session.query(DBUserState).count()
-            if users_count == 0:
-                users_json = _read_json(_users_path(), {})
-                if isinstance(users_json, dict):
-                    for email, payload in users_json.items():
-                        data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
-                        session.merge(DBUser(email=_normalize_email(email), data=data))
-
-            if sessions_count == 0:
-                sessions_json = _read_json(_sessions_path(), {})
-                if isinstance(sessions_json, dict):
-                    for token, payload in sessions_json.items():
-                        data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
-                        session.merge(DBSession(token=str(token), data=data))
-
-            if states_count == 0 and USER_STATE_DIR.exists():
-                for state_file in USER_STATE_DIR.glob("*.json"):
-                    key = state_file.stem
-                    payload = _read_json(state_file, {})
-                    data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
-                    session.merge(DBUserState(user_id=key, data=data))
-
-            session.commit()
-    except Exception as exc:
-        print(f"[DB] JSON bootstrap skipped: {exc}")
-
-
 def _applications_index_path() -> Path:
     return APPLICATIONS_DIR / "applications.json"
 
 
 def _load_applications() -> list[dict[str, Any]]:
-    """Load all applications (DB or JSON fallback)."""
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            rows = session.query(DBApplication).all()
-            result = []
-            for row in rows:
-                payload = _read_json_text(row.data, {})
-                if isinstance(payload, dict):
-                    payload["application_id"] = row.application_id
-                    payload["user_id"] = row.user_id
-                    payload["status"] = row.status
-                    result.append(payload)
-            return result
-    data = _read_json(_applications_index_path(), [])
-    return data if isinstance(data, list) else []
+    """Load all applications from the configured database."""
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        rows = session.query(DBApplication).all()
+        result = []
+        for row in rows:
+            payload = _read_json_text(row.data, {})
+            if isinstance(payload, dict):
+                payload["application_id"] = row.application_id
+                payload["user_id"] = row.user_id
+                payload["status"] = row.status
+                result.append(payload)
+        return result
 
 
 def _save_application(app_record: dict[str, Any]) -> None:
     """Upsert a single application record."""
     app_id = app_record.get("application_id", "")
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            row = session.get(DBApplication, app_id)
-            data_str = json.dumps(app_record, ensure_ascii=False)
-            if row is None:
-                session.add(DBApplication(
-                    application_id=app_id,
-                    user_id=app_record.get("user_id", ""),
-                    status=app_record.get("status", "submitted"),
-                    data=data_str,
-                ))
-            else:
-                row.status = app_record.get("status", row.status)
-                row.data = data_str
-            session.commit()
-        return
-    all_apps = _load_applications()
-    idx = next((i for i, a in enumerate(all_apps) if a.get("application_id") == app_id), None)
-    if idx is None:
-        all_apps.append(app_record)
-    else:
-        all_apps[idx] = app_record
-    _write_json(_applications_index_path(), all_apps)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBApplication, app_id)
+        data_str = json.dumps(app_record, ensure_ascii=False)
+        if row is None:
+            session.add(DBApplication(
+                application_id=app_id,
+                user_id=app_record.get("user_id", ""),
+                status=app_record.get("status", "submitted"),
+                data=data_str,
+            ))
+        else:
+            row.status = app_record.get("status", row.status)
+            row.data = data_str
+        session.commit()
 
 
 def _append_historical_outcome(app_record: dict[str, Any], status: str) -> None:
@@ -1433,59 +1636,51 @@ def _backfill_historical_outcomes_from_applications() -> int:
 
 
 def _load_users() -> dict[str, dict[str, Any]]:
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            rows = session.query(DBUser).all()
-            users: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                payload = _read_json_text(row.data, {})
-                users[row.email] = payload if isinstance(payload, dict) else {}
-            return users
-    data = _read_json(_users_path(), {})
-    return data if isinstance(data, dict) else {}
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        rows = session.query(DBUser).all()
+        users: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            payload = _read_json_text(row.data, {})
+            users[row.email] = payload if isinstance(payload, dict) else {}
+        return users
 
 
 def _save_users(users: dict[str, dict[str, Any]]) -> None:
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            for email, payload in users.items():
-                row = session.get(DBUser, email)
-                data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
-                if row is None:
-                    session.add(DBUser(email=email, data=data))
-                else:
-                    row.data = data
-            session.commit()
-        return
-    _write_json(_users_path(), users)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        for email, payload in users.items():
+            row = session.get(DBUser, email)
+            data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+            if row is None:
+                session.add(DBUser(email=email, data=data))
+            else:
+                row.data = data
+        session.commit()
 
 
 def _load_sessions() -> dict[str, dict[str, Any]]:
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            rows = session.query(DBSession).all()
-            sessions: dict[str, dict[str, Any]] = {}
-            for row in rows:
-                payload = _read_json_text(row.data, {})
-                sessions[row.token] = payload if isinstance(payload, dict) else {}
-            return sessions
-    data = _read_json(_sessions_path(), {})
-    return data if isinstance(data, dict) else {}
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        rows = session.query(DBSession).all()
+        sessions: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            payload = _read_json_text(row.data, {})
+            sessions[row.token] = payload if isinstance(payload, dict) else {}
+        return sessions
 
 
 def _save_sessions(sessions: dict[str, dict[str, Any]]) -> None:
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            for token, payload in sessions.items():
-                row = session.get(DBSession, token)
-                data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
-                if row is None:
-                    session.add(DBSession(token=token, data=data))
-                else:
-                    row.data = data
-            session.commit()
-        return
-    _write_json(_sessions_path(), sessions)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        for token, payload in sessions.items():
+            row = session.get(DBSession, token)
+            data = json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+            if row is None:
+                session.add(DBSession(token=token, data=data))
+            else:
+                row.data = data
+        session.commit()
 
 
 def _hash_password(password: str, salt: str | None = None) -> str:
@@ -1502,12 +1697,94 @@ def _verify_password(password: str, stored_hash: str) -> bool:
     return secrets.compare_digest(candidate_hash, expected_hash)
 
 
+def _parse_utc_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_session_expired(session_payload: dict[str, Any]) -> bool:
+    created_raw = session_payload.get("created_at")
+    created_at = _parse_utc_timestamp(created_raw)
+    if created_at is None:
+        return True
+    expires_at = created_at + timedelta(hours=max(1, SESSION_TTL_HOURS))
+    return datetime.now(timezone.utc) >= expires_at
+
+
+def _validate_password_policy(password: str) -> None:
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {PASSWORD_MIN_LENGTH} characters",
+        )
+
+    if not PASSWORD_REQUIRE_COMPLEXITY:
+        return
+
+    checks = {
+        "lowercase": any(ch.islower() for ch in password),
+        "uppercase": any(ch.isupper() for ch in password),
+        "digit": any(ch.isdigit() for ch in password),
+        "special": any(not ch.isalnum() for ch in password),
+    }
+    if not all(checks.values()):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Password must include uppercase, lowercase, number, and special character"
+            ),
+        )
+
+
+def _login_rate_limit_key(email: str, client_host: str | None) -> str:
+    return f"{email}|{client_host or 'unknown'}"
+
+
+def _check_login_rate_limit(key: str) -> None:
+    now = time.time()
+    window = max(60, AUTH_WINDOW_SECONDS)
+    max_attempts = max(3, AUTH_MAX_LOGIN_ATTEMPTS)
+    attempts = [ts for ts in _LOGIN_ATTEMPTS.get(key, []) if now - ts <= window]
+    _LOGIN_ATTEMPTS[key] = attempts
+    if len(attempts) >= max_attempts:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+        )
+
+
+def _record_login_failure(key: str) -> None:
+    now = time.time()
+    window = max(60, AUTH_WINDOW_SECONDS)
+    attempts = [ts for ts in _LOGIN_ATTEMPTS.get(key, []) if now - ts <= window]
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[key] = attempts
+
+
+def _clear_login_attempts(key: str) -> None:
+    if key in _LOGIN_ATTEMPTS:
+        del _LOGIN_ATTEMPTS[key]
+
+
 def _issue_session_token(email: str) -> str:
     token = secrets.token_urlsafe(32)
     sessions = _load_sessions()
+    created_at = _utc_now()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=max(1, SESSION_TTL_HOURS))).isoformat()
     sessions[token] = {
         "email": email,
-        "created_at": _utc_now(),
+        "created_at": created_at,
+        "expires_at": expires_at,
     }
     _save_sessions(sessions)
     return token
@@ -1521,8 +1798,14 @@ def _authenticate_token(authorization: str | None, *, required: bool = True) -> 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
         raise HTTPException(status_code=401, detail="Invalid authorization header")
-    session = _load_sessions().get(token.strip())
+    token_value = token.strip()
+    sessions = _load_sessions()
+    session = sessions.get(token_value)
     if not session or not session.get("email"):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if _is_session_expired(session):
+        sessions.pop(token_value, None)
+        _save_sessions(sessions)
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return _normalize_email(session["email"])
 
@@ -1565,79 +1848,148 @@ def _ensure_user_access(user_id: str, current_user_email: str) -> str:
 
 
 def _load_user_state_record(user_id: str) -> dict[str, Any]:
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            row = session.get(DBUserState, _safe_user_key(user_id))
-            if row is None:
-                return {}
-            payload = _read_json_text(row.data, {})
-            return payload if isinstance(payload, dict) else {}
-    data = _read_json(_user_state_path(user_id), {})
-    return data if isinstance(data, dict) else {}
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBUserState, _safe_user_key(user_id))
+        if row is None:
+            return {}
+        payload = _read_json_text(row.data, {})
+        return payload if isinstance(payload, dict) else {}
 
 
 def _save_user_state_record(user_id: str, state: dict[str, Any]) -> None:
-    if _SessionLocal:
-        safe_id = _safe_user_key(user_id)
-        with _SessionLocal() as session:
-            row = session.get(DBUserState, safe_id)
-            data = json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False)
-            if row is None:
-                session.add(DBUserState(user_id=safe_id, data=data))
-            else:
-                row.data = data
-            session.commit()
-        return
-    _write_json(_user_state_path(user_id), state)
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBUserState, safe_id)
+        data = json.dumps(state if isinstance(state, dict) else {}, ensure_ascii=False)
+        if row is None:
+            session.add(DBUserState(user_id=safe_id, data=data))
+        else:
+            row.data = data
+        session.commit()
 
 
 def _load_document_records(user_id: str) -> list[dict[str, Any]]:
-    if _SessionLocal:
-        safe_id = _safe_user_key(user_id)
-        with _SessionLocal() as session:
-            rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
-            records: list[dict[str, Any]] = []
-            for row in rows:
-                payload = _read_json_text(row.data, {})
-                if isinstance(payload, dict):
-                    records.append(payload)
-            return sorted(records, key=lambda item: item.get("stored_at", ""), reverse=True)
-    data = _read_json(_user_documents_index_path(user_id), [])
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _read_json_text(row.data, {})
+            if isinstance(payload, dict):
+                records.append(payload)
+        return sorted(records, key=lambda item: item.get("stored_at", ""), reverse=True)
 
 
 def _save_document_records(user_id: str, records: list[dict[str, Any]]) -> None:
-    if _SessionLocal:
-        safe_id = _safe_user_key(user_id)
-        clean_records = [item for item in records if isinstance(item, dict)]
-        with _SessionLocal() as session:
-            existing_rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
-            existing_ids = {row.document_id for row in existing_rows}
-            incoming_ids = set()
+    safe_id = _safe_user_key(user_id)
+    clean_records = [item for item in records if isinstance(item, dict)]
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        existing_rows = session.query(DBDocumentUpload).filter(DBDocumentUpload.user_id == safe_id).all()
+        existing_ids = {row.document_id for row in existing_rows}
+        incoming_ids = set()
 
-            for record in clean_records:
-                doc_id = record.get("document_id")
-                if not doc_id:
-                    continue
-                incoming_ids.add(doc_id)
-                data = json.dumps(record, ensure_ascii=False)
-                row = session.get(DBDocumentUpload, doc_id)
-                if row is None:
-                    session.add(DBDocumentUpload(document_id=doc_id, user_id=safe_id, data=data))
-                else:
-                    row.user_id = safe_id
-                    row.data = data
+        for record in clean_records:
+            doc_id = record.get("document_id")
+            if not doc_id:
+                continue
+            incoming_ids.add(doc_id)
+            data = json.dumps(record, ensure_ascii=False)
+            row = session.get(DBDocumentUpload, doc_id)
+            if row is None:
+                session.add(DBDocumentUpload(document_id=doc_id, user_id=safe_id, data=data))
+            else:
+                row.user_id = safe_id
+                row.data = data
 
-            for doc_id in existing_ids - incoming_ids:
-                stale = session.get(DBDocumentUpload, doc_id)
-                if stale is not None:
-                    session.delete(stale)
+        for doc_id in existing_ids - incoming_ids:
+            stale = session.get(DBDocumentUpload, doc_id)
+            if stale is not None:
+                session.delete(stale)
 
+        session.commit()
+
+
+def _get_document_row(user_id: str, document_id: str) -> DBDocumentUpload:
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBDocumentUpload, document_id)
+        if row is None or row.user_id != safe_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+        session.expunge(row)
+        return row
+
+
+def _upsert_document_record(user_id: str, record: dict[str, Any], file_bytes: bytes | None = None) -> None:
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBDocumentUpload, record["document_id"])
+        payload = json.dumps(record, ensure_ascii=False)
+        if row is None:
+            row = DBDocumentUpload(
+                document_id=record["document_id"],
+                user_id=safe_id,
+                data=payload,
+                binary_data=file_bytes,
+            )
+            session.add(row)
+        else:
+            row.user_id = safe_id
+            row.data = payload
+            if file_bytes is not None:
+                row.binary_data = file_bytes
+        session.commit()
+
+
+def _delete_document_record(user_id: str, document_id: str) -> None:
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBDocumentUpload, document_id)
+        if row is None or row.user_id != safe_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+        session.delete(row)
+        session.commit()
+
+
+def _backfill_document_blobs_from_disk() -> int:
+    SessionLocal = _require_session_local()
+    migrated = 0
+    with SessionLocal() as session:
+        rows = session.query(DBDocumentUpload).all()
+        for row in rows:
+            if row.binary_data:
+                continue
+            payload = _read_json_text(row.data, {})
+            if not isinstance(payload, dict):
+                continue
+            legacy_name = payload.get("stored_name")
+            if not legacy_name:
+                continue
+            legacy_path = _user_documents_path(row.user_id) / legacy_name
+            if not legacy_path.exists():
+                continue
+            try:
+                row.binary_data = legacy_path.read_bytes()
+            except Exception as exc:
+                print(f"[Documents] Failed to import legacy file {legacy_path}: {exc}")
+                continue
+            payload["storage_backend"] = "database"
+            row.data = json.dumps(payload, ensure_ascii=False)
+            migrated += 1
+            try:
+                legacy_path.unlink()
+            except Exception:
+                pass
+
+        if migrated:
             session.commit()
-        return
-    _write_json(_user_documents_index_path(user_id), records)
+    return migrated
 
 
 def _read_json_text(raw_text: str, default: Any):
@@ -1662,15 +2014,10 @@ def _store_user_document(
     content_type: str | None,
     file_bytes: bytes,
     extracted_data: dict[str, Any] | None = None,
+    extraction_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    user_dir = _user_documents_path(user_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
     document_id = uuid4().hex
     safe_name = _sanitize_filename(filename)
-    stored_name = f"{document_id}_{safe_name}"
-    file_path = user_dir / stored_name
-    with open(file_path, "wb") as handle:
-        handle.write(file_bytes)
 
     record = {
         "document_id": document_id,
@@ -1678,22 +2025,51 @@ def _store_user_document(
         "content_type": content_type or "application/octet-stream",
         "file_size": len(file_bytes),
         "stored_at": _utc_now(),
-        "stored_name": stored_name,
+        "storage_backend": "database",
     }
     if extracted_data:
         record["document_type"] = extracted_data.get("document_type")
+        record["extracted_data"] = extracted_data
+    if extraction_meta:
+        record["ocr_extraction"] = extraction_meta
+        record["manual_review"] = extraction_meta.get("manual_review")
 
-    records = _load_document_records(user_id)
-    records.insert(0, record)
-    _save_document_records(user_id, records)
+    _upsert_document_record(user_id, record, file_bytes)
     return record
 
 
 def _find_document_record(user_id: str, document_id: str) -> dict[str, Any]:
-    for record in _load_document_records(user_id):
-        if record.get("document_id") == document_id:
-            return record
+    row = _get_document_row(user_id, document_id)
+    payload = _read_json_text(row.data, {})
+    if isinstance(payload, dict):
+        return payload
     raise HTTPException(status_code=404, detail="Document not found")
+
+
+def _get_document_content_bytes(user_id: str, document_id: str) -> tuple[dict[str, Any], bytes]:
+    row = _get_document_row(user_id, document_id)
+    payload = _read_json_text(row.data, {})
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if row.binary_data:
+        return payload, bytes(row.binary_data)
+
+    legacy_name = payload.get("stored_name")
+    if legacy_name:
+        legacy_path = _user_documents_path(user_id) / legacy_name
+        if legacy_path.exists():
+            file_bytes = legacy_path.read_bytes()
+            payload["storage_backend"] = "database"
+            payload.pop("stored_name", None)
+            _upsert_document_record(user_id, payload, file_bytes)
+            try:
+                legacy_path.unlink()
+            except Exception:
+                pass
+            return payload, file_bytes
+
+    raise HTTPException(status_code=404, detail="Document file is missing")
 
 
 def _chat_history_path(user_id: str) -> Path:
@@ -1712,86 +2088,45 @@ def _save_chat_history(user_id: str, messages: list[dict]) -> None:
 
 
 def _load_chat_record(user_id: str) -> dict[str, Any]:
-    if _SessionLocal:
-        safe_id = _safe_user_key(user_id)
-        with _SessionLocal() as session:
-            row = session.get(DBChatHistory, safe_id)
-            if row is None:
-                return {"messages": [], "agent_data": {}}
-            payload = _read_json_text(row.data, {"messages": [], "agent_data": {}})
-            if isinstance(payload, list):
-                messages = [item for item in payload if isinstance(item, dict)]
-                return {"messages": messages[-CHAT_HISTORY_LIMIT:], "agent_data": {}}
-            if not isinstance(payload, dict):
-                return {"messages": [], "agent_data": {}}
-            messages = payload.get("messages", [])
-            agent_data = payload.get("agent_data", {})
-            if not isinstance(messages, list):
-                messages = []
-            if not isinstance(agent_data, dict):
-                agent_data = {}
-            return {
-                "messages": [item for item in messages if isinstance(item, dict)][-CHAT_HISTORY_LIMIT:],
-                "agent_data": agent_data,
-            }
-
-    path = _chat_history_path(user_id)
-    if not path.exists():
-        return {"messages": [], "agent_data": {}}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return {"messages": [], "agent_data": {}}
-
-    # Backward compatibility: older format stored a raw list of messages.
-    if isinstance(data, list):
-        messages = [item for item in data if isinstance(item, dict)]
-        return {"messages": messages[-CHAT_HISTORY_LIMIT:], "agent_data": {}}
-
-    if not isinstance(data, dict):
-        return {"messages": [], "agent_data": {}}
-
-    messages = data.get("messages", [])
-    if not isinstance(messages, list):
-        messages = []
-    messages = [item for item in messages if isinstance(item, dict)][-CHAT_HISTORY_LIMIT:]
-
-    agent_data = data.get("agent_data", {})
-    if not isinstance(agent_data, dict):
-        agent_data = {}
-
-    return {
-        "messages": messages,
-        "agent_data": agent_data,
-    }
+    safe_id = _safe_user_key(user_id)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBChatHistory, safe_id)
+        if row is None:
+            return {"messages": [], "agent_data": {}}
+        payload = _read_json_text(row.data, {"messages": [], "agent_data": {}})
+        if isinstance(payload, list):
+            messages = [item for item in payload if isinstance(item, dict)]
+            return {"messages": messages[-CHAT_HISTORY_LIMIT:], "agent_data": {}}
+        if not isinstance(payload, dict):
+            return {"messages": [], "agent_data": {}}
+        messages = payload.get("messages", [])
+        agent_data = payload.get("agent_data", {})
+        if not isinstance(messages, list):
+            messages = []
+        if not isinstance(agent_data, dict):
+            agent_data = {}
+        return {
+            "messages": [item for item in messages if isinstance(item, dict)][-CHAT_HISTORY_LIMIT:],
+            "agent_data": agent_data,
+        }
 
 
 def _save_chat_record(user_id: str, record: dict[str, Any]) -> None:
-    if _SessionLocal:
-        safe_id = _safe_user_key(user_id)
-        payload = {
-            "messages": record.get("messages", [])[-CHAT_HISTORY_LIMIT:],
-            "agent_data": record.get("agent_data", {}),
-        }
-        with _SessionLocal() as session:
-            row = session.get(DBChatHistory, safe_id)
-            data = json.dumps(payload, ensure_ascii=False)
-            if row is None:
-                session.add(DBChatHistory(user_id=safe_id, data=data))
-            else:
-                row.data = data
-            session.commit()
-        return
-
-    path = _chat_history_path(user_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    safe_id = _safe_user_key(user_id)
     payload = {
         "messages": record.get("messages", [])[-CHAT_HISTORY_LIMIT:],
         "agent_data": record.get("agent_data", {}),
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBChatHistory, safe_id)
+        data = json.dumps(payload, ensure_ascii=False)
+        if row is None:
+            session.add(DBChatHistory(user_id=safe_id, data=data))
+        else:
+            row.data = data
+        session.commit()
 
 
 def _merge_chat_messages(existing: list[dict], incoming: list[dict]) -> list[dict]:
@@ -1833,9 +2168,11 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_methods=CORS_ALLOW_METHODS,
+    allow_headers=CORS_ALLOW_HEADERS,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
 )
 
 _ml: Pipeline = None
@@ -1843,29 +2180,39 @@ _ml: Pipeline = None
 
 @app.on_event("startup")
 def startup():
-    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent, _rag_provider
+    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent, _rag_provider, _OCR_READINESS
 
-    db_url = DATABASE_URL or SQLITE_DATABASE_URL
+    if not DB_STRICT_MODE:
+        raise RuntimeError("DB_STRICT_MODE=false is no longer supported. Database-only persistence is required.")
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL or NEON_DATABASE_URL is required. Local SQLite and JSON fallback have been removed."
+        )
+    if DATABASE_URL.startswith("sqlite://"):
+        raise RuntimeError("SQLite is not supported for the API server. Use PostgreSQL/Neon for persistence.")
+
+    db_url = DATABASE_URL
     try:
-        if db_url.startswith("sqlite:///"):
-            SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _db_engine = create_engine(db_url, connect_args={"check_same_thread": False})
-            _db_backend = "sqlite"
-            print(f"[DB] Connected to SQLite ({SQLITE_DB_PATH}).")
-        else:
-            _db_engine = create_engine(db_url, pool_pre_ping=True)
-            _db_backend = "postgresql"
-            print("[DB] Connected to PostgreSQL/Neon.")
+        _db_engine = create_engine(db_url, pool_pre_ping=True)
+        _db_backend = "postgresql"
+        print("[DB] Connected to PostgreSQL/Neon.")
 
         Base.metadata.create_all(bind=_db_engine)
+        _ensure_document_upload_schema()
         _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
-        _bootstrap_db_from_json_files()
     except Exception as exc:
         _db_engine = None
         _SessionLocal = None
         _db_backend = "unavailable"
         print(f"[DB] Database init failed: {exc}")
-        raise RuntimeError("Database initialization failed. Set DATABASE_URL or ensure local SQLite path is writable.") from exc
+        raise RuntimeError("Database initialization failed. Set DATABASE_URL to a reachable PostgreSQL/Neon instance.") from exc
+
+    try:
+        migrated_docs = _backfill_document_blobs_from_disk()
+        if migrated_docs:
+            print(f"[Documents] Imported {migrated_docs} legacy on-disk document(s) into PostgreSQL.")
+    except Exception as exc:
+        print(f"[Documents] Legacy document import skipped: {exc}")
 
     try:
         backfilled = _backfill_historical_outcomes_from_applications()
@@ -1875,9 +2222,27 @@ def startup():
         print(f"[Applications] Historical outcomes backfill skipped: {exc}")
 
     if ChatbotAgent:
-        eligibility_agent = EligibilityVerificationAgent() if EligibilityVerificationAgent else None
-        financial_agent = FinancialFeasibilityAgent() if FinancialFeasibilityAgent else None
-        recommendation_agent = RecommendationAgent() if RecommendationAgent else None
+        eligibility_agent = None
+        financial_agent = None
+        recommendation_agent = None
+
+        if EligibilityVerificationAgent:
+            try:
+                eligibility_agent = EligibilityVerificationAgent()
+            except Exception as exc:
+                print(f"[Chat] Eligibility agent disabled: {exc}")
+
+        if FinancialFeasibilityAgent:
+            try:
+                financial_agent = FinancialFeasibilityAgent()
+            except Exception as exc:
+                print(f"[Chat] Financial agent disabled: {exc}")
+
+        if RecommendationAgent:
+            try:
+                recommendation_agent = RecommendationAgent()
+            except Exception as exc:
+                print(f"[Chat] Recommendation agent disabled: {exc}")
 
         rag_system = None
         if RAG_ENABLED and RAGSystem:
@@ -1940,6 +2305,15 @@ def startup():
                     "  OR run: pip install easyocr"
                 )
 
+    _OCR_READINESS = _collect_ocr_readiness()
+    if OCR_STRICT_MODE and _OCR_ENGINE is None:
+        hints = " | ".join(_OCR_READINESS.get("messages", []))
+        raise RuntimeError(
+            "OCR_STRICT_MODE=true and no OCR engine is available. "
+            "Document ingestion cannot continue in degraded mode. "
+            f"Fix installation and restart. Hints: {hints}"
+        )
+
     print(
         f"[UniAssist v7.3] Ready | "
         f"Mode: {OCR_ENGINE_MODE} | "
@@ -1959,11 +2333,47 @@ def health(current_user_email: str = Depends(_require_auth)):
         "rag_enabled": RAG_ENABLED,
         "ocr_mode": OCR_ENGINE_MODE,
         "ocr_engine": _OCR_ENGINE or "none",
+        "ocr_ready": bool(_OCR_ENGINE),
+        "ocr_strict_mode": OCR_STRICT_MODE,
+        "ocr_installation": _OCR_READINESS,
         "use_easyocr_flag": USE_EASYOCR,
         "rag_provider": _rag_provider,
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
+    }
+
+
+@app.get("/ocr/readiness")
+def ocr_readiness(current_user_email: str = Depends(_require_auth)):
+    return {
+        "ocr_engine": _OCR_ENGINE or "none",
+        "ocr_mode": OCR_ENGINE_MODE,
+        "ocr_strict_mode": OCR_STRICT_MODE,
+        "installation": _OCR_READINESS,
+    }
+
+
+@app.get("/metrics")
+def get_metrics(authorization: str | None = Header(default=None)):
+    if not METRICS_PUBLIC:
+        _require_admin(authorization)
+    if _metrics_collector is None:
+        raise HTTPException(status_code=503, detail="Metrics collector is unavailable")
+    return _metrics_collector.get_summary()
+
+
+@app.get("/metrics/flows")
+def get_metrics_flows(limit: int = 20, authorization: str | None = Header(default=None)):
+    if not METRICS_PUBLIC:
+        _require_admin(authorization)
+    if _metrics_collector is None:
+        raise HTTPException(status_code=503, detail="Metrics collector is unavailable")
+    safe_limit = max(1, min(int(limit), 200))
+    flows = _metrics_collector.get_recent_flows(limit=safe_limit)
+    return {
+        "flows": flows,
+        "count": len(flows),
     }
 
 
@@ -2011,17 +2421,23 @@ def register(payload: RegisterPayload):
     name = (payload.name or "").strip()
     email = _normalize_email(payload.email)
     password = payload.password or ""
-    role = _normalize_user_role(payload.role)
+    requested_role = _normalize_user_role(payload.role)
+    role = "student"
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    _validate_password_policy(password)
 
     users = _load_users()
     if email in users:
         raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    if requested_role != "student":
+        if ALLOW_PRIVILEGED_SELF_REGISTRATION:
+            role = requested_role
+        else:
+            role = "student"
 
     users[email] = {
         "name": name,
@@ -2042,14 +2458,19 @@ def register(payload: RegisterPayload):
 
 
 @app.post("/auth/login")
-def login(payload: LoginPayload):
+def login(payload: LoginPayload, request: Request):
     email = _normalize_email(payload.email)
     password = payload.password or ""
+    login_key = _login_rate_limit_key(email, getattr(request.client, "host", None))
+    _check_login_rate_limit(login_key)
+
     users = _load_users()
     user = users.get(email)
     if not user or not _verify_password(password, user.get("password_hash", "")):
+        _record_login_failure(login_key)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    _clear_login_attempts(login_key)
     token = _issue_session_token(email)
     role = _normalize_user_role(user.get("role"))
     return {
@@ -2109,38 +2530,103 @@ async def upload_document(
 
 @app.get("/documents/{document_id}/content")
 def get_document_content(document_id: str, current_user_email: str = Depends(_require_current_user)):
-    record = _find_document_record(current_user_email, document_id)
-    file_path = _user_documents_path(current_user_email) / record.get("stored_name", "")
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Document file is missing")
-    return FileResponse(
-        path=file_path,
+    record, file_bytes = _get_document_content_bytes(current_user_email, document_id)
+    return Response(
+        content=file_bytes,
         media_type=record.get("content_type") or "application/octet-stream",
-        filename=record.get("filename") or file_path.name,
+        headers={
+            "Content-Disposition": f'inline; filename="{record.get("filename") or document_id}"',
+        },
     )
 
 
 @app.delete("/documents/{document_id}")
 def delete_document(document_id: str, current_user_email: str = Depends(_require_current_user)):
-    records = _load_document_records(current_user_email)
-    remaining_records = []
-    deleted_record = None
-    for record in records:
-        if record.get("document_id") == document_id and deleted_record is None:
-            deleted_record = record
-            continue
-        remaining_records.append(record)
+    deleted_record = _find_document_record(current_user_email, document_id)
+    _delete_document_record(current_user_email, document_id)
 
-    if deleted_record is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    legacy_name = deleted_record.get("stored_name")
+    if legacy_name:
+        legacy_path = _user_documents_path(current_user_email) / legacy_name
+        if legacy_path.exists():
+            legacy_path.unlink()
 
-    file_path = _user_documents_path(current_user_email) / deleted_record.get("stored_name", "")
-    if file_path.exists():
-        file_path.unlink()
-    _save_document_records(current_user_email, remaining_records)
     return {
         "success": True,
         "document_id": document_id,
+    }
+
+
+@app.patch("/documents/{document_id}/corrections")
+def apply_document_corrections(
+    document_id: str,
+    payload: OCRManualCorrectionPayload,
+    current_user_email: str = Depends(_require_current_user),
+):
+    corrected_fields = payload.corrected_fields or {}
+    if not isinstance(corrected_fields, dict) or not corrected_fields:
+        raise HTTPException(status_code=400, detail="corrected_fields must be a non-empty object")
+
+    existing_record, file_bytes = _get_document_content_bytes(current_user_email, document_id)
+    existing_data = existing_record.get("extracted_data") or {}
+    if not isinstance(existing_data, dict):
+        existing_data = {}
+
+    merged = {**existing_data, **corrected_fields}
+    doc_type_label = merged.get("document_type") or existing_record.get("document_type")
+    doc_type_key = merged.get("doc_type_key") or _TYPE_LABEL_TO_KEY.get(str(doc_type_label), "")
+    if doc_type_key not in TRAINING_DATA:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot apply corrections because document type is unknown. Re-run OCR first.",
+        )
+
+    normalized = _normalize_fields(doc_type_key, merged)
+    normalized["document_type"] = _TYPE_MAP.get(doc_type_key, doc_type_label or doc_type_key)
+    validated_fields, validation_issues, parse_confidence = _validate_parsed_fields(doc_type_key, normalized)
+
+    ocr_meta = existing_record.get("ocr_extraction") or {}
+    ocr_conf = float(ocr_meta.get("ocr_confidence") or 0.0)
+    ml_conf = float(ocr_meta.get("ml_confidence") or 0.0)
+    field_confidence, missing_field_reasons = _field_diagnostics(doc_type_key, validated_fields, ocr_conf, ml_conf)
+    confidence = _score_with_validation(doc_type_key, validated_fields, ocr_conf, ml_conf, parse_confidence)
+    manual_review = _build_manual_review_block(confidence, missing_field_reasons, validation_issues)
+
+    correction_event = {
+        "corrected_at": _utc_now(),
+        "corrected_by": current_user_email,
+        "corrected_keys": sorted(corrected_fields.keys()),
+        "reviewer_note": payload.reviewer_note,
+    }
+
+    existing_record["document_type"] = validated_fields.get("document_type")
+    existing_record["extracted_data"] = validated_fields
+    existing_record["manual_review"] = manual_review
+    existing_record["ocr_extraction"] = {
+        **ocr_meta,
+        "field_confidence": field_confidence,
+        "missing_field_reasons": missing_field_reasons,
+        "validation_issues": validation_issues,
+        "parse_confidence": parse_confidence,
+        "confidence": confidence,
+        "manual_review": manual_review,
+    }
+    existing_record.setdefault("manual_corrections", [])
+    if isinstance(existing_record["manual_corrections"], list):
+        existing_record["manual_corrections"].append(correction_event)
+    existing_record["updated_at"] = _utc_now()
+
+    _upsert_document_record(current_user_email, existing_record, file_bytes)
+
+    return {
+        "success": True,
+        "document_id": document_id,
+        "data": validated_fields,
+        "confidence": confidence,
+        "parse_confidence": parse_confidence,
+        "validation_issues": validation_issues,
+        "missing_field_reasons": missing_field_reasons,
+        "manual_review": manual_review,
     }
 
 
@@ -2179,16 +2665,12 @@ def append_chat_history(payload: ChatHistoryPayload, current_user_email: str = D
 @app.delete("/chat/history")
 def clear_chat_history(user_id: str, current_user_email: str = Depends(_require_current_user)):
     normalized_user_id = _ensure_user_access(user_id, current_user_email)
-    if _SessionLocal:
-        with _SessionLocal() as session:
-            row = session.get(DBChatHistory, _safe_user_key(normalized_user_id))
-            if row is not None:
-                session.delete(row)
-                session.commit()
-    else:
-        path = _chat_history_path(normalized_user_id)
-        if path.exists():
-            path.unlink()
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBChatHistory, _safe_user_key(normalized_user_id))
+        if row is not None:
+            session.delete(row)
+            session.commit()
     return {
         "success": True,
         "user_id": normalized_user_id,
@@ -2199,6 +2681,7 @@ def clear_chat_history(user_id: str, current_user_email: str = Depends(_require_
 
 @app.post("/chat/respond")
 def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(_require_auth)):
+    t0 = time.time()
     message = (payload.user_message or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="user_message is required")
@@ -2239,6 +2722,32 @@ def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(
     if _chatbot_agent:
         result = _chatbot_agent.process_message(message, context)
         response_text = result.get("response") or "I'm here to help with your application journey."
+        duration_ms = (time.time() - t0) * 1000
+        if _metrics_collector is not None:
+            intent = str(result.get("intent") or "unknown")
+            agent_calls = [a for a in (result.get("agent_calls") or []) if isinstance(a, str)]
+            _metrics_collector.record_intent(
+                detected_intent=intent,
+                confidence=0.6,
+                user_message=message,
+                keywords=[],
+            )
+            per_agent_duration = duration_ms / max(1, len(agent_calls))
+            for agent_name in agent_calls:
+                _metrics_collector.record_agent(
+                    agent_name=agent_name,
+                    duration_ms=per_agent_duration,
+                    success=True,
+                )
+            rag_used = bool(((result.get("agent_data") or {}).get("agent_results") or {}).get("rag"))
+            if rag_used:
+                _metrics_collector.record_rag(
+                    query=message,
+                    source_count=0,
+                    relevance_level="unknown",
+                    llm_provider=_rag_provider,
+                    duration_ms=duration_ms,
+                )
         return {
             "response": response_text,
             "intent": result.get("intent"),
@@ -2257,12 +2766,14 @@ async def ocr_endpoint(
     current_user_email: str = Depends(_require_auth),
 ):
     if _OCR_ENGINE is None:
+        hints = " | ".join((_OCR_READINESS or {}).get("messages", []))
         raise HTTPException(
             status_code=503,
             detail=(
                 "No OCR engine available. "
                 "Install Tesseract (https://github.com/UB-Mannheim/tesseract/wiki) "
-                "or install EasyOCR (pip install easyocr)."
+                "or install EasyOCR (pip install easyocr). "
+                f"Readiness hints: {hints}"
             ),
         )
 
@@ -2309,27 +2820,17 @@ async def ocr_endpoint(
 
         fields_raw = _extract(detected, text)
         fields = _normalize_fields(detected, fields_raw)
-        conf = _score(detected, fields, ocr_conf, final_conf)
+        fields["document_type"] = _TYPE_MAP.get(detected, detected)
+        fields, validation_issues, parse_confidence = _validate_parsed_fields(detected, fields)
         field_confidence, missing_field_reasons = _field_diagnostics(
             detected, fields, ocr_conf, final_conf
         )
-
-        # Map internal keys to frontend-expected keys
-        _TYPE_MAP = {
-            "alevel":    "A-Level Results",
-            "bachelor":  "Bachelor's Degree",
-            "master":    "Master's Degree",
-            "diploma":   "Diploma",
-            "ielts":     "IELTS Certificate",
-            "toefl":     "TOEFL Certificate",
-            "pte":       "PTE Certificate",
-            "passport":  "Passport",
-            "financial": "Financial Statement",
-        }
+        conf = _score_with_validation(detected, fields, ocr_conf, final_conf, parse_confidence)
+        manual_review = _build_manual_review_block(conf, missing_field_reasons, validation_issues)
 
         response_payload = {
             "success":                True,
-            "data":                   {**fields, "document_type": _TYPE_MAP.get(detected, detected)},
+            "data":                   fields,
             "schema_version":         "2.0",
             "confidence":             conf,
             "ml_confidence":          round(final_conf, 3),
@@ -2338,8 +2839,12 @@ async def ocr_endpoint(
             "ocr_engine":             _OCR_ENGINE,
             "ocr_preset":             ocr_preset,
             "ocr_time_sec":           ocr_time,
+            "parse_confidence":       parse_confidence,
+            "validation_issues":      validation_issues,
             "field_confidence":       field_confidence,
             "missing_field_reasons":  missing_field_reasons,
+            "manual_review":          manual_review,
+            "requires_manual_review": manual_review["required"],
             "raw_text_preview":       text[:800],
             "message":                (
                 f"{_OCR_ENGINE.capitalize()} OCR — "
@@ -2355,12 +2860,31 @@ async def ocr_endpoint(
                 *response_payload["warnings"],
                 f"Missing required fields: {', '.join(sorted(missing_field_reasons.keys()))}",
             ]
+        if validation_issues:
+            response_payload["warnings"] = [
+                *response_payload["warnings"],
+                f"Validation issues: {', '.join(validation_issues)}",
+            ]
         response_payload["document"] = _store_user_document(
             current_user_email,
             filename=file.filename,
             content_type=file.content_type,
             file_bytes=file_bytes,
             extracted_data=response_payload["data"],
+            extraction_meta={
+                "confidence": response_payload["confidence"],
+                "ml_confidence": response_payload["ml_confidence"],
+                "ocr_confidence": response_payload["ocr_confidence"],
+                "parse_confidence": response_payload["parse_confidence"],
+                "classification_method": response_payload["classification_method"],
+                "ocr_engine": response_payload["ocr_engine"],
+                "ocr_preset": response_payload["ocr_preset"],
+                "ocr_time_sec": response_payload["ocr_time_sec"],
+                "field_confidence": response_payload["field_confidence"],
+                "missing_field_reasons": response_payload["missing_field_reasons"],
+                "validation_issues": response_payload["validation_issues"],
+                "manual_review": response_payload["manual_review"],
+            },
         )
         return response_payload
 

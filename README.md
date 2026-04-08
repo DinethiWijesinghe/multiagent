@@ -291,15 +291,14 @@ Supported env vars (either one):
 Notes:
 
 - If both are set, DATABASE_URL is used.
-- If no DB URL is set, the backend falls back to local JSON files.
 - sslmode=require is automatically enforced for PostgreSQL URLs.
-- Set `DB_STRICT_MODE=true` to disable JSON fallback and force real DB only.
+- `DB_STRICT_MODE` defaults to `true` and `false` is no longer supported.
+- The backend will not start without a PostgreSQL/Neon connection string.
 
 PowerShell quick start:
 
 ```powershell
 $env:NEON_DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?channel_binding=require"
-$env:DB_STRICT_MODE = "true"
 uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -308,9 +307,9 @@ Verify backend DB mode:
 1. Open /health endpoint.
 2. Confirm db is postgresql, db_url_set is true, and db_strict_mode is true.
 
-### Move Existing JSON Data to Neon (then remove JSON)
+### Move Existing JSON Data to Neon Before Startup
 
-Use the migration script before switching to strict mode if you already have local JSON data:
+Use the migration script before starting the API if you already have legacy local JSON data:
 
 ```powershell
 $env:DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?sslmode=require"
@@ -348,8 +347,8 @@ When a user logs in, the app now persists all key data per user account:
 
 Storage behavior:
 
-- Neon connected: metadata goes to PostgreSQL tables (including `document_uploads`), files are stored on disk under `multiagent/data/documents/<user>/`
-- Neon not connected: metadata falls back to JSON files, files are still stored under `multiagent/data/documents/<user>/`
+- Metadata and uploaded document binaries are stored in PostgreSQL tables (including `document_uploads`)
+- If PostgreSQL/Neon is not configured or reachable, the backend fails fast at startup.
 
 How to use with current frontend:
 
@@ -359,13 +358,18 @@ How to use with current frontend:
 4. Data is persisted automatically for that user.
 5. In the Documents step, use the "My Stored Documents" panel to refresh, open, and delete saved files.
 
+Document storage hardening:
+
+- Uploaded document binaries are served from PostgreSQL-backed blob storage, not from local runtime disk.
+- On startup, the API attempts a one-time import of any legacy on-disk document files still referenced by `document_uploads` rows.
+
 ## Current API Notes (April 2026)
 
 - Frontend uses `/chat/respond` for live chatbot responses.
 - Frontend and backend both use token-authenticated `/chat/history` for chat persistence.
 - `/ocr` accepts optional Bearer auth. If token is present, uploaded file metadata is saved for that user.
 - `/health` now returns DB mode fields: `db`, `db_url_set`, and `db_strict_mode` in addition to OCR status.
-- If PostgreSQL/Neon is not configured, backend falls back to JSON persistence unless `DB_STRICT_MODE=true`.
+- PostgreSQL/Neon is mandatory for runtime persistence; JSON fallback has been removed from the API server.
 
 Optional overrides:
 
@@ -497,3 +501,35 @@ That cell will:
 7. Create a public frontend URL
 
 Open the printed frontend URL to use the app. Keep the Colab runtime active while using it.
+
+## Security Environment Variables
+
+The following variables control auth and security behaviour. All have safe defaults so existing local and Colab runs are unaffected.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SESSION_TTL_HOURS` | `720` (30 days) | How long a session token stays valid. |
+| `ALLOW_PRIVILEGED_SELF_REGISTRATION` | `false` | When `false`, users can only self-register as `student`. Advisor/admin roles must be assigned manually by an existing admin. |
+| `PASSWORD_MIN_LENGTH` | `6` | Minimum accepted password length. |
+| `PASSWORD_REQUIRE_COMPLEXITY` | `false` | Require uppercase, lowercase, digit, and special character. |
+| `AUTH_MAX_LOGIN_ATTEMPTS` | `10` | Failed attempts allowed per email+IP pair within the window. |
+| `AUTH_WINDOW_SECONDS` | `300` | Rolling window (seconds) for counting failed attempts. |
+| `METRICS_PUBLIC` | `true` | Expose `/metrics` and `/metrics/flows` without auth. Set `false` to restrict to admins only. |
+| `CORS_ALLOW_ORIGINS` | `http://127.0.0.1:5173,...` | Comma-separated list of exact origins allowed. |
+| `CORS_ALLOW_ORIGIN_REGEX` | auto | Regex for dynamic origins. Set automatically from `COLAB_RELEASE_TAG` for Cloudflare tunnels. |
+
+### Recommended Production Values
+
+For a production or shared deployment, tighten the defaults:
+
+```powershell
+$env:SESSION_TTL_HOURS = "24"
+$env:ALLOW_PRIVILEGED_SELF_REGISTRATION = "false"
+$env:PASSWORD_MIN_LENGTH = "10"
+$env:PASSWORD_REQUIRE_COMPLEXITY = "true"
+$env:AUTH_MAX_LOGIN_ATTEMPTS = "5"
+$env:AUTH_WINDOW_SECONDS = "600"
+$env:METRICS_PUBLIC = "false"
+```
+
+These settings expire sessions daily, enforce strong passwords, and lock an account after 5 failed attempts in 10 minutes.

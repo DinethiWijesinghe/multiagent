@@ -2,8 +2,6 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import AdvisorDashboard from "./AdvisorDashboard.jsx";
 import AdminDashboard from "./AdminDashboard.jsx";
 import StudentDashboard from "./StudentDashboard.jsx";
-import AdvisorDashboard from "./AdvisorDashboard.jsx";
-import AdminDashboard from "./AdminDashboard.jsx";
 import { apiFetch as fetchApi } from "./apiClient.js";
 
 // ── STYLES ─────────────────────────────────────────────────────────────────
