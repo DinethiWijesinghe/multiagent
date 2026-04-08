@@ -46,7 +46,9 @@ from sklearn.model_selection import cross_val_score
 MODEL_PATH           = "uniassist_classifier.pkl"
 CONFIDENCE_THRESHOLD = 0.40
 MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
-OCR_STRICT_MODE = os.environ.get("OCR_STRICT_MODE", "true").strip().lower() in {"1", "true", "yes", "on"}
+# Default to degraded mode unless explicitly forced strict; this keeps boot probes alive
+# in lightweight runtimes (e.g., Colab) where OCR dependencies may be absent.
+OCR_STRICT_MODE = os.environ.get("OCR_STRICT_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TESSERACT WINDOWS PATH AUTO-DETECTION  ← NEW FIX
@@ -2776,7 +2778,7 @@ def startup():
 
 
 @app.get("/health")
-def health(current_user_email: str = Depends(_require_auth)):
+def health():
     policy_status = {
         "visa_risk_matrix": _policy_snapshot_status("visa_risk_matrix"),
         "living_costs": _policy_snapshot_status("living_costs"),
@@ -2805,7 +2807,7 @@ def health(current_user_email: str = Depends(_require_auth)):
 
 
 @app.get("/ocr/readiness")
-def ocr_readiness(current_user_email: str = Depends(_require_auth)):
+def ocr_readiness():
     return {
         "ocr_engine": _OCR_ENGINE or "none",
         "ocr_mode": OCR_ENGINE_MODE,
