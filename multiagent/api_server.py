@@ -33,11 +33,17 @@ from uuid import uuid4
 import numpy as np
 import cv2
 from PIL import Image
+from dotenv import load_dotenv
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score
+
+_MODULE_DIR = Path(__file__).resolve().parent
+for _env_path in (_MODULE_DIR / ".env", _MODULE_DIR.parent / ".env"):
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -1394,11 +1400,27 @@ def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
 
 
-def _normalize_user_role(value: str | None) -> str:
-    role = (value or "student").strip().lower()
-    if role not in {"student", "advisor", "admin"}:
+def _normalize_user_role(value: str | None, *, strict: bool = False) -> str:
+    """Normalize role labels from payloads or persisted records.
+
+    strict=True should be used for external input validation.
+    strict=False is tolerant for legacy stored values to prevent auth lockouts.
+    """
+    raw = (value or "student").strip().lower()
+    alias_map = {
+        "adviser": "advisor",
+        "advisr": "advisor",
+        "counselor": "advisor",
+        "counsellor": "advisor",
+        "administrator": "admin",
+        "superadmin": "admin",
+    }
+    role = alias_map.get(raw, raw)
+    if role in {"student", "advisor", "admin"}:
+        return role
+    if strict:
         raise HTTPException(status_code=400, detail="Role must be one of: student, advisor, admin")
-    return role
+    return "student"
 
 
 def _safe_user_key(value: str) -> str:
@@ -2024,7 +2046,7 @@ def _save_users(users: dict[str, dict[str, Any]]) -> None:
 def _upsert_user_account(email_raw: str, password: str, name_raw: str, role: str) -> dict[str, Any] | None:
     email = _normalize_email(email_raw)
     name = (name_raw or role.title()).strip() or role.title()
-    normalized_role = _normalize_user_role(role)
+    normalized_role = _normalize_user_role(role, strict=True)
 
     if not email or not password:
         return None
@@ -2246,9 +2268,7 @@ def _require_current_user(authorization: str | None = Header(default=None)) -> s
 def _require_role(authorization: str | None, allowed: set[str]) -> str:
     email = _authenticate_token(authorization, required=True) or ""
     users = _load_users()
-    role = (users.get(email, {}).get("role") or "student").strip().lower()
-    if role not in {"student", "advisor", "admin"}:
-        role = "student"
+    role = _normalize_user_role(users.get(email, {}).get("role"), strict=False)
     if role not in allowed:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     return email
@@ -2883,7 +2903,7 @@ def register(payload: RegisterPayload):
     name = (payload.name or "").strip()
     email = _normalize_email(payload.email)
     password = payload.password or ""
-    requested_role = _normalize_user_role(payload.role)
+    requested_role = _normalize_user_role(payload.role, strict=True)
     role = "student"
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
@@ -3406,12 +3426,21 @@ def advisor_list_students(current_user_email: str = Depends(_require_advisor_or_
     users = _load_users()
     result = []
     for email, u in users.items():
-        role = (u.get("role") or "student").strip().lower()
+        role = _normalize_user_role(u.get("role"), strict=False)
         if role != "student":
             continue
         state = _load_user_state_record(email)
         docs = _load_document_records(email)
-        step = state.get("step", 1) if isinstance(state, dict) else 1
+        if not isinstance(docs, list):
+            docs = []
+
+        raw_step = state.get("step", 1) if isinstance(state, dict) else 1
+        try:
+            step = int(raw_step)
+        except Exception:
+            step = 1
+        step = max(1, min(step, 4))
+
         doc_count = len(docs)
         completion = min(int((step / 4) * 100), 100)
         if step >= 4:
@@ -3424,7 +3453,7 @@ def advisor_list_students(current_user_email: str = Depends(_require_advisor_or_
         elig = state.get("elig") if isinstance(state, dict) else None
         if elig is None:
             eligibility = "pending"
-        elif elig.get("eligible"):
+        elif isinstance(elig, dict) and bool(elig.get("eligible")):
             eligibility = "eligible"
         else:
             eligibility = "ineligible"
@@ -3451,9 +3480,7 @@ def admin_stats(current_user_email: str = Depends(_require_admin)):
     completed = 0
     pending = 0
     for email, u in users.items():
-        role = (u.get("role") or "student").strip().lower()
-        if role not in role_counts:
-            role = "student"
+        role = _normalize_user_role(u.get("role"), strict=False)
         role_counts[role] += 1
         if role == "student":
             state = _load_user_state_record(email)
@@ -3519,7 +3546,7 @@ def admin_list_users(current_user_email: str = Depends(_require_admin)):
         {
             "email": email,
             "name": u.get("name") or email,
-            "role": (u.get("role") or "student").strip().lower(),
+            "role": _normalize_user_role(u.get("role"), strict=False),
             "created": (u.get("created_at") or "")[:10],
         }
         for email, u in users.items()
@@ -3542,7 +3569,7 @@ def admin_audit_events(current_user_email: str = Depends(_require_admin)):
                 "action": "USER_REGISTER",
                 "actor": email,
                 "target": "AUTH",
-                "details": f"Registered as {(user.get('role') or 'student').strip().lower()}",
+                "details": f"Registered as {_normalize_user_role(user.get('role'), strict=False)}",
             })
 
     sessions = _load_sessions()
@@ -3589,7 +3616,7 @@ def admin_update_user_role(
     users = _load_users()
     if normalized not in users:
         raise HTTPException(status_code=404, detail="User not found")
-    new_role = _normalize_user_role(payload.role)
+    new_role = _normalize_user_role(payload.role, strict=True)
     users[normalized]["role"] = new_role
     users[normalized]["updated_at"] = _utc_now()
     _save_users(users)

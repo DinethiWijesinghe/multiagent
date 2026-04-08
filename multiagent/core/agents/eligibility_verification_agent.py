@@ -1,17 +1,3 @@
-"""
-Eligibility Verification Agent
-================================
-Multi-criteria eligibility checking against real university requirements.
-
-Features:
-  - University-specific requirement validation (not just generic thresholds)
-  - Per-criterion pass/fail with detailed reasons
-  - Personalized improvement recommendations
-  - English proficiency checks
-  - Program-stream alignment checks
-  - Confidence scoring on assessment
-"""
-
 from __future__ import annotations
 
 import json

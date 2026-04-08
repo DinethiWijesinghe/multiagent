@@ -686,18 +686,45 @@ async function fetchAuthConfig(){
   return payload;
 }
 
-async function fetchBackendChatReply(message, token, messages, timeoutMs = 12000){
+const CHAT_TIMEOUT_MS = (()=>{
+  const raw = Number(import.meta.env.VITE_CHAT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 45000;
+})();
+
+const CHAT_RETRY_TIMEOUT_MS = (()=>{
+  const raw = Number(import.meta.env.VITE_CHAT_RETRY_TIMEOUT_MS);
+  if(Number.isFinite(raw) && raw > 0) return raw;
+  return Math.max(CHAT_TIMEOUT_MS + 15000, 60000);
+})();
+
+function isChatTimeoutLikeError(error){
+  const message = String(error?.message || "").toLowerCase();
+  const name = String(error?.name || "").toLowerCase();
+  return name === "aborterror" || message.includes("aborted") || message.includes("timeout");
+}
+
+async function fetchBackendChatReply(message, token, messages, timeoutMs = CHAT_TIMEOUT_MS){
   // Send last 20 turns as conversation_history so Gemini can maintain context
   const conversation_history = (messages || [])
     .filter(m => m.role === "user" || m.role === "bot")
     .slice(-20)
     .map(m => ({ role: m.role === "bot" ? "assistant" : m.role, text: m.text }));
-  const response = await fetchApi("/chat/respond", {
+  const body = JSON.stringify({ user_message: message, context: { conversation_history } });
+  const request = (requestTimeoutMs)=>fetchApi("/chat/respond", {
     method: "POST",
     headers: authHeaders(token, true),
-    body: JSON.stringify({ user_message: message, context: { conversation_history } }),
-    timeoutMs,
+    body,
+    timeoutMs: requestTimeoutMs,
   });
+
+  let response;
+  try{
+    response = await request(timeoutMs);
+  }catch(error){
+    if(!isChatTimeoutLikeError(error)) throw error;
+    response = await request(CHAT_RETRY_TIMEOUT_MS);
+  }
+
   if(!response.ok) throw new Error(`Chat backend failed (${response.status})`);
   const payload = await response.json();
   const text = (payload?.response || "").trim();

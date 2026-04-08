@@ -1,29 +1,3 @@
-"""
-Financial Feasibility Agent
-============================
-Assesses financial viability for international study options.
-
-Features:
-  - Tuition and living cost calculations with exchange rate adjustments
-  - Budget matching against university costs
-  - Scholarship recommendations and affordable alternatives
-  - Handles external factors: exchange rate fluctuations, limited loans/scholarships
-
-Algorithm (heuristic, non-ML):
-  1. Resolve applicant budget into a consistent currency (LKR/GBP/USD/SGD/AUD).
-  2. For each university:
-     a. Normalize tuition and living costs into the same currency using exchange rates.
-     b. Compute total annual cost and compare to the applicant budget.
-     c. Tag as "feasible", "borderline", or "infeasible" based on thresholds.
-     d. Suggest scholarships and lower-cost alternatives when a gap exists.
-  3. Produce a report listing feasible/borderline/infeasible options plus action items.
-
-External factors covered:
-  - High tuition & living expenses
-  - Exchange rate fluctuation
-  - Limited loans/scholarships
-"""
-
 from __future__ import annotations
 
 import json

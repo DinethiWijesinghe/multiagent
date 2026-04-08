@@ -1,22 +1,3 @@
-"""
-Unified Data Manager
-======================
-Orchestrates all 5 phases + Eligibility Verification Agent.
-
-Phase 1: Curated Database (universities_database.json) — 30 real universities
-Phase 2: Web Scraping    (QS/THE rankings via public endpoints)
-Phase 3: API Integration (Hipo University Domains API — MIT License)
-Phase 4: Scheduled Updates (APScheduler — daily/weekly/monthly)
-Phase 5: Manual Overrides  (admin audit trail with JSON persistence)
-
-Open-Source Data Attribution:
-  - Hipo University Domains List: github.com/Hipo/university-domains-list (MIT)
-  - QS World Rankings 2025:       topuniversities.com (public data)
-  - THE World Rankings 2025:      timeshighereducation.com (public data)
-  - REST Countries API:           restcountries.com (MPL 2.0)
-  - Open Exchange Rates:          open.er-api.com (free tier)
-"""
-
 from __future__ import annotations
 import json, os, shutil, urllib.request
 from pathlib import Path

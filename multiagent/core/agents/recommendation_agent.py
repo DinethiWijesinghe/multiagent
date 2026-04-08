@@ -1,30 +1,3 @@
-"""
-Recommendation Agent
-====================
-Provides ranked university recommendations by combining eligibility, financial feasibility,
-application timelines, and risk/priority factors.
-
-Features:
-  - Prioritises universities by application deadlines and risk scores
-  - Blends eligibility and financial feasibility into a single ranking
-  - Flags high-risk / high-cost options for transparency
-  - Supports "why" explanations to increase trust & reduce bias
-
-Algorithm (hybrid: heuristic first, ML when real outcomes exist):
-  1. Collect eligibility status (eligible/borderline/ineligible) from Eligibility Agent.
-  2. Collect financial feasibility status (feasible/borderline/infeasible) from Financial Feasibility Agent.
-  3. For each university:
-      a. Compute heuristic score (+2 eligible, +1.5 feasible, rank bonus, risk notes).
-      b. If a real-outcomes ML model is available, predict admit probability.
-      c. Blend heuristic and ML score; keep heuristic dominant for stability.
-      d. Add notes about visa risk and deadlines.
-  4. Sort universities by combined score (and deadline urgency).
-  5. Split into: recommended, backup options, and avoid lists.
-
-Intended to be used by the application layer (UI/chatbot) to give students a clear,
-explainable list of suggested next steps.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict

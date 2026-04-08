@@ -1,27 +1,3 @@
-"""
-Chatbot Agent
-==============
-Handles conversational interactions with users, providing guidance on eligibility,
-financial feasibility, recommendations, and general study abroad advice.
-
-Features:
-  - Parses user queries to identify intent (eligibility, financial, recommendation, etc.)
-  - Orchestrates calls to other agents (Eligibility, Financial, Recommendation) for personalized responses
-  - Provides step-by-step guidance, reassurance, and explanations
-  - Supports multiple languages (basic English/Sinhala fallback)
-  - Reduces stress through clear, empathetic responses
-
-Algorithm (heuristic, non-ML):
-  1. Analyze user message for keywords/intent (e.g., "eligibility" → call Eligibility Agent).
-  2. If intent matches an agent:
-     a. Gather required data (profile, documents, universities).
-     b. Call the agent and format its output into conversational response.
-  3. If general query, use canned responses or escalate to human support.
-  4. Add empathetic language, next steps, and reminders.
-
-Intended to be integrated into the UI (app.jsx) or API for real-time chat.
-"""
-
 from __future__ import annotations
 
 import json

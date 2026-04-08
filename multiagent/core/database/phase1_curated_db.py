@@ -1,33 +1,3 @@
-"""
-Phase 1: Curated University Database + ML Eligibility Engine
-=============================================================
-Location: multiagent/core/phases/phase1.py
-
-Combines:
-  - CuratedDatabaseManager  → load/save/query universities_database.json
-  - Phase1MLEngine           → Random Forest acceptance probability + ranking
-
-Why ML here:
-  Without ML: pass/fail eligibility check only (GPA >= min? yes/no)
-  With ML:    acceptance probability per university, ranked best-fit list,
-              student tier classification — far more useful for students
-
-Usage:
-    from core.phases.phase1 import Phase1
-
-    p1 = Phase1()
-    unis = p1.db.get_universities_by_country("UK")
-
-    # ML: rank all universities for a student
-    ranked = p1.ml.rank_universities(student, unis)
-
-    # ML: classify overall student strength
-    tier = p1.ml.classify_student_tier(student)
-
-    # ML: single acceptance probability
-    result = p1.ml.predict_acceptance(student, university)
-"""
-
 from __future__ import annotations
 
 import json

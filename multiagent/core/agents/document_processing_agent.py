@@ -1,26 +1,3 @@
-"""
-UniAssist Document Processing Agent  —  Updated Edition
-=========================================================
-WHAT CHANGED FROM YOUR ORIGINAL document_processing_agent.py:
-  ✗ REMOVED  Rule-based keyword-only document type detection
-             → ✓ REPLACED with TF-IDF + NaiveBayes ML classifier
-               (same model trained in api_server.py, loaded via pickle)
-  ✗ REMOVED  EasyOCR with default gpu settings
-             → ✓ EasyOCR with gpu=False (CPU mode, low RAM)
-  ✗ REMOVED  Basic preprocessing (resize + CLAHE only)
-             → ✓ Added bilateral denoise + HoughLines deskew
-  ✓ KEPT     All dataclasses (IELTSScore, TOEFLScore, PTEScore, etc.)
-  ✓ KEPT     ManualEntryProcessor (manual entry path unchanged)
-  ✓ KEPT     All validation logic in dataclasses
-  ✓ KEPT     DocumentProcessingAgent.manual_entry() method
-  ✓ KEPT     Same output structure (OCR and manual entry produce identical dicts)
-  ✓ ADDED    ML-only classification: top-2 comparison when confidence < 0.40
-  ✓ ADDED    Pickle model load (shares model with api_server.py)
-
-Install:
-  pip install easyocr opencv-python-headless numpy scikit-learn Pillow
-"""
-
 from __future__ import annotations
 import os
 import re
