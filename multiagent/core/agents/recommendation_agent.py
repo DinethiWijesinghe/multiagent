@@ -28,7 +28,7 @@ explainable list of suggested next steps.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import json
 import logging
 import os
@@ -65,6 +65,7 @@ class RecommendationReport:
     backup_options: List[RecommendationEntry]
     avoid: List[RecommendationEntry]
     global_recommendations: List[str]
+    policy_metadata: Dict[str, Dict[str, str]]
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +73,7 @@ class RecommendationReport:
             "backup_options": [r.to_dict() for r in self.backup_options],
             "avoid": [r.to_dict() for r in self.avoid],
             "global_recommendations": self.global_recommendations,
+            "policy_metadata": self.policy_metadata,
         }
 
 
@@ -87,7 +89,13 @@ class RecommendationAgent:
     # If no deadline is provided, we treat it as "later" (lower priority).
     DEFAULT_DEADLINE_PRIORITY = 1000
 
-    def __init__(self, historical_outcomes_path: str = ""):
+    def __init__(
+        self,
+        historical_outcomes_path: str = "",
+        visa_risk_snapshot: Optional[Dict[str, Dict[str, str]]] = None,
+        policy_metadata: Optional[Dict[str, Dict[str, str]]] = None,
+        disable_direct_visa_sources: bool = False,
+    ):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.historical_outcomes_path = historical_outcomes_path or os.environ.get(
             "RECOMMENDATION_OUTCOMES_PATH",
@@ -95,6 +103,9 @@ class RecommendationAgent:
         )
         self.visa_risk_data_path = os.environ.get("VISA_RISK_DATA_PATH", "").strip()
         self.visa_risk_data_url = os.environ.get("VISA_RISK_DATA_URL", "").strip()
+        self.disable_direct_visa_sources = disable_direct_visa_sources
+        self.policy_metadata = policy_metadata or {}
+        self._provided_visa_snapshot = visa_risk_snapshot or {}
         self._live_visa_risk_map = self._load_live_visa_risk_map()
         # auto(default): use ML only when enough real outcomes exist.
         # off: force heuristic mode.
@@ -135,31 +146,7 @@ class RecommendationAgent:
                 return self._normalize_country_label(val)
         return ""
 
-    def _load_live_visa_risk_map(self) -> Dict[str, Dict[str, str]]:
-        """Load optional live visa-risk matrix from file/URL.
-
-        Expected JSON format:
-        {
-          "UK": {"Sri Lanka": "high", "India": "medium", "_default": "medium"},
-          "Australia": {"Sri Lanka": "medium", "_default": "medium"}
-        }
-        """
-        source_payload = None
-
-        if self.visa_risk_data_path and os.path.exists(self.visa_risk_data_path):
-            try:
-                with open(self.visa_risk_data_path, "r", encoding="utf-8") as handle:
-                    source_payload = json.load(handle)
-            except Exception as exc:
-                logger.warning(f"RecommendationAgent: visa risk file load failed: {exc}")
-
-        if source_payload is None and self.visa_risk_data_url:
-            try:
-                with urllib.request.urlopen(self.visa_risk_data_url, timeout=4) as resp:
-                    source_payload = json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:
-                logger.warning(f"RecommendationAgent: visa risk URL load failed: {exc}")
-
+    def _sanitize_visa_risk_payload(self, source_payload: Any) -> Dict[str, Dict[str, str]]:
         if not isinstance(source_payload, dict):
             return {}
 
@@ -177,6 +164,32 @@ class RecommendationAgent:
             if mapped:
                 clean[dest] = mapped
         return clean
+
+    def _load_live_visa_risk_map(self) -> Dict[str, Dict[str, str]]:
+        """Load visa-risk matrix with priority: provided DB snapshot -> file/URL sources."""
+        if self._provided_visa_snapshot:
+            return self._sanitize_visa_risk_payload(self._provided_visa_snapshot)
+
+        if self.disable_direct_visa_sources:
+            return {}
+
+        source_payload = None
+
+        if self.visa_risk_data_path and os.path.exists(self.visa_risk_data_path):
+            try:
+                with open(self.visa_risk_data_path, "r", encoding="utf-8") as handle:
+                    source_payload = json.load(handle)
+            except Exception as exc:
+                logger.warning(f"RecommendationAgent: visa risk file load failed: {exc}")
+
+        if source_payload is None and self.visa_risk_data_url:
+            try:
+                with urllib.request.urlopen(self.visa_risk_data_url, timeout=4) as resp:
+                    source_payload = json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:
+                logger.warning(f"RecommendationAgent: visa risk URL load failed: {exc}")
+
+        return self._sanitize_visa_risk_payload(source_payload)
 
     def _resolve_visa_risk(self, destination_country: str, applicant_nationality: str) -> str:
         destination = self._normalize_country_label(destination_country)
@@ -482,4 +495,7 @@ class RecommendationAgent:
             backup_options=backup,
             avoid=avoid,
             global_recommendations=global_recs,
+            policy_metadata={
+                "visa_risk": self.policy_metadata.get("visa_risk", {}),
+            },
         )

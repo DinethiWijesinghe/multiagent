@@ -190,12 +190,21 @@ class FinancialFeasibilityAgent:
         ]
     }
 
-    def __init__(self, universities_db_path: str = ""):
+    def __init__(
+        self,
+        universities_db_path: str = "",
+        living_costs_snapshot: Optional[Dict[str, Dict[str, object]]] = None,
+        scholarships_snapshot: Optional[Dict[str, List[Dict[str, str]]]] = None,
+        policy_metadata: Optional[Dict[str, Dict[str, str]]] = None,
+    ):
         # Default: resolve relative to project root
         if not universities_db_path:
             _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             universities_db_path = os.path.join(_root, "data", "databases", "universities_database.json")
         self.universities_db = self._load_universities_db(universities_db_path)
+        self.living_costs = living_costs_snapshot if isinstance(living_costs_snapshot, dict) and living_costs_snapshot else dict(self.LIVING_COSTS)
+        self.scholarships = scholarships_snapshot if isinstance(scholarships_snapshot, dict) and scholarships_snapshot else dict(self.SCHOLARSHIPS)
+        self.policy_metadata = policy_metadata or {}
         # Load exchange rates from environment; fail fast if missing (no stale hardcoded rates)
         self._load_exchange_rates()
 
@@ -261,7 +270,7 @@ class FinancialFeasibilityAgent:
         tuition_annual = tuition_info.get("undergraduate_intl_gbp", 25000)  # fallback
 
         # Get living costs
-        living_info = self.LIVING_COSTS.get(country, {"amount": 15000, "currency": "GBP"})
+        living_info = self.living_costs.get(country, {"amount": 15000, "currency": "GBP"})
         living_annual = living_info["amount"]
 
         # Convert to common currency for calculation (use GBP as base)
@@ -371,9 +380,9 @@ class FinancialFeasibilityAgent:
 
     def _get_scholarships(self, country: str) -> List[ScholarshipOption]:
         """Get available scholarships for a country."""
-        if country not in self.SCHOLARSHIPS:
+        if country not in self.scholarships:
             return []
-        return [ScholarshipOption(**s) for s in self.SCHOLARSHIPS[country]]
+        return [ScholarshipOption(**s) for s in self.scholarships[country]]
 
     def _global_recommendations(self, budget: float, currency: str, feasible_count: int) -> List[str]:
         """Generate global recommendations based on overall situation."""

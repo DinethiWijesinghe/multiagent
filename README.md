@@ -302,6 +302,42 @@ $env:NEON_DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?channel_bin
 uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+### Admin and Advisor Credentials (Neon)
+
+There are no fixed default admin/advisor credentials in source code.
+
+Recommended production flow:
+
+1. Keep `ALLOW_PRIVILEGED_SELF_REGISTRATION=false`.
+2. Register users normally (they become `student`).
+3. Use an existing admin account to promote roles via API:
+
+```powershell
+# List users (admin token required)
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" http://127.0.0.1:8000/admin/users
+
+# Promote to advisor
+curl -X PATCH -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Content-Type: application/json" -d '{"role":"advisor"}' http://127.0.0.1:8000/admin/users/user@example.com/role
+
+# Promote to admin
+curl -X PATCH -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Content-Type: application/json" -d '{"role":"admin"}' http://127.0.0.1:8000/admin/users/user@example.com/role
+```
+
+Bootstrap first admin (optional):
+
+```powershell
+$env:BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
+$env:BOOTSTRAP_ADMIN_PASSWORD = "ChangeMe123!"
+$env:BOOTSTRAP_ADMIN_NAME = "System Admin"
+uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Notes:
+
+- Bootstrap runs at startup and ensures the configured email exists as `admin`.
+- Change bootstrap password immediately after first login and remove bootstrap env vars from long-running environments.
+- All user/session data is persisted in Neon/PostgreSQL tables (`users`, `sessions`).
+
 Verify backend DB mode:
 
 1. Open /health endpoint.

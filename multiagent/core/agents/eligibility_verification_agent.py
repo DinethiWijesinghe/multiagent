@@ -136,7 +136,14 @@ class EligibilityVerificationAgent:
 
     _DEFAULT_ENGLISH_REQUIREMENT = {"ielts": 6.5, "toefl": 90, "pte": 58}
 
-    def __init__(self, training_data_path: str = ""):
+    def __init__(
+        self,
+        training_data_path: str = "",
+        program_min_gpa_snapshot: Optional[dict[str, float]] = None,
+        english_requirements_snapshot: Optional[dict[str, dict[str, float]]] = None,
+        default_english_requirement_snapshot: Optional[dict[str, float]] = None,
+        policy_metadata: Optional[dict[str, dict[str, str]]] = None,
+    ):
         # Default: resolve relative to project root regardless of working directory
         if not training_data_path:
             _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -147,6 +154,20 @@ class EligibilityVerificationAgent:
             os.path.join(root_dir, "data", "training", "historical_admissions_outcomes.jsonl"),
         )
         self.training_data = self._load_training_data(training_data_path)
+        self._program_min_gpa_baseline = dict(self.PROGRAM_MIN_GPA)
+        if isinstance(program_min_gpa_snapshot, dict) and program_min_gpa_snapshot:
+            self._program_min_gpa_baseline.update(program_min_gpa_snapshot)
+
+        self._english_requirements_baseline = dict(self.ENGLISH_REQUIREMENTS)
+        if isinstance(english_requirements_snapshot, dict) and english_requirements_snapshot:
+            self._english_requirements_baseline.update(english_requirements_snapshot)
+
+        self._default_english_requirement_baseline = dict(self._DEFAULT_ENGLISH_REQUIREMENT)
+        if isinstance(default_english_requirement_snapshot, dict) and default_english_requirement_snapshot:
+            self._default_english_requirement_baseline.update(default_english_requirement_snapshot)
+
+        self.policy_metadata = policy_metadata or {}
+
         if self.training_data:
             self._special_reqs        = self.training_data.get("university_specific_requirements", {})
             self._country_english_reqs = self.training_data.get("country_english_requirements", {})
@@ -366,7 +387,7 @@ class EligibilityVerificationAgent:
         target_program  = profile.get("program_interest", "")
         available_progs = uni.get("programs", [])
         prog_available  = target_program in available_progs
-        program_min     = self.PROGRAM_MIN_GPA.get(target_program, 3.0)
+        program_min     = self._program_min_gpa_baseline.get(target_program, 3.0)
 
         # Criterion 2 — English
         req       = self._resolve_english_requirements(uni, target_program, country)
@@ -522,9 +543,9 @@ class EligibilityVerificationAgent:
         program: str,
         country: str,
     ) -> dict:
-        req = dict(self._DEFAULT_ENGLISH_REQUIREMENT)
+        req = dict(self._default_english_requirement_baseline)
 
-        country_req = self._country_english_reqs.get(country) or self.ENGLISH_REQUIREMENTS.get(country)
+        country_req = self._country_english_reqs.get(country) or self._english_requirements_baseline.get(country)
         if isinstance(country_req, dict):
             req.update({k: v for k, v in country_req.items() if v is not None})
 

@@ -23,6 +23,7 @@ import pickle
 import random
 import secrets
 import time
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from hashlib import pbkdf2_hmac
 from pathlib import Path
@@ -1174,6 +1175,16 @@ class DBApplication(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class DBPolicySnapshot(Base):
+    __tablename__ = "policy_snapshots"
+
+    policy_key = Column(String(128), primary_key=True, index=True)
+    source = Column(String(1024), nullable=False, default="unknown")
+    confidence = Column(String(32), nullable=False, default="0.0")
+    data = Column(Text, nullable=False, default="{}")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 def _normalize_database_url(raw_url: str) -> str:
     url = (raw_url or "").strip()
     if url.startswith("postgresql://"):
@@ -1206,6 +1217,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip())
+    except Exception:
+        return default
+
+
 def _env_csv(name: str, default: list[str]) -> list[str]:
     raw = os.environ.get(name)
     if raw is None:
@@ -1219,10 +1240,22 @@ DATABASE_URL = _normalize_database_url(
 )
 DB_STRICT_MODE = _env_true("DB_STRICT_MODE", True)
 RAG_ENABLED = _env_true("RAG_ENABLED", True)
+POLICY_INGEST_ON_STARTUP = _env_true("POLICY_INGEST_ON_STARTUP", True)
+POLICY_VISA_RISK_URL = (os.environ.get("POLICY_VISA_RISK_URL") or os.environ.get("VISA_RISK_DATA_URL") or "").strip()
+POLICY_VISA_RISK_CONFIDENCE = _env_float("POLICY_VISA_RISK_CONFIDENCE", 0.9)
+POLICY_LIVING_COSTS_URL = (os.environ.get("POLICY_LIVING_COSTS_URL") or "").strip()
+POLICY_LIVING_COSTS_CONFIDENCE = _env_float("POLICY_LIVING_COSTS_CONFIDENCE", 0.85)
+POLICY_SCHOLARSHIPS_URL = (os.environ.get("POLICY_SCHOLARSHIPS_URL") or "").strip()
+POLICY_SCHOLARSHIPS_CONFIDENCE = _env_float("POLICY_SCHOLARSHIPS_CONFIDENCE", 0.85)
+POLICY_ELIGIBILITY_THRESHOLDS_URL = (os.environ.get("POLICY_ELIGIBILITY_THRESHOLDS_URL") or "").strip()
+POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE = _env_float("POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE", 0.9)
 SESSION_TTL_HOURS = _env_int("SESSION_TTL_HOURS", 24 * 30)
 ALLOW_PRIVILEGED_SELF_REGISTRATION = _env_true("ALLOW_PRIVILEGED_SELF_REGISTRATION", False)
 PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 6)
 PASSWORD_REQUIRE_COMPLEXITY = _env_true("PASSWORD_REQUIRE_COMPLEXITY", False)
+BOOTSTRAP_ADMIN_EMAIL = (os.environ.get("BOOTSTRAP_ADMIN_EMAIL") or "").strip().lower()
+BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD") or ""
+BOOTSTRAP_ADMIN_NAME = (os.environ.get("BOOTSTRAP_ADMIN_NAME") or "System Admin").strip() or "System Admin"
 AUTH_WINDOW_SECONDS = _env_int("AUTH_WINDOW_SECONDS", 300)
 AUTH_MAX_LOGIN_ATTEMPTS = _env_int("AUTH_MAX_LOGIN_ATTEMPTS", 10)
 METRICS_PUBLIC = _env_true("METRICS_PUBLIC", True)
@@ -1392,6 +1425,298 @@ def _require_session_local():
             "Database session is unavailable. Configure DATABASE_URL for PostgreSQL/Neon and restart the server."
         )
     return _SessionLocal
+
+
+def _validate_visa_risk_snapshot(payload: Any) -> dict[str, Any]:
+    """Validate and normalize visa-risk matrix before persisting a snapshot."""
+    if not isinstance(payload, dict):
+        raise RuntimeError("Visa-risk snapshot must be a JSON object.")
+
+    clean: dict[str, dict[str, str]] = {}
+    for destination, table in payload.items():
+        destination_name = _normalize_country_name(str(destination)) or str(destination)
+        if not isinstance(table, dict):
+            continue
+        normalized_table: dict[str, str] = {}
+        for nationality, risk in table.items():
+            normalized_nat = "_default" if str(nationality) == "_default" else (_normalize_country_name(str(nationality)) or str(nationality))
+            risk_level = str(risk).strip().lower()
+            if risk_level in {"low", "medium", "high"}:
+                normalized_table[normalized_nat] = risk_level
+        if normalized_table:
+            clean[destination_name] = normalized_table
+
+    if not clean:
+        raise RuntimeError("Visa-risk snapshot validation failed: no valid destination records.")
+
+    return {
+        "destinations": clean,
+        "record_count": sum(len(v) for v in clean.values()),
+    }
+
+
+def _validate_living_costs_snapshot(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Living-costs snapshot must be a JSON object.")
+
+    clean: dict[str, dict[str, Any]] = {}
+    for country, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        amount = value.get("amount")
+        currency = str(value.get("currency") or "").strip().upper()
+        try:
+            amount_val = float(amount)
+        except Exception:
+            continue
+        if amount_val <= 0 or not currency:
+            continue
+        clean[str(country).strip()] = {"amount": amount_val, "currency": currency}
+
+    if not clean:
+        raise RuntimeError("Living-costs snapshot validation failed: no valid records.")
+
+    return {"costs": clean, "record_count": len(clean)}
+
+
+def _validate_scholarships_snapshot(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Scholarships snapshot must be a JSON object.")
+
+    clean: dict[str, list[dict[str, str]]] = {}
+    total = 0
+    for country, rows in payload.items():
+        if not isinstance(rows, list):
+            continue
+        cleaned_rows: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            entry = {
+                "name": str(row.get("name") or "").strip(),
+                "type": str(row.get("type") or "").strip(),
+                "coverage": str(row.get("coverage") or "").strip(),
+                "eligibility": str(row.get("eligibility") or "").strip(),
+                "deadline": str(row.get("deadline") or "").strip(),
+                "website": str(row.get("website") or "").strip(),
+            }
+            if not entry["name"]:
+                continue
+            cleaned_rows.append(entry)
+        if cleaned_rows:
+            clean[str(country).strip()] = cleaned_rows
+            total += len(cleaned_rows)
+
+    if not clean:
+        raise RuntimeError("Scholarships snapshot validation failed: no valid records.")
+
+    return {"catalog": clean, "record_count": total}
+
+
+def _validate_eligibility_thresholds_snapshot(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("Eligibility-threshold snapshot must be a JSON object.")
+
+    program_min_gpa_raw = payload.get("program_min_gpa")
+    english_requirements_raw = payload.get("english_requirements")
+    default_english_raw = payload.get("default_english_requirement")
+
+    clean_program_min_gpa: dict[str, float] = {}
+    if isinstance(program_min_gpa_raw, dict):
+        for program, val in program_min_gpa_raw.items():
+            try:
+                clean_program_min_gpa[str(program).strip()] = float(val)
+            except Exception:
+                continue
+
+    clean_english_requirements: dict[str, dict[str, float]] = {}
+    if isinstance(english_requirements_raw, dict):
+        for country, thresholds in english_requirements_raw.items():
+            if not isinstance(thresholds, dict):
+                continue
+            row: dict[str, float] = {}
+            for key in ("ielts", "toefl", "pte"):
+                try:
+                    row[key] = float(thresholds.get(key))
+                except Exception:
+                    continue
+            if row:
+                clean_english_requirements[str(country).strip()] = row
+
+    clean_default_english: dict[str, float] = {}
+    if isinstance(default_english_raw, dict):
+        for key in ("ielts", "toefl", "pte"):
+            try:
+                clean_default_english[key] = float(default_english_raw.get(key))
+            except Exception:
+                continue
+
+    if not (clean_program_min_gpa or clean_english_requirements or clean_default_english):
+        raise RuntimeError("Eligibility-threshold snapshot validation failed: no valid records.")
+
+    return {
+        "program_min_gpa": clean_program_min_gpa,
+        "english_requirements": clean_english_requirements,
+        "default_english_requirement": clean_default_english,
+        "record_count": len(clean_program_min_gpa) + len(clean_english_requirements),
+    }
+
+
+def _fetch_policy_payload_from_url(url: str) -> dict[str, Any]:
+    with urllib.request.urlopen(url, timeout=8) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _upsert_policy_snapshot(policy_key: str, data: dict[str, Any], source: str, confidence: float) -> None:
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBPolicySnapshot, policy_key)
+        payload_text = json.dumps(data, ensure_ascii=False)
+        if row is None:
+            row = DBPolicySnapshot(
+                policy_key=policy_key,
+                data=payload_text,
+                source=source,
+                confidence=f"{confidence:.2f}",
+            )
+            session.add(row)
+        else:
+            row.data = payload_text
+            row.source = source
+            row.confidence = f"{confidence:.2f}"
+        session.commit()
+
+
+def _load_policy_snapshot(policy_key: str) -> dict[str, Any]:
+    SessionLocal = _require_session_local()
+    with SessionLocal() as session:
+        row = session.get(DBPolicySnapshot, policy_key)
+    if row is None:
+        return {}
+
+    try:
+        payload = json.loads(row.data or "{}")
+    except Exception:
+        payload = {}
+
+    updated_at = None
+    if getattr(row, "updated_at", None) is not None:
+        try:
+            updated_at = row.updated_at.isoformat()
+        except Exception:
+            updated_at = str(row.updated_at)
+
+    return {
+        "policy_key": policy_key,
+        "source": row.source,
+        "confidence": row.confidence,
+        "updated_at": updated_at,
+        "data": payload,
+    }
+
+
+def _policy_snapshot_status(policy_key: str) -> dict[str, Any]:
+    snap = _load_policy_snapshot(policy_key)
+    if not snap:
+        return {
+            "policy_key": policy_key,
+            "available": False,
+            "source": None,
+            "updated_at": None,
+            "confidence": None,
+        }
+    return {
+        "policy_key": policy_key,
+        "available": True,
+        "source": snap.get("source"),
+        "updated_at": snap.get("updated_at"),
+        "confidence": snap.get("confidence"),
+    }
+
+
+def _ingest_visa_risk_snapshot() -> None:
+    if not POLICY_VISA_RISK_URL:
+        print("[Policy] VISA risk ingest skipped: POLICY_VISA_RISK_URL is empty.")
+        return
+
+    try:
+        raw_payload = _fetch_policy_payload_from_url(POLICY_VISA_RISK_URL)
+        validated = _validate_visa_risk_snapshot(raw_payload)
+        _upsert_policy_snapshot(
+            policy_key="visa_risk_matrix",
+            data=validated,
+            source=POLICY_VISA_RISK_URL,
+            confidence=POLICY_VISA_RISK_CONFIDENCE,
+        )
+        print(
+            f"[Policy] Ingested visa_risk_matrix snapshot: {validated.get('record_count', 0)} entries from {POLICY_VISA_RISK_URL}"
+        )
+    except Exception as exc:
+        print(f"[Policy] VISA risk ingest failed: {exc}")
+
+
+def _ingest_living_costs_snapshot() -> None:
+    if not POLICY_LIVING_COSTS_URL:
+        print("[Policy] Living-cost ingest skipped: POLICY_LIVING_COSTS_URL is empty.")
+        return
+    try:
+        raw_payload = _fetch_policy_payload_from_url(POLICY_LIVING_COSTS_URL)
+        validated = _validate_living_costs_snapshot(raw_payload)
+        _upsert_policy_snapshot(
+            policy_key="living_costs",
+            data=validated,
+            source=POLICY_LIVING_COSTS_URL,
+            confidence=POLICY_LIVING_COSTS_CONFIDENCE,
+        )
+        print(f"[Policy] Ingested living_costs snapshot: {validated.get('record_count', 0)} entries")
+    except Exception as exc:
+        print(f"[Policy] Living-cost ingest failed: {exc}")
+
+
+def _ingest_scholarships_snapshot() -> None:
+    if not POLICY_SCHOLARSHIPS_URL:
+        print("[Policy] Scholarships ingest skipped: POLICY_SCHOLARSHIPS_URL is empty.")
+        return
+    try:
+        raw_payload = _fetch_policy_payload_from_url(POLICY_SCHOLARSHIPS_URL)
+        validated = _validate_scholarships_snapshot(raw_payload)
+        _upsert_policy_snapshot(
+            policy_key="scholarships",
+            data=validated,
+            source=POLICY_SCHOLARSHIPS_URL,
+            confidence=POLICY_SCHOLARSHIPS_CONFIDENCE,
+        )
+        print(f"[Policy] Ingested scholarships snapshot: {validated.get('record_count', 0)} entries")
+    except Exception as exc:
+        print(f"[Policy] Scholarships ingest failed: {exc}")
+
+
+def _ingest_eligibility_thresholds_snapshot() -> None:
+    if not POLICY_ELIGIBILITY_THRESHOLDS_URL:
+        print("[Policy] Eligibility-threshold ingest skipped: POLICY_ELIGIBILITY_THRESHOLDS_URL is empty.")
+        return
+    try:
+        raw_payload = _fetch_policy_payload_from_url(POLICY_ELIGIBILITY_THRESHOLDS_URL)
+        validated = _validate_eligibility_thresholds_snapshot(raw_payload)
+        _upsert_policy_snapshot(
+            policy_key="eligibility_thresholds",
+            data=validated,
+            source=POLICY_ELIGIBILITY_THRESHOLDS_URL,
+            confidence=POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE,
+        )
+        print(f"[Policy] Ingested eligibility_thresholds snapshot: {validated.get('record_count', 0)} entries")
+    except Exception as exc:
+        print(f"[Policy] Eligibility-threshold ingest failed: {exc}")
+
+
+def _run_policy_ingestion_jobs() -> None:
+    if not POLICY_INGEST_ON_STARTUP:
+        print("[Policy] Startup ingestion disabled.")
+        return
+    _ingest_visa_risk_snapshot()
+    _ingest_living_costs_snapshot()
+    _ingest_scholarships_snapshot()
+    _ingest_eligibility_thresholds_snapshot()
 
 
 def _ensure_document_upload_schema() -> None:
@@ -1659,6 +1984,33 @@ def _save_users(users: dict[str, dict[str, Any]]) -> None:
         session.commit()
 
 
+def _bootstrap_admin_user_from_env() -> None:
+    """Create or update one bootstrap admin user from environment variables."""
+    email = _normalize_email(BOOTSTRAP_ADMIN_EMAIL)
+    password = BOOTSTRAP_ADMIN_PASSWORD or ""
+    name = (BOOTSTRAP_ADMIN_NAME or "System Admin").strip() or "System Admin"
+
+    if not email or not password:
+        return
+
+    _validate_password_policy(password)
+
+    users = _load_users()
+    existing = users.get(email, {}) if isinstance(users.get(email), dict) else {}
+    users[email] = {
+        **existing,
+        "name": name,
+        "email": email,
+        "password_hash": _hash_password(password),
+        "role": "admin",
+        "updated_at": _utc_now(),
+    }
+    if "created_at" not in users[email]:
+        users[email]["created_at"] = _utc_now()
+    _save_users(users)
+    print(f"[Auth] Bootstrap admin ensured: {email}")
+
+
 def _load_sessions() -> dict[str, dict[str, Any]]:
     SessionLocal = _require_session_local()
     with SessionLocal() as session:
@@ -1790,15 +2142,27 @@ def _issue_session_token(email: str) -> str:
     return token
 
 
+def _extract_bearer_token(authorization: str | None) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    return token.strip()
+
+
+def _revoke_session_token(token: str) -> bool:
+    sessions = _load_sessions()
+    removed = sessions.pop(token, None) is not None
+    if removed:
+        _save_sessions(sessions)
+    return removed
+
+
 def _authenticate_token(authorization: str | None, *, required: bool = True) -> str | None:
     if not authorization:
         if required:
             raise HTTPException(status_code=401, detail="Authentication required")
         return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
-    token_value = token.strip()
+    token_value = _extract_bearer_token(authorization)
     sessions = _load_sessions()
     session = sessions.get(token_value)
     if not session or not session.get("email"):
@@ -2207,6 +2571,8 @@ def startup():
         print(f"[DB] Database init failed: {exc}")
         raise RuntimeError("Database initialization failed. Set DATABASE_URL to a reachable PostgreSQL/Neon instance.") from exc
 
+    _bootstrap_admin_user_from_env()
+
     try:
         migrated_docs = _backfill_document_blobs_from_disk()
         if migrated_docs:
@@ -2221,26 +2587,72 @@ def startup():
     except Exception as exc:
         print(f"[Applications] Historical outcomes backfill skipped: {exc}")
 
+    _run_policy_ingestion_jobs()
+
     if ChatbotAgent:
         eligibility_agent = None
         financial_agent = None
         recommendation_agent = None
 
+        eligibility_policy_snapshot = _load_policy_snapshot("eligibility_thresholds")
+        financial_living_snapshot = _load_policy_snapshot("living_costs")
+        financial_scholarship_snapshot = _load_policy_snapshot("scholarships")
+        visa_policy_snapshot = _load_policy_snapshot("visa_risk_matrix")
+
         if EligibilityVerificationAgent:
             try:
-                eligibility_agent = EligibilityVerificationAgent()
+                eligibility_data = eligibility_policy_snapshot.get("data") or {}
+                eligibility_agent = EligibilityVerificationAgent(
+                    program_min_gpa_snapshot=eligibility_data.get("program_min_gpa") or {},
+                    english_requirements_snapshot=eligibility_data.get("english_requirements") or {},
+                    default_english_requirement_snapshot=eligibility_data.get("default_english_requirement") or {},
+                    policy_metadata={
+                        "eligibility_thresholds": {
+                            "source": eligibility_policy_snapshot.get("source", "unavailable"),
+                            "updated_at": eligibility_policy_snapshot.get("updated_at", "unknown"),
+                            "confidence": str(eligibility_policy_snapshot.get("confidence", "0.0")),
+                        }
+                    },
+                )
             except Exception as exc:
                 print(f"[Chat] Eligibility agent disabled: {exc}")
 
         if FinancialFeasibilityAgent:
             try:
-                financial_agent = FinancialFeasibilityAgent()
+                living_data = (financial_living_snapshot.get("data") or {}).get("costs") or {}
+                scholarship_data = (financial_scholarship_snapshot.get("data") or {}).get("catalog") or {}
+                financial_agent = FinancialFeasibilityAgent(
+                    living_costs_snapshot=living_data,
+                    scholarships_snapshot=scholarship_data,
+                    policy_metadata={
+                        "living_costs": {
+                            "source": financial_living_snapshot.get("source", "unavailable"),
+                            "updated_at": financial_living_snapshot.get("updated_at", "unknown"),
+                            "confidence": str(financial_living_snapshot.get("confidence", "0.0")),
+                        },
+                        "scholarships": {
+                            "source": financial_scholarship_snapshot.get("source", "unavailable"),
+                            "updated_at": financial_scholarship_snapshot.get("updated_at", "unknown"),
+                            "confidence": str(financial_scholarship_snapshot.get("confidence", "0.0")),
+                        },
+                    },
+                )
             except Exception as exc:
                 print(f"[Chat] Financial agent disabled: {exc}")
 
         if RecommendationAgent:
             try:
-                recommendation_agent = RecommendationAgent()
+                recommendation_agent = RecommendationAgent(
+                    visa_risk_snapshot=(visa_policy_snapshot.get("data") or {}).get("destinations", {}),
+                    policy_metadata={
+                        "visa_risk": {
+                            "source": visa_policy_snapshot.get("source", "unavailable"),
+                            "updated_at": visa_policy_snapshot.get("updated_at", "unknown"),
+                            "confidence": str(visa_policy_snapshot.get("confidence", "0.0")),
+                        }
+                    },
+                    disable_direct_visa_sources=True,
+                )
             except Exception as exc:
                 print(f"[Chat] Recommendation agent disabled: {exc}")
 
@@ -2324,6 +2736,12 @@ def startup():
 
 @app.get("/health")
 def health(current_user_email: str = Depends(_require_auth)):
+    policy_status = {
+        "visa_risk_matrix": _policy_snapshot_status("visa_risk_matrix"),
+        "living_costs": _policy_snapshot_status("living_costs"),
+        "scholarships": _policy_snapshot_status("scholarships"),
+        "eligibility_thresholds": _policy_snapshot_status("eligibility_thresholds"),
+    }
     return {
         "status": "ok" if _OCR_ENGINE else "degraded",
         "version": "7.3",
@@ -2341,6 +2759,7 @@ def health(current_user_email: str = Depends(_require_auth)):
         "ml_model": "TF-IDF bigrams + MultinomialNB",
         "doc_types": list(TRAINING_DATA.keys()),
         "tesseract_paths_checked": _WINDOWS_TESSERACT_PATHS if sys.platform == "win32" else [],
+        "policy_snapshots": policy_status,
     }
 
 
@@ -2455,6 +2874,37 @@ def register(payload: RegisterPayload):
             "role": role,
         },
     }
+
+
+@app.get("/auth/config")
+def auth_config():
+    """Return safe auth-related feature flags for frontend UX."""
+    return {
+        "allow_privileged_self_registration": ALLOW_PRIVILEGED_SELF_REGISTRATION,
+        "password_min_length": PASSWORD_MIN_LENGTH,
+        "password_require_complexity": PASSWORD_REQUIRE_COMPLEXITY,
+    }
+
+
+@app.get("/auth/me")
+def auth_me(current_user_email: str = Depends(_require_current_user)):
+    users = _load_users()
+    user = users.get(current_user_email, {})
+    return {
+        "user": {
+            "name": user.get("name") or current_user_email.split("@")[0],
+            "email": current_user_email,
+            "role": _normalize_user_role(user.get("role")),
+        }
+    }
+
+
+@app.post("/auth/logout")
+def logout(authorization: str | None = Header(default=None)):
+    _authenticate_token(authorization, required=True)
+    token_value = _extract_bearer_token(authorization)
+    _revoke_session_token(token_value)
+    return {"success": True}
 
 
 @app.post("/auth/login")
@@ -2722,6 +3172,10 @@ def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(
     if _chatbot_agent:
         result = _chatbot_agent.process_message(message, context)
         response_text = result.get("response") or "I'm here to help with your application journey."
+        agent_data = result.get("agent_data") or {}
+        recommendation_meta = ((agent_data.get("agent_results") or {}).get("recommendation") or {}).get("policy_metadata") or {}
+        if recommendation_meta:
+            agent_data["policy_sources"] = recommendation_meta
         duration_ms = (time.time() - t0) * 1000
         if _metrics_collector is not None:
             intent = str(result.get("intent") or "unknown")
@@ -2752,7 +3206,7 @@ def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(
             "response": response_text,
             "intent": result.get("intent"),
             "actions": result.get("actions", []),
-            "agent_data": result.get("agent_data", {}),
+            "agent_data": agent_data,
             "source": "backend_agent",
         }
 
@@ -2974,6 +3428,43 @@ def admin_stats(current_user_email: str = Depends(_require_admin)):
         "completedApplications": completed,
         "pendingApplications": pending,
         "dataQualityScore": round((completed / n_students * 100) if n_students else 0.0, 1),
+    }
+
+
+@app.get("/admin/policies/{policy_key}")
+def admin_get_policy_snapshot(policy_key: str, current_user_email: str = Depends(_require_admin)):
+    snapshot = _load_policy_snapshot(policy_key)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"Policy snapshot not found: {policy_key}")
+    return snapshot
+
+
+@app.post("/admin/policies/ingest/visa-risk")
+def admin_ingest_visa_risk_policy(current_user_email: str = Depends(_require_admin)):
+    _ingest_visa_risk_snapshot()
+    snapshot = _load_policy_snapshot("visa_risk_matrix")
+    if not snapshot:
+        raise HTTPException(status_code=500, detail="Visa risk snapshot ingestion did not produce a persisted record")
+    return {
+        "success": True,
+        "policy_key": "visa_risk_matrix",
+        "source": snapshot.get("source"),
+        "updated_at": snapshot.get("updated_at"),
+        "confidence": snapshot.get("confidence"),
+    }
+
+
+@app.post("/admin/policies/ingest/all")
+def admin_ingest_all_policies(current_user_email: str = Depends(_require_admin)):
+    _run_policy_ingestion_jobs()
+    return {
+        "success": True,
+        "snapshots": {
+            "visa_risk_matrix": _policy_snapshot_status("visa_risk_matrix"),
+            "living_costs": _policy_snapshot_status("living_costs"),
+            "scholarships": _policy_snapshot_status("scholarships"),
+            "eligibility_thresholds": _policy_snapshot_status("eligibility_thresholds"),
+        },
     }
 
 

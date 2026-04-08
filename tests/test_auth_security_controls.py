@@ -67,6 +67,39 @@ class AuthSecurityControlsTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 api_server._validate_password_policy("passwordonly")
 
+    def test_logout_revokes_session_token(self):
+        token = "valid-token"
+        sessions = {
+            token: {
+                "email": "user@example.com",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+        saved_payload = {}
+
+        def _capture_save(payload):
+            saved_payload.clear()
+            saved_payload.update(payload)
+
+        with patch("multiagent.api_server._load_sessions", return_value=sessions.copy()), patch(
+            "multiagent.api_server._save_sessions", side_effect=_capture_save
+        ) as save_sessions:
+            result = api_server.logout(f"Bearer {token}")
+
+        self.assertTrue(result["success"])
+        self.assertNotIn(token, saved_payload)
+        save_sessions.assert_called_once()
+
+    def test_auth_config_exposes_expected_flags(self):
+        with patch("multiagent.api_server.ALLOW_PRIVILEGED_SELF_REGISTRATION", False), patch(
+            "multiagent.api_server.PASSWORD_MIN_LENGTH", 10
+        ), patch("multiagent.api_server.PASSWORD_REQUIRE_COMPLEXITY", True):
+            result = api_server.auth_config()
+
+        self.assertIn("allow_privileged_self_registration", result)
+        self.assertEqual(result["password_min_length"], 10)
+        self.assertTrue(result["password_require_complexity"])
+
 
 class ApiEndpointTests(unittest.TestCase):
     def test_login_throttle_hits_429(self):

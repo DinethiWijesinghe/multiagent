@@ -18,7 +18,9 @@ Open-Source Data Attribution:
 """
 
 from __future__ import annotations
-import json, os, shutil
+import json, os, shutil, urllib.request
+from pathlib import Path
+from uuid import uuid4
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -38,6 +40,10 @@ class UnifiedDataManager:
         self.api_integrator   = APIIntegrator()
         self.override_manager = OverrideManager()
         self.scheduler        = UpdateScheduler(manager=self)
+        self._root_dir        = Path(__file__).resolve().parents[2]
+        self.policy_dir       = self._root_dir / "data" / "policy_snapshots"
+        self.policy_log_path  = self.policy_dir / "publish_log.json"
+        self.policy_dir.mkdir(parents=True, exist_ok=True)
 
         if start_scheduler:
             self.scheduler.start()
@@ -114,6 +120,11 @@ class UnifiedDataManager:
             # Patch back into database
             self.db_manager.database[country] = enriched
         self.db_manager.save_database()
+        publish_result = self.publish_policy_snapshots(trigger="phase3_api")
+        print(
+            "\n✅ Policy snapshot publish: "
+            f"{publish_result.get('published', 0)} published, {publish_result.get('failed', 0)} failed"
+        )
         print(f"\n✅ Phase 3: {total_matched} universities enriched via API")
         return total_matched
 
@@ -178,11 +189,13 @@ class UnifiedDataManager:
     # ── Statistics / Validation ───────────────────────────────────────────
 
     def get_statistics(self) -> Dict:
+        policy_stats = self.get_policy_publish_statistics()
         return {
             "database":     self.db_manager.get_statistics(),
             "overrides":    self.override_manager.get_statistics(),
             "scheduler":    self.scheduler.get_statistics(),
             "api":          self.api_integrator.get_statistics(),
+            "policy_publish": policy_stats,
             "data_sources": {
                 "phase1_curated":   True,
                 "phase2_scraping":  True,
@@ -228,6 +241,13 @@ class UnifiedDataManager:
         print(f"   Exchange Rates:     {api['exchange_rates']}")
         print(f"   Currencies loaded:  {api['currencies_loaded']}")
 
+        pp = s.get("policy_publish", {})
+        print("\n🧭 Policy Publish:")
+        print(f"   Total runs: {pp.get('total_runs', 0)}")
+        print(f"   Last run id: {pp.get('last_run_id', 'n/a')}")
+        print(f"   Last trigger: {pp.get('last_trigger', 'n/a')}")
+        print(f"   Last status: {pp.get('last_status', 'n/a')}")
+
         print("\n📋 Data Sources:")
         for src, ok in s["data_sources"].items():
             print(f"   {'✅' if ok else '❌'} {src}")
@@ -256,3 +276,279 @@ class UnifiedDataManager:
             if amount:
                 return self.api_integrator.normalize_tuition_to_usd(float(amount), currency)
         return None
+
+    # ── Policy Publishing Orchestration ───────────────────────────────────
+
+    def publish_policy_snapshots(self, trigger: str = "manual") -> Dict:
+        """Publish policy payload snapshots from configured sources with run metadata."""
+        run_id = uuid4().hex
+        run_at = datetime.utcnow().isoformat() + "Z"
+
+        policy_specs = [
+            {
+                "policy_key": "visa_risk_matrix",
+                "url": (os.environ.get("POLICY_VISA_RISK_URL") or os.environ.get("VISA_RISK_DATA_URL") or "").strip(),
+                "confidence": self._safe_float(os.environ.get("POLICY_VISA_RISK_CONFIDENCE"), 0.90),
+                "validator": self._validate_visa_risk_payload,
+            },
+            {
+                "policy_key": "living_costs",
+                "url": (os.environ.get("POLICY_LIVING_COSTS_URL") or "").strip(),
+                "confidence": self._safe_float(os.environ.get("POLICY_LIVING_COSTS_CONFIDENCE"), 0.85),
+                "validator": self._validate_living_costs_payload,
+            },
+            {
+                "policy_key": "scholarships",
+                "url": (os.environ.get("POLICY_SCHOLARSHIPS_URL") or "").strip(),
+                "confidence": self._safe_float(os.environ.get("POLICY_SCHOLARSHIPS_CONFIDENCE"), 0.85),
+                "validator": self._validate_scholarships_payload,
+            },
+            {
+                "policy_key": "eligibility_thresholds",
+                "url": (os.environ.get("POLICY_ELIGIBILITY_THRESHOLDS_URL") or "").strip(),
+                "confidence": self._safe_float(os.environ.get("POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE"), 0.90),
+                "validator": self._validate_eligibility_thresholds_payload,
+            },
+        ]
+
+        entries = []
+        published = 0
+        failed = 0
+        for spec in policy_specs:
+            entry = {
+                "run_id": run_id,
+                "trigger": trigger,
+                "run_at": run_at,
+                "policy_key": spec["policy_key"],
+                "source": spec["url"] or "",
+                "confidence": spec["confidence"],
+                "status": "skipped",
+                "record_count": 0,
+                "snapshot_file": None,
+                "error": None,
+            }
+            try:
+                if not spec["url"]:
+                    entry["status"] = "skipped_no_url"
+                    entries.append(entry)
+                    continue
+
+                raw_payload = self._fetch_json_from_url(spec["url"])
+                normalized_payload, record_count = spec["validator"](raw_payload)
+
+                snapshot_path = self.policy_dir / f"{spec['policy_key']}.payload.json"
+                with open(snapshot_path, "w", encoding="utf-8") as handle:
+                    json.dump(normalized_payload, handle, indent=2, ensure_ascii=False)
+
+                entry["status"] = "published"
+                entry["record_count"] = record_count
+                entry["snapshot_file"] = str(snapshot_path)
+                published += 1
+            except Exception as exc:
+                entry["status"] = "failed"
+                entry["error"] = str(exc)
+                failed += 1
+            entries.append(entry)
+
+        self._append_policy_publish_log(entries)
+        self._trigger_api_policy_ingestion(entries)
+
+        return {
+            "run_id": run_id,
+            "trigger": trigger,
+            "published": published,
+            "failed": failed,
+            "entries": entries,
+        }
+
+    def get_policy_publish_statistics(self) -> Dict:
+        logs = self._load_policy_publish_log()
+        if not logs:
+            return {
+                "total_runs": 0,
+                "last_run_id": None,
+                "last_trigger": None,
+                "last_status": "none",
+            }
+
+        run_ids = []
+        seen = set()
+        for item in logs:
+            rid = item.get("run_id")
+            if rid and rid not in seen:
+                seen.add(rid)
+                run_ids.append(rid)
+
+        last = logs[-1]
+        return {
+            "total_runs": len(run_ids),
+            "last_run_id": last.get("run_id"),
+            "last_trigger": last.get("trigger"),
+            "last_status": last.get("status"),
+        }
+
+    def _fetch_json_from_url(self, url: str) -> Dict:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "UniAssist-PolicyPublisher/1.0"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Policy source must return JSON object: {url}")
+        return payload
+
+    def _validate_visa_risk_payload(self, payload: Dict) -> tuple[Dict, int]:
+        clean = {}
+        for destination, table in payload.items():
+            if not isinstance(table, dict):
+                continue
+            mapped = {}
+            for nationality, risk in table.items():
+                level = str(risk).strip().lower()
+                if level in {"low", "medium", "high"}:
+                    mapped[str(nationality).strip()] = level
+            if mapped:
+                clean[str(destination).strip()] = mapped
+        if not clean:
+            raise RuntimeError("Visa risk payload contains no valid rows")
+        return clean, sum(len(v) for v in clean.values())
+
+    def _validate_living_costs_payload(self, payload: Dict) -> tuple[Dict, int]:
+        clean = {}
+        for country, row in payload.items():
+            if not isinstance(row, dict):
+                continue
+            try:
+                amount = float(row.get("amount"))
+            except Exception:
+                continue
+            currency = str(row.get("currency") or "").strip().upper()
+            if amount <= 0 or not currency:
+                continue
+            clean[str(country).strip()] = {"amount": amount, "currency": currency}
+        if not clean:
+            raise RuntimeError("Living costs payload contains no valid rows")
+        return clean, len(clean)
+
+    def _validate_scholarships_payload(self, payload: Dict) -> tuple[Dict, int]:
+        clean = {}
+        count = 0
+        for country, rows in payload.items():
+            if not isinstance(rows, list):
+                continue
+            normalized_rows = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                item = {
+                    "name": str(row.get("name") or "").strip(),
+                    "type": str(row.get("type") or "").strip(),
+                    "coverage": str(row.get("coverage") or "").strip(),
+                    "eligibility": str(row.get("eligibility") or "").strip(),
+                    "deadline": str(row.get("deadline") or "").strip(),
+                    "website": str(row.get("website") or "").strip(),
+                }
+                if not item["name"]:
+                    continue
+                normalized_rows.append(item)
+            if normalized_rows:
+                clean[str(country).strip()] = normalized_rows
+                count += len(normalized_rows)
+        if not clean:
+            raise RuntimeError("Scholarships payload contains no valid rows")
+        return clean, count
+
+    def _validate_eligibility_thresholds_payload(self, payload: Dict) -> tuple[Dict, int]:
+        out = {
+            "program_min_gpa": {},
+            "english_requirements": {},
+            "default_english_requirement": {},
+        }
+
+        pmg = payload.get("program_min_gpa")
+        if isinstance(pmg, dict):
+            for program, value in pmg.items():
+                try:
+                    out["program_min_gpa"][str(program).strip()] = float(value)
+                except Exception:
+                    continue
+
+        er = payload.get("english_requirements")
+        if isinstance(er, dict):
+            for country, row in er.items():
+                if not isinstance(row, dict):
+                    continue
+                normalized = {}
+                for key in ("ielts", "toefl", "pte"):
+                    try:
+                        normalized[key] = float(row.get(key))
+                    except Exception:
+                        continue
+                if normalized:
+                    out["english_requirements"][str(country).strip()] = normalized
+
+        default_row = payload.get("default_english_requirement")
+        if isinstance(default_row, dict):
+            for key in ("ielts", "toefl", "pte"):
+                try:
+                    out["default_english_requirement"][key] = float(default_row.get(key))
+                except Exception:
+                    continue
+
+        total_rows = len(out["program_min_gpa"]) + len(out["english_requirements"])
+        if total_rows == 0 and not out["default_english_requirement"]:
+            raise RuntimeError("Eligibility thresholds payload contains no valid rows")
+        return out, total_rows
+
+    def _load_policy_publish_log(self) -> List[Dict]:
+        if not self.policy_log_path.exists():
+            return []
+        try:
+            with open(self.policy_log_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            return payload if isinstance(payload, list) else []
+        except Exception:
+            return []
+
+    def _append_policy_publish_log(self, entries: List[Dict]) -> None:
+        history = self._load_policy_publish_log()
+        history.extend(entries)
+        history = history[-1000:]
+        with open(self.policy_log_path, "w", encoding="utf-8") as handle:
+            json.dump(history, handle, indent=2, ensure_ascii=False)
+
+    def _trigger_api_policy_ingestion(self, entries: List[Dict]) -> None:
+        ingest_url = (os.environ.get("POLICY_PUBLISH_API_INGEST_URL") or "").strip()
+        ingest_token = (os.environ.get("POLICY_PUBLISH_ADMIN_TOKEN") or "").strip()
+        if not ingest_url or not ingest_token:
+            return
+
+        published_count = sum(1 for e in entries if e.get("status") == "published")
+        if published_count == 0:
+            return
+
+        try:
+            request = urllib.request.Request(
+                ingest_url,
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {ingest_token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "UniAssist-PolicyPublisher/1.0",
+                },
+                data=b"{}",
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+                response.read()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _safe_float(value: Optional[str], default: float) -> float:
+        try:
+            if value is None:
+                return default
+            return float(str(value).strip())
+        except Exception:
+            return default

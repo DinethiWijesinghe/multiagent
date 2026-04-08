@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from multiagent.core.agents.chatbot_agent import ChatbotAgent
 
@@ -121,6 +122,43 @@ class ChatbotFactorOrchestrationTests(unittest.TestCase):
         recommendation_payload = agent_results["recommendation"]
         self.assertIsInstance(recommendation_payload.get("eligibility_report"), dict)
         self.assertIsInstance(recommendation_payload.get("financial_report"), dict)
+
+    def test_generates_deadline_checkpoint_plan(self):
+        upcoming_deadline = (datetime.now(timezone.utc) + timedelta(days=40)).date().isoformat()
+        context = {
+            **self.context,
+            "universities": [
+                {
+                    "id": "u1",
+                    "name": "Uni One",
+                    "country": "UK",
+                    "application_deadline": upcoming_deadline,
+                }
+            ],
+        }
+
+        result = self.chatbot.process_message(
+            "I need a timeline for deadlines",
+            context,
+        )
+
+        deadline_plan = result.get("agent_data", {}).get("deadline_plan", {})
+        self.assertTrue(deadline_plan.get("items"))
+        first_item = deadline_plan["items"][0]
+        self.assertEqual(first_item.get("deadline"), upcoming_deadline)
+        self.assertIn("checkpoints", first_item)
+        self.assertTrue(any("reminder" in action.lower() for action in result.get("actions", [])))
+
+    def test_emotional_support_plan_detects_high_distress(self):
+        result = self.chatbot.process_message(
+            "I am overwhelmed, anxious, and panicking about everything",
+            self.context,
+        )
+
+        support = result.get("agent_data", {}).get("emotional_support", {})
+        self.assertEqual(support.get("level"), "high")
+        self.assertGreaterEqual(support.get("score", 0), 5)
+        self.assertTrue(support.get("next_steps"))
 
 
 if __name__ == "__main__":

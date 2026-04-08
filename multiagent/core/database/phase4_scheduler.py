@@ -340,6 +340,11 @@ class UpdateScheduler:
                 total_verified += verified
                 details.append(f"{country}: {verified}/{len(unis)}")
             self.manager.db_manager.save_database()
+            if hasattr(self.manager, "publish_policy_snapshots"):
+                publish = self.manager.publish_policy_snapshots(trigger="phase4_weekly")
+                details.append(
+                    f"Policy publish: {publish.get('published', 0)} published / {publish.get('failed', 0)} failed"
+                )
             for country in ["UK","Singapore","Australia"]:
                 meta = self.manager.api_integrator.fetch_country_metadata(country)
                 if meta: details.append(f"{country} meta OK")

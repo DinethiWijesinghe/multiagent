@@ -668,6 +668,25 @@ async function loginUser({email,password}){
   return payload;
 }
 
+async function logoutUser(token){
+  if(!token) return;
+  const response = await fetchApi("/auth/logout", {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+  if(!response.ok){
+    const payload = await response.json().catch(()=>({}));
+    throw new Error(payload?.detail || `Logout failed (${response.status})`);
+  }
+}
+
+async function fetchAuthConfig(){
+  const response = await fetchApi("/auth/config");
+  const payload = await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(payload?.detail || `Config load failed (${response.status})`);
+  return payload;
+}
+
 async function fetchBackendChatReply(message, token, messages, timeoutMs = 12000){
   // Send last 20 turns as conversation_history so Gemini can maintain context
   const conversation_history = (messages || [])
@@ -2193,6 +2212,21 @@ function AuthPage({onLogin}){
   const [err,setErr]=useState("");
   const [ok,setOk]=useState("");
   const [loading,setLoading]=useState(false);
+  const [allowPrivilegedSelfRegistration, setAllowPrivilegedSelfRegistration] = useState(false);
+
+  useEffect(()=>{
+    let cancelled = false;
+    fetchAuthConfig()
+      .then((cfg)=>{
+        if(cancelled) return;
+        setAllowPrivilegedSelfRegistration(Boolean(cfg?.allow_privileged_self_registration));
+      })
+      .catch(()=>{
+        if(cancelled) return;
+        setAllowPrivilegedSelfRegistration(false);
+      });
+    return ()=>{cancelled = true;};
+  },[]);
 
   const login=async()=>{
     const normalizedEmail = (email || "").trim();
@@ -2285,14 +2319,20 @@ function AuthPage({onLogin}){
               <label className="flabel">Password</label>
               <input type="password" value={pw} onChange={e=>setPw(e.target.value)} />
             </div>
-            <div className="field" style={{marginBottom:"1.5rem"}}>
-              <label className="flabel">Role</label>
-              <select value={role} onChange={e=>setRole(e.target.value)}>
-                <option value="student">Student</option>
-                <option value="advisor">Advisor</option>
-                <option value="admin">Admin</option>
-              </select>
-            </div>
+            {allowPrivilegedSelfRegistration ? (
+              <div className="field" style={{marginBottom:"1.5rem"}}>
+                <label className="flabel">Role</label>
+                <select value={role} onChange={e=>setRole(e.target.value)}>
+                  <option value="student">Student</option>
+                  <option value="advisor">Advisor</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+            ) : (
+              <div style={{marginBottom:"1.5rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
+                New registrations are created as <strong>student</strong>. Admins can later promote accounts to advisor or admin.
+              </div>
+            )}
             {err&&<Alert type="error">{err}</Alert>}
             {ok&&<Alert type="ok">{ok}</Alert>}
             <button className="btn btn-primary btn-full" onClick={register} style={{marginTop:"1rem"}} disabled={loading}>
@@ -2340,7 +2380,16 @@ export default function App(){
     setDocData(normalized);setElig(eligResult);setStep(3);
   };
   const reset=()=>{setStep(1);setProfile({});setDocData({});setElig(null);};
-  const logout=()=>{setUser(null);setStateReady(false);reset();};
+  const logout=async()=>{
+    try{
+      await logoutUser(user?.token);
+    }catch{
+      // Best-effort logout: clear local session even if server revoke fails.
+    }
+    setUser(null);
+    setStateReady(false);
+    reset();
+  };
 
   useEffect(()=>{
     let cancelled = false;

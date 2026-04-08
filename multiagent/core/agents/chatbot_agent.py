@@ -24,10 +24,12 @@ Intended to be integrated into the UI (app.jsx) or API for real-time chat.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     from ..rag_system import RAGSystem
@@ -40,136 +42,7 @@ logger = logging.getLogger(__name__)
 
 class ChatbotAgent:
     """Conversational agent that guides users through study abroad decisions."""
-
-    EXTERNAL_FACTOR_CONFIG = {
-        "financial_constraints": {
-            "label": "Financial Constraints",
-            "keywords": [
-                "budget", "cost", "tuition", "fee", "semester fee", "scholarship", "loan", "afford", "living cost",
-                "exchange rate", "family income", "bank statement", "fund proof", "financial statement", "part-time work",
-            ],
-            "actions": [
-                "Set your annual budget in profile", "Review tuition and living costs", "Check scholarships and fee waivers",
-                "Shortlist budget-feasible universities",
-            ],
-        },
-        "reliable_information": {
-            "label": "Access to Reliable Information",
-            "keywords": [
-                "information", "advice", "trust", "reliable", "compare", "transparent", "explain", "why",
-                "official source", "verified", "consultant", "agent", "authentic",
-            ],
-            "actions": [
-                "Review grounded recommendations", "Check official university links", "Compare evidence before deciding",
-            ],
-        },
-        "educational_background": {
-            "label": "Educational Background Differences",
-            "keywords": [
-                "qualification", "gpa", "grades", "a/l", "ol", "diploma", "hnd", "bachelor", "master", "transcript",
-                "pathway", "foundation", "credit transfer", "recognition",
-            ],
-            "actions": [
-                "Upload transcripts and certificates", "Run eligibility check", "Check program fit and pathway options",
-            ],
-        },
-        "language_proficiency": {
-            "label": "Language Proficiency Challenges",
-            "keywords": [
-                "ielts", "toefl", "pte", "english", "language", "score", "overall band", "writing score", "speaking score",
-                "retake", "english requirement",
-            ],
-            "actions": [
-                "Check language-score requirements", "Compare your score with program thresholds", "Plan retake if needed",
-            ],
-        },
-        "geographic_socioeconomic": {
-            "label": "Geographic and Socio-Economic Factors",
-            "keywords": [
-                "remote", "rural", "travel", "distance", "mobile", "access", "online guidance", "internet", "data package",
-                "device", "transport",
-            ],
-            "actions": [
-                "Use remote document upload", "Prioritize low-travel application steps", "Keep all progress saved in your account",
-            ],
-        },
-        "psychological_emotional": {
-            "label": "Psychological and Emotional Factors",
-            "keywords": [
-                "stress", "worried", "fear", "confused", "pressure", "anxious", "reassure", "panic", "overwhelmed",
-                "family pressure", "fear of rejection",
-            ],
-            "actions": [
-                "Break the process into small steps", "Focus on one next action", "Start with realistic options first",
-            ],
-        },
-        "visa_immigration": {
-            "label": "Visa and Immigration Uncertainty",
-            "keywords": [
-                "visa", "permit", "embassy", "immigration", "entry", "travel document", "visa rejection", "visa refusal",
-                "sop", "gte", "cas", "offer letter", "fund proof",
-            ],
-            "actions": [
-                "Review visa requirements early", "Prepare visa document checklist", "Prioritize lower-risk destinations",
-            ],
-        },
-        "time_deadlines": {
-            "label": "Time Constraints and Deadlines",
-            "keywords": [
-                "deadline", "timeline", "urgent", "when", "date", "schedule", "submission", "intake", "jan intake",
-                "may intake", "sep intake", "late application", "this month",
-            ],
-            "actions": [
-                "Prioritize earliest deadlines", "Sequence applications by intake", "Prepare required documents first",
-            ],
-        },
-        "trust_transparency": {
-            "label": "Trust and Transparency Issues",
-            "keywords": [
-                "why", "reason", "trust", "bias", "transparent", "explain recommendation", "proof", "evidence",
-                "fair", "agent scam", "consultant bias",
-            ],
-            "actions": [
-                "Review ranking reasons", "Check eligibility and cost evidence", "Compare recommendation with backups",
-            ],
-        },
-        "global_external": {
-            "label": "Global External Factors",
-            "keywords": [
-                "pandemic", "restriction", "politics", "political", "instability", "hybrid", "online", "global risk",
-                "war", "currency crisis", "policy change", "travel ban",
-            ],
-            "actions": [
-                "Check country-risk updates", "Consider hybrid or online fallback options", "Keep backup destinations ready",
-            ],
-        },
-    }
-
-    # Keyword mappings for intent detection
-    INTENT_KEYWORDS = {
-        "eligibility": ["eligible", "qualification", "requirements", "gpa", "ielts", "toefl", "a/l", "diploma", "bachelor", "master"],
-        "financial": ["cost", "fee", "tuition", "budget", "scholarship", "loan", "money", "afford", "expense", "living cost"],
-        "recommendation": ["recommend", "suggest", "which university", "best for me", "options", "rank", "deadline"],
-        "document": ["upload", "document", "ocr", "scan", "transcript", "certificate"],
-        "visa": ["visa", "immigration", "permit", "travel", "entry"],
-        "general": ["help", "how to", "what is", "guide", "start", "begin"],
-        "emotional": ["worried", "stress", "fear", "confused", "pressure", "reassure"],
-    }
-
-    # Canned responses for general/emotional support
-    GENERAL_RESPONSES = {
-        "greeting": "Hello! I'm here to help you navigate your study abroad journey. What would you like to know about eligibility, costs, or university recommendations?",
-        "eligibility_help": "To check eligibility, please upload your academic documents (A/L results, degrees, IELTS/TOEFL scores) and fill in your profile. I'll analyze them against university requirements.",
-        "financial_help": "For financial planning, tell me your budget and preferred country. I'll calculate costs, suggest scholarships, and find affordable options.",
-        "recommendation_help": "I can recommend universities based on your eligibility and budget. Share your profile and preferences, and I'll provide personalized suggestions.",
-        "document_help": "Upload your documents in the Documents section. I can process transcripts, certificates, and test scores automatically.",
-        "visa_help": "Visa processes vary by country. I can explain requirements and timelines once you select a university.",
-        "stress_relief": "I understand applying abroad can be stressful. Take it one step at a time — start with eligibility checks, then finances. You're not alone in this!",
-        "deadline_reminder": "Don't forget application deadlines! I can prioritize universities by earliest deadlines to help you stay on track.",
-        "trust": "All my recommendations are based on verified university data and your personal details. No hidden agendas — just transparent guidance.",
-        "global_advice": "For global uncertainties like pandemics or politics, I suggest flexible options like online programs or countries with stable policies.",
-        "fallback": "I'm not sure about that specific question. Could you rephrase or ask about eligibility, costs, or recommendations?",
-    }
+    DEFAULT_CONFIG_RELATIVE_PATH = os.path.join("data", "config", "chatbot_agent_config.json")
 
     def __init__(self, eligibility_agent=None, financial_agent=None, recommendation_agent=None, document_agent=None, rag_system=None):
         self.eligibility_agent = eligibility_agent
@@ -177,6 +50,41 @@ class ChatbotAgent:
         self.recommendation_agent = recommendation_agent
         self.document_agent = document_agent
         self.rag_system = rag_system
+        self.external_factor_config: Dict[str, Dict[str, Any]] = {}
+        self.intent_keywords: Dict[str, List[str]] = {}
+        self.general_responses: Dict[str, str] = {}
+        self.default_factors_by_intent: Dict[str, List[str]] = {}
+        self.distress_signal_weights: Dict[str, int] = {}
+        self._load_runtime_config()
+
+    def _load_runtime_config(self) -> None:
+        """Load chatbot behavior settings from JSON config."""
+        module_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        default_path = os.path.join(module_root, self.DEFAULT_CONFIG_RELATIVE_PATH)
+        config_path = os.environ.get("CHATBOT_AGENT_CONFIG_PATH", default_path)
+
+        with open(config_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+
+        if not isinstance(payload, dict):
+            raise RuntimeError("Chatbot agent config must be a JSON object.")
+
+        required_sections = [
+            "external_factor_config",
+            "intent_keywords",
+            "general_responses",
+            "default_factors_by_intent",
+            "distress_signal_weights",
+        ]
+        for key in required_sections:
+            if key not in payload:
+                raise RuntimeError(f"Missing required chatbot config section: {key}")
+
+        self.external_factor_config = payload["external_factor_config"]
+        self.intent_keywords = payload["intent_keywords"]
+        self.general_responses = payload["general_responses"]
+        self.default_factors_by_intent = payload["default_factors_by_intent"]
+        self.distress_signal_weights = payload["distress_signal_weights"]
 
     def set_rag_system(self, rag_system) -> None:
         """Attach or replace a RAG system at runtime."""
@@ -223,19 +131,19 @@ class ChatbotAgent:
                     agent_data["agent_results"]["financial"] = agent_result["financial_report"]
             actions = ["Review recommended universities", "Apply to top choices", "Prepare documents"]
         elif intent == "document":
-            response = self.GENERAL_RESPONSES["document_help"]
+            response = self.general_responses.get("document_help", "Please upload your documents for processing.")
             actions = ["Upload documents", "Verify OCR results"]
         elif intent == "visa":
-            response = self.GENERAL_RESPONSES["visa_help"]
+            response = self.general_responses.get("visa_help", "I can explain visa requirements once your target country is selected.")
             actions = ["Research visa requirements", "Contact embassy"]
         elif intent == "emotional":
-            response = self.GENERAL_RESPONSES["stress_relief"]
+            response = self.general_responses.get("stress_relief", "Take it one step at a time. We can do this together.")
             actions = ["Take a break", "Focus on one step", "Seek support"]
         elif intent == "general":
-            response = self.GENERAL_RESPONSES["greeting"]
+            response = self.general_responses.get("greeting", "I'm here to help with your study abroad plan.")
             actions = ["Start with eligibility check", "Explore options"]
         else:
-            response = self.GENERAL_RESPONSES["fallback"]
+            response = self.general_responses.get("fallback", "Could you rephrase your question?")
             actions = ["Rephrase question", "Ask about specific topics"]
 
         external_factors = self._identify_external_factors(
@@ -245,7 +153,38 @@ class ChatbotAgent:
             agent_results=agent_data["agent_results"],
         )
         agent_data["external_factors"] = external_factors
+
+        deadline_plan = self._build_deadline_plan(
+            message=user_message,
+            intent=intent,
+            context=context,
+            agent_results=agent_data["agent_results"],
+        )
+        if deadline_plan.get("items"):
+            agent_data["deadline_plan"] = deadline_plan
+
+        emotional_support = self._build_emotional_support_plan(
+            message=user_message,
+            intent=intent,
+            context=context,
+            agent_results=agent_data["agent_results"],
+        )
+        if emotional_support.get("level") != "none":
+            agent_data["emotional_support"] = emotional_support
+
         actions = self._merge_actions(actions, self._actions_for_external_factors(external_factors))
+
+        if deadline_plan.get("items"):
+            actions = self._merge_actions(
+                actions,
+                [
+                    "Review your generated deadline plan",
+                    "Set calendar reminders for checkpoint dates",
+                ],
+            )
+
+        if emotional_support.get("next_steps"):
+            actions = self._merge_actions(actions, emotional_support.get("next_steps", []))
 
         # Use RAG for every intent when available, enriched with specialised analysis and factor context.
         if self._should_use_rag(intent=intent, response=response):
@@ -266,7 +205,7 @@ class ChatbotAgent:
                     actions.append("Review cited information")
 
         # Add empathetic wrapper
-        response = self._add_empathy(response, intent)
+        response = self._add_empathy(response, intent, emotional_support)
 
         return {
             "response": response,
@@ -278,7 +217,7 @@ class ChatbotAgent:
 
     def _detect_intent(self, message: str) -> str:
         """Simple keyword-based intent detection."""
-        for intent, keywords in self.INTENT_KEYWORDS.items():
+        for intent, keywords in self.intent_keywords.items():
             if any(re.search(r'\b' + re.escape(kw) + r'\b', message) for kw in keywords):
                 return intent
         return "general"
@@ -303,7 +242,7 @@ class ChatbotAgent:
                 logger.exception("Eligibility agent error")
                 response = f"Eligibility check failed: {e}. Please ensure your profile and documents are complete."
         else:
-            response = self.GENERAL_RESPONSES["eligibility_help"]
+            response = self.general_responses.get("eligibility_help", "Upload your academic details so I can check eligibility.")
         return response, agent_calls, agent_result
 
     def _handle_financial(self, context: Dict) -> tuple[str, List[str], Dict[str, Any]]:
@@ -324,7 +263,7 @@ class ChatbotAgent:
                 logger.exception("Financial agent error")
                 response = f"Financial assessment failed: {e}. Please provide your budget details."
         else:
-            response = self.GENERAL_RESPONSES["financial_help"]
+            response = self.general_responses.get("financial_help", "Share your budget and preferred country to begin financial checks.")
         return response, agent_calls, agent_result
 
     def _handle_recommendation(self, context: Dict) -> tuple[str, List[str], Dict[str, Any]]:
@@ -385,6 +324,16 @@ class ChatbotAgent:
                 if "RecommendationAgent" not in agent_calls:
                     agent_calls.append("RecommendationAgent")
                 report_dict = report.to_dict() if hasattr(report, "to_dict") else dict(report)
+                policy_meta = (report_dict.get("policy_metadata") or {}).get("visa_risk") or {}
+                policy_source = policy_meta.get("source")
+                policy_updated = policy_meta.get("updated_at")
+                if policy_source:
+                    trust_line = f" Visa risk policy source: {policy_source}"
+                    if policy_updated:
+                        trust_line += f" (updated: {policy_updated})."
+                    else:
+                        trust_line += "."
+                    response += trust_line
                 agent_result = {
                     **report_dict,
                     "eligibility_report": eligibility_report,
@@ -394,7 +343,7 @@ class ChatbotAgent:
                 logger.exception("Recommendation agent error")
                 response = f"Recommendation failed: {e}. Please complete eligibility and financial checks first."
         else:
-            response = self.GENERAL_RESPONSES["recommendation_help"]
+            response = self.general_responses.get("recommendation_help", "Share your profile to get personalized recommendations.")
         return response, agent_calls, agent_result
 
     def _merge_actions(self, base_actions: List[str], factor_actions: List[str]) -> List[str]:
@@ -417,20 +366,11 @@ class ChatbotAgent:
         message_lower = (message or "").lower()
         matched: List[str] = []
 
-        for factor_id, config in self.EXTERNAL_FACTOR_CONFIG.items():
+        for factor_id, config in self.external_factor_config.items():
             if any(keyword in message_lower for keyword in config["keywords"]):
                 matched.append(factor_id)
 
-        default_factors_by_intent = {
-            "eligibility": ["educational_background", "language_proficiency"],
-            "financial": ["financial_constraints"],
-            "recommendation": ["reliable_information", "time_deadlines", "trust_transparency"],
-            "document": ["educational_background", "geographic_socioeconomic"],
-            "visa": ["visa_immigration", "global_external"],
-            "emotional": ["psychological_emotional"],
-            "general": ["reliable_information"],
-        }
-        matched.extend(default_factors_by_intent.get(intent, []))
+        matched.extend(self.default_factors_by_intent.get(intent, []))
 
         profile_data = context.get("profile_data") or {}
         if (profile_data.get("financial") or {}).get("total_budget"):
@@ -452,25 +392,35 @@ class ChatbotAgent:
         ordered: List[Dict[str, str]] = []
         seen = set()
         for factor_id in matched:
-            if factor_id in seen or factor_id not in self.EXTERNAL_FACTOR_CONFIG:
+            if factor_id in seen or factor_id not in self.external_factor_config:
                 continue
             seen.add(factor_id)
             ordered.append({
                 "id": factor_id,
-                "label": self.EXTERNAL_FACTOR_CONFIG[factor_id]["label"],
+                "label": self.external_factor_config[factor_id]["label"],
             })
         return ordered
 
     def _actions_for_external_factors(self, external_factors: List[Dict[str, str]]) -> List[str]:
         actions: List[str] = []
         for factor in external_factors or []:
-            config = self.EXTERNAL_FACTOR_CONFIG.get(factor.get("id") or "")
+            config = self.external_factor_config.get(factor.get("id") or "")
             if config:
                 actions.extend(config.get("actions", []))
         return actions
 
-    def _add_empathy(self, response: str, intent: str) -> str:
+    def _add_empathy(self, response: str, intent: str, emotional_support: Optional[Dict[str, Any]] = None) -> str:
         """Add empathetic language based on intent."""
+        level = (emotional_support or {}).get("level")
+        if level == "high":
+            return (
+                "I can see this feels heavy right now, and we can handle it one step at a time. "
+                + response
+                + " Start with the smallest next step in your action list."
+            )
+        if level == "moderate":
+            return "This is manageable with a clear plan. " + response
+
         if intent in ["emotional", "general"]:
             return f"I'm here to help! {response}"
         elif intent == "eligibility":
@@ -479,6 +429,179 @@ class ChatbotAgent:
             return f"Finances can be tricky, but we can find solutions. {response}"
         else:
             return response
+
+    def _build_deadline_plan(
+        self,
+        message: str,
+        intent: str,
+        context: Dict[str, Any],
+        agent_results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build a concrete checkpoint plan from available university deadlines."""
+        message_l = (message or "").lower()
+        recommendation_data = agent_results.get("recommendation") or {}
+        candidates = []
+
+        for entry in (recommendation_data.get("recommended") or []) + (recommendation_data.get("backup_options") or []):
+            if isinstance(entry, dict):
+                candidates.append(entry)
+
+        if not candidates:
+            for uni in context.get("universities") or []:
+                if isinstance(uni, dict):
+                    candidates.append(
+                        {
+                            "university_name": uni.get("name") or uni.get("university_name") or "Unknown University",
+                            "deadline": uni.get("application_deadline") or uni.get("deadline"),
+                        }
+                    )
+
+        plan_items = []
+        now = datetime.now(timezone.utc)
+        for item in candidates:
+            deadline_raw = item.get("deadline")
+            deadline_dt = self._parse_deadline(deadline_raw)
+            if not deadline_dt:
+                continue
+
+            days_left = (deadline_dt - now).days
+            if days_left < 0:
+                continue
+
+            checkpoints = []
+            for offset in (30, 14, 7, 2):
+                checkpoint = deadline_dt - timedelta(days=offset)
+                if checkpoint > now:
+                    checkpoints.append(checkpoint.date().isoformat())
+
+            urgency = "normal"
+            if days_left <= 14:
+                urgency = "high"
+            elif days_left <= 30:
+                urgency = "medium"
+
+            plan_items.append(
+                {
+                    "university": item.get("university_name") or item.get("name") or "Unknown University",
+                    "deadline": deadline_dt.date().isoformat(),
+                    "days_left": days_left,
+                    "urgency": urgency,
+                    "checkpoints": checkpoints,
+                }
+            )
+
+        plan_items.sort(key=lambda p: p["days_left"])
+
+        if not plan_items:
+            should_force = intent == "recommendation" or any(k in message_l for k in ["deadline", "timeline", "intake", "urgent"])
+            if should_force:
+                return {
+                    "items": [],
+                    "note": "No dated deadlines found in current data. Add university deadline dates to generate reminders.",
+                }
+            return {"items": []}
+
+        return {
+            "items": plan_items[:5],
+            "note": "Use checkpoint dates as reminder triggers in calendar/email systems.",
+        }
+
+    def _build_emotional_support_plan(
+        self,
+        message: str,
+        intent: str,
+        context: Dict[str, Any],
+        agent_results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Estimate support intensity and return practical emotional next steps."""
+        msg = (message or "").lower()
+        score = 0
+
+        for keyword, weight in self.distress_signal_weights.items():
+            if keyword in msg:
+                score += weight
+
+        profile_data = context.get("profile_data") or {}
+        if not profile_data:
+            score += 1
+        if not context.get("document_data"):
+            score += 1
+
+        eligibility_result = agent_results.get("eligibility") or {}
+        financial_result = agent_results.get("financial") or {}
+
+        if isinstance(eligibility_result.get("ineligible_universities"), list) and not eligibility_result.get("eligible_universities"):
+            score += 2
+        if isinstance(financial_result.get("feasible_universities"), list) and len(financial_result.get("feasible_universities", [])) == 0:
+            score += 2
+
+        if intent == "emotional":
+            score += 2
+
+        if score >= 5:
+            level = "high"
+            next_steps = [
+                "Choose one immediate task only (profile, document, or shortlist)",
+                "Set a 20-minute focused session and pause",
+                "Share your plan with a trusted advisor or family member",
+            ]
+            check_in_hours = 24
+        elif score >= 3:
+            level = "moderate"
+            next_steps = [
+                "Split tasks into eligibility, finances, and deadlines",
+                "Complete the easiest task first for momentum",
+                "Review progress at end of day",
+            ]
+            check_in_hours = 48
+        elif score >= 1:
+            level = "low"
+            next_steps = [
+                "Keep a simple checklist for next actions",
+                "Confirm one completed step before starting another",
+            ]
+            check_in_hours = 72
+        else:
+            level = "none"
+            next_steps = []
+            check_in_hours = None
+
+        return {
+            "level": level,
+            "score": score,
+            "next_steps": next_steps,
+            "check_in_hours": check_in_hours,
+        }
+
+    def _parse_deadline(self, value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+
+        for fmt in (
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%d-%m-%Y",
+            "%d/%m/%Y",
+            "%b %d, %Y",
+            "%B %d, %Y",
+        ):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                return parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+        match = re.search(r"(\d{4})-(\d{2})-(\d{2})", raw)
+        if match:
+            try:
+                parsed = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                return parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return None
+        return None
 
     def _should_use_rag(self, intent: str, response: str) -> bool:
         """Decide whether to use RAG grounding for this turn."""
