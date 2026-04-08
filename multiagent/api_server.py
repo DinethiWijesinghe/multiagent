@@ -1256,6 +1256,9 @@ PASSWORD_REQUIRE_COMPLEXITY = _env_true("PASSWORD_REQUIRE_COMPLEXITY", False)
 BOOTSTRAP_ADMIN_EMAIL = (os.environ.get("BOOTSTRAP_ADMIN_EMAIL") or "").strip().lower()
 BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD") or ""
 BOOTSTRAP_ADMIN_NAME = (os.environ.get("BOOTSTRAP_ADMIN_NAME") or "System Admin").strip() or "System Admin"
+BOOTSTRAP_ADVISOR_EMAIL = (os.environ.get("BOOTSTRAP_ADVISOR_EMAIL") or "").strip().lower()
+BOOTSTRAP_ADVISOR_PASSWORD = os.environ.get("BOOTSTRAP_ADVISOR_PASSWORD") or ""
+BOOTSTRAP_ADVISOR_NAME = (os.environ.get("BOOTSTRAP_ADVISOR_NAME") or "System Advisor").strip() or "System Advisor"
 AUTH_WINDOW_SECONDS = _env_int("AUTH_WINDOW_SECONDS", 300)
 AUTH_MAX_LOGIN_ATTEMPTS = _env_int("AUTH_MAX_LOGIN_ATTEMPTS", 10)
 METRICS_PUBLIC = _env_true("METRICS_PUBLIC", True)
@@ -1425,6 +1428,38 @@ def _require_session_local():
             "Database session is unavailable. Configure DATABASE_URL for PostgreSQL/Neon and restart the server."
         )
     return _SessionLocal
+
+
+def _initialize_database() -> None:
+    global _db_engine, _SessionLocal, _db_backend
+
+    if not DB_STRICT_MODE:
+        raise RuntimeError("DB_STRICT_MODE=false is no longer supported. Database-only persistence is required.")
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL or NEON_DATABASE_URL is required. Local SQLite and JSON fallback have been removed."
+        )
+    if DATABASE_URL.startswith("sqlite://"):
+        raise RuntimeError("SQLite is not supported for the API server. Use PostgreSQL/Neon for persistence.")
+
+    if _SessionLocal is not None and _db_engine is not None:
+        return
+
+    db_url = DATABASE_URL
+    try:
+        _db_engine = create_engine(db_url, pool_pre_ping=True)
+        _db_backend = "postgresql"
+        print("[DB] Connected to PostgreSQL/Neon.")
+
+        Base.metadata.create_all(bind=_db_engine)
+        _ensure_document_upload_schema()
+        _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
+    except Exception as exc:
+        _db_engine = None
+        _SessionLocal = None
+        _db_backend = "unavailable"
+        print(f"[DB] Database init failed: {exc}")
+        raise RuntimeError("Database initialization failed. Set DATABASE_URL to a reachable PostgreSQL/Neon instance.") from exc
 
 
 def _validate_visa_risk_snapshot(payload: Any) -> dict[str, Any]:
@@ -1984,14 +2019,13 @@ def _save_users(users: dict[str, dict[str, Any]]) -> None:
         session.commit()
 
 
-def _bootstrap_admin_user_from_env() -> None:
-    """Create or update one bootstrap admin user from environment variables."""
-    email = _normalize_email(BOOTSTRAP_ADMIN_EMAIL)
-    password = BOOTSTRAP_ADMIN_PASSWORD or ""
-    name = (BOOTSTRAP_ADMIN_NAME or "System Admin").strip() or "System Admin"
+def _upsert_user_account(email_raw: str, password: str, name_raw: str, role: str) -> dict[str, Any] | None:
+    email = _normalize_email(email_raw)
+    name = (name_raw or role.title()).strip() or role.title()
+    normalized_role = _normalize_user_role(role)
 
     if not email or not password:
-        return
+        return None
 
     _validate_password_policy(password)
 
@@ -2002,13 +2036,42 @@ def _bootstrap_admin_user_from_env() -> None:
         "name": name,
         "email": email,
         "password_hash": _hash_password(password),
-        "role": "admin",
+        "role": normalized_role,
         "updated_at": _utc_now(),
     }
     if "created_at" not in users[email]:
         users[email]["created_at"] = _utc_now()
     _save_users(users)
-    print(f"[Auth] Bootstrap admin ensured: {email}")
+    return users[email]
+
+
+def _bootstrap_user_from_env(email_raw: str, password: str, name_raw: str, role: str) -> bool:
+    """Create or update one bootstrap user from environment variables."""
+    return _upsert_user_account(email_raw, password, name_raw, role) is not None
+
+
+def _bootstrap_admin_user_from_env() -> None:
+    """Create or update one bootstrap admin user from environment variables."""
+    created = _bootstrap_user_from_env(
+        BOOTSTRAP_ADMIN_EMAIL,
+        BOOTSTRAP_ADMIN_PASSWORD or "",
+        BOOTSTRAP_ADMIN_NAME,
+        "admin",
+    )
+    if created:
+        print(f"[Auth] Bootstrap admin ensured: {_normalize_email(BOOTSTRAP_ADMIN_EMAIL)}")
+
+
+def _bootstrap_advisor_user_from_env() -> None:
+    """Create or update one bootstrap advisor user from environment variables."""
+    created = _bootstrap_user_from_env(
+        BOOTSTRAP_ADVISOR_EMAIL,
+        BOOTSTRAP_ADVISOR_PASSWORD or "",
+        BOOTSTRAP_ADVISOR_NAME,
+        "advisor",
+    )
+    if created:
+        print(f"[Auth] Bootstrap advisor ensured: {_normalize_email(BOOTSTRAP_ADVISOR_EMAIL)}")
 
 
 def _load_sessions() -> dict[str, dict[str, Any]]:
@@ -2544,34 +2607,12 @@ _ml: Pipeline = None
 
 @app.on_event("startup")
 def startup():
-    global _ml, _OCR_ENGINE, _db_engine, _SessionLocal, _db_backend, _chatbot_agent, _rag_provider, _OCR_READINESS
+    global _ml, _OCR_ENGINE, _chatbot_agent, _rag_provider, _OCR_READINESS
 
-    if not DB_STRICT_MODE:
-        raise RuntimeError("DB_STRICT_MODE=false is no longer supported. Database-only persistence is required.")
-    if not DATABASE_URL:
-        raise RuntimeError(
-            "DATABASE_URL or NEON_DATABASE_URL is required. Local SQLite and JSON fallback have been removed."
-        )
-    if DATABASE_URL.startswith("sqlite://"):
-        raise RuntimeError("SQLite is not supported for the API server. Use PostgreSQL/Neon for persistence.")
-
-    db_url = DATABASE_URL
-    try:
-        _db_engine = create_engine(db_url, pool_pre_ping=True)
-        _db_backend = "postgresql"
-        print("[DB] Connected to PostgreSQL/Neon.")
-
-        Base.metadata.create_all(bind=_db_engine)
-        _ensure_document_upload_schema()
-        _SessionLocal = sessionmaker(bind=_db_engine, autoflush=False, autocommit=False)
-    except Exception as exc:
-        _db_engine = None
-        _SessionLocal = None
-        _db_backend = "unavailable"
-        print(f"[DB] Database init failed: {exc}")
-        raise RuntimeError("Database initialization failed. Set DATABASE_URL to a reachable PostgreSQL/Neon instance.") from exc
+    _initialize_database()
 
     _bootstrap_admin_user_from_env()
+    _bootstrap_advisor_user_from_env()
 
     try:
         migrated_docs = _backfill_document_blobs_from_disk()
