@@ -1202,7 +1202,7 @@ function assessEligibility(profile, docPayload) {
   if(academicDoc){
     if(academicDoc.document_type==="A-Level Results"){
       const GV={A:4,B:3,C:2,S:1,F:0};
-      const subjectMap = academicDoc.subjects && !Array.isArray(academicDoc.subjects) ? academicDoc.subjects : {};
+      const subjectMap = getALevelSubjectMap(academicDoc);
       const vals=Object.values(subjectMap).map(g=>GV[String(g).trim()]??0).filter((v)=>Number.isFinite(v));
       const avg=vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 2.0;
       const gp=+avg.toFixed(2);
@@ -1368,6 +1368,24 @@ function ScoreSections({sections,maxVal=9}){
   return <div className="score-section-grid">{sections.map(([label,val,max])=>{const v=parseFloat(val)||0,mx=max||maxVal,pct=Math.min((v/mx)*100,100);return(<div className="score-section-cell" key={label}><div className="score-section-label">{label}</div><div className="score-section-val">{val||"—"}</div><div className="score-section-bar"><div className="score-section-fill" style={{width:`${pct}%`}} /></div></div>);})}</div>;
 }
 
+function getALevelSubjectMap(doc={}){
+  if(doc.subjects && !Array.isArray(doc.subjects) && typeof doc.subjects === "object"){
+    return doc.subjects;
+  }
+  if(doc.subject_grade_map && typeof doc.subject_grade_map === "object"){
+    return doc.subject_grade_map;
+  }
+  const subjects = Array.isArray(doc.subjects) ? doc.subjects : [];
+  const grades = Array.isArray(doc.grades) ? doc.grades : [];
+  if(!subjects.length)return {};
+  const map = {};
+  subjects.forEach((subject,idx)=>{
+    if(!subject)return;
+    map[String(subject)] = grades[idx] ? String(grades[idx]).toUpperCase() : "";
+  });
+  return map;
+}
+
 // ── EXTRACTED DATA DISPLAY ──────────────────────────────────────────────────
 // CHANGE v6: A-Level Results section NO LONGER shows english_proficiency.
 //            English proficiency must be uploaded as a separate document.
@@ -1381,7 +1399,7 @@ function ExtractedDisplay({data,confidence,ocrEngine}){
     if(dt==="A-Level Results"){
       // ✕ english_proficiency intentionally excluded — it is a separate document
       const SPECIAL=new Set(["general english","common general test","cgt"]);
-      const all=data.subjects||{};
+      const all=getALevelSubjectMap(data);
       const main=Object.entries(all).filter(([s])=>!SPECIAL.has(s.toLowerCase()));
       const spec=Object.entries(all).filter(([s])=>SPECIAL.has(s.toLowerCase()));
       return(

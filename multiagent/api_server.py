@@ -866,6 +866,10 @@ def _normalize_fields(doc_type, fields):
                         subject_grade_map[str(subject)] = str(grade).upper() if grade else ""
 
         normalized["subject_grade_map"] = subject_grade_map
+        # Keep both shapes for compatibility, but prefer subject->grade mapping.
+        normalized["subjects"] = subject_grade_map
+        normalized["subjects_list"] = list(subject_grade_map.keys())
+        normalized["grades"] = list(subject_grade_map.values())
 
     return normalized
 
@@ -1015,15 +1019,41 @@ _ALEVEL_SUBJECT_MAP = [
     ("Chemistry", r"chemistr(?:y|v)"),
     ("Biology", r"biolog(?:y|v)"),
     ("General English", r"general\s+english"),
+    ("General Knowledge", r"general\s+knowledge"),
     ("Political Science", r"political\s+science"),
     ("Logic & Scientific Method", r"logic.*scientific\s+method"),
     ("Common General Test", r"common\s+general\s+test"),
     ("Economics", r"economics"),
     ("Geography", r"geograph(?:y|v)"),
     ("Accounting", r"accounting"),
+    ("Business Studies", r"business\s+studies"),
+    ("History", r"\bhistory\b"),
+    ("Buddhism", r"\bbuddhism\b"),
+    ("Christianity", r"\bchristianity\b"),
+    ("Hinduism", r"\bhinduism\b"),
+    ("Islam", r"\bislam\b"),
     ("ICT", r"\b(?:ict|information\s+and\s+communication\s+technology)\b"),
     ("Sinhala", r"\bsinhala\b"),
 ]
+
+
+def _normalize_alevel_grade_token(token):
+    if token is None:
+        return None
+    cleaned = re.sub(r"[^A-Z0-9]", "", str(token).upper())
+    if not cleaned:
+        return None
+
+    # OCR often confuses B/S as 8/5 in tabular marksheets.
+    if cleaned == "8":
+        return "B"
+    if cleaned == "5":
+        return "S"
+
+    first = cleaned[0]
+    if first in {"A", "B", "C", "S", "F"}:
+        return first
+    return None
 
 
 def _extract_alevel_subjects_grades(text):
@@ -1047,9 +1077,14 @@ def _extract_alevel_subjects_grades(text):
         if not matched_subject:
             continue
 
-        grade_match = re.search(r"(?:grade\s*[:\-]?\s*)?\b([ABCSF])\b", line, re.I)
-        if grade_match:
-            grades.append(grade_match.group(1).upper())
+        grade_match = re.search(
+            r"(?:grade\s*[:\-]?\s*)?\b([ABCSF]|[85])(?:[+\-*])?\b",
+            line,
+            re.I,
+        )
+        grade = _normalize_alevel_grade_token(grade_match.group(1) if grade_match else None)
+        if grade:
+            grades.append(grade)
 
     # Fallback scan for compact OCR text where lines are merged.
     if not subjects:
@@ -1058,7 +1093,8 @@ def _extract_alevel_subjects_grades(text):
                 subjects.append(subject_name)
 
     if not grades:
-        grades = [g.upper() for g in re.findall(r"\b(?:grade\s*[:\-]?\s*)?([ABCSF])\b", text, re.I)]
+        raw_grades = re.findall(r"\b(?:grade\s*[:\-]?\s*)?([ABCSF]|[85])(?:[+\-*])?\b", text, re.I)
+        grades = [g for g in (_normalize_alevel_grade_token(x) for x in raw_grades) if g]
 
     return subjects, grades
 
