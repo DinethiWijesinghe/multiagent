@@ -5,7 +5,13 @@ const SAME_ORIGIN_API_URL = typeof window !== 'undefined'
   : '';
 
 const API_BASES = Array.from(
-  new Set(['', CONFIGURED_API_URL, SAME_ORIGIN_API_URL, DEFAULT_LOCAL_API_URL].filter((v) => v !== undefined && v !== null))
+  new Set(
+    [
+      CONFIGURED_API_URL,
+      DEFAULT_LOCAL_API_URL,
+      SAME_ORIGIN_API_URL,
+    ].filter((v) => v !== undefined && v !== null && v !== '')
+  )
 );
 
 const PER_URL_TIMEOUT_MS = 20000;
@@ -44,7 +50,9 @@ export async function apiFetch(path, tokenOrOptions, maybeOptions) {
 
     try {
       const response = await fetch(target, { ...fetchOptions, headers, signal: perCtrl.signal });
-      if (response.status === 404 && API_BASES.length > 1) {
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      const isHtmlResponse = contentType.includes('text/html');
+      if ((response.status === 404 || isHtmlResponse) && API_BASES.length > 1) {
         lastResponse = response;
         continue;
       }
