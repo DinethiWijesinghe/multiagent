@@ -4,15 +4,16 @@ const SAME_ORIGIN_API_URL = typeof window !== 'undefined'
   ? `${window.location.protocol}//${window.location.host}`.replace(/\/$/, '')
   : '';
 
-const API_BASES = Array.from(
-  new Set(
-    [
-      CONFIGURED_API_URL,
-      DEFAULT_LOCAL_API_URL,
-      SAME_ORIGIN_API_URL,
-    ].filter((v) => v !== undefined && v !== null && v !== '')
-  )
-);
+const API_BASES = CONFIGURED_API_URL
+  ? [CONFIGURED_API_URL]
+  : Array.from(
+      new Set(
+        [
+          DEFAULT_LOCAL_API_URL,
+          SAME_ORIGIN_API_URL,
+        ].filter((v) => v !== undefined && v !== null && v !== '')
+      )
+    );
 
 const PER_URL_TIMEOUT_MS = 20000;
 
