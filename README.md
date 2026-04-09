@@ -310,15 +310,15 @@ Current behavior:
 
 1. UI registration always creates a `student` account.
 2. Login only uses student flow (admin/advisor role login and dashboards were removed).
-3. Registered users are persisted in Neon/PostgreSQL and can log in again after backend/runtime restarts.
+3. Demo seeding creates student account only.
 
-Optional development seed command:
+Recommended development seed command:
 
 ```powershell
 python scripts/dev_seed_users.py
 ```
 
-Optional default seeded account (only when you run the seed script):
+Default seeded account:
 
 - student: `student@example.com` / `Student@123`
 

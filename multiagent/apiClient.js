@@ -17,6 +17,42 @@ const API_BASES = CONFIGURED_API_URL
 
 const PER_URL_TIMEOUT_MS = 20000;
 
+function isMultipartLikeBody(body) {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
+}
+
+function formatApiDetail(detail, fallbackMessage) {
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  if (Array.isArray(detail) && detail.length) {
+    const messages = detail
+      .map((item) => {
+        if (typeof item === 'string' && item.trim()) {
+          return item;
+        }
+        if (item && typeof item === 'object') {
+          const loc = Array.isArray(item.loc) ? item.loc.slice(1).join('.') : '';
+          const msg = typeof item.msg === 'string' ? item.msg : JSON.stringify(item);
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (messages.length) {
+      return messages.join('; ');
+    }
+  }
+  if (detail && typeof detail === 'object') {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallbackMessage;
+    }
+  }
+  return fallbackMessage;
+}
+
 export async function apiFetch(path, tokenOrOptions, maybeOptions) {
   const token = typeof tokenOrOptions === 'string' || tokenOrOptions == null
     ? tokenOrOptions
@@ -31,7 +67,7 @@ export async function apiFetch(path, tokenOrOptions, maybeOptions) {
 
   const headers = { ...(fetchOptions.headers || {}) };
   const hasBody = fetchOptions.body !== undefined && fetchOptions.body !== null;
-  if (hasBody && !headers['Content-Type']) {
+  if (hasBody && !headers['Content-Type'] && !isMultipartLikeBody(fetchOptions.body)) {
     headers['Content-Type'] = 'application/json';
   }
   if (token && !headers.Authorization) {
@@ -94,7 +130,7 @@ export async function apiErrorMessage(response, fallbackMessage) {
   const fallback = fallbackMessage || `Error ${response?.status ?? ''}`.trim();
   try {
     const payload = await response.json();
-    return payload?.detail || payload?.message || fallback;
+    return formatApiDetail(payload?.detail, payload?.message || fallback);
   } catch {
     return fallback;
   }

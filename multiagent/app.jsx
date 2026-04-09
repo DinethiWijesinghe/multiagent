@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { apiFetch as fetchApi } from "./apiClient.js";
+import { apiErrorMessage, apiFetch as fetchApi } from "./apiClient.js";
 
 // ── STYLES ─────────────────────────────────────────────────────────────────
 const STYLES = `
@@ -401,11 +401,16 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 .chat-messages::-webkit-scrollbar{width:3px;}
 .chat-messages::-webkit-scrollbar-thumb{background:var(--surface2);}
 .chat-msg{max-width:86%;display:flex;flex-direction:column;gap:.2rem;}
-.chat-msg.user{align-self:flex-end;align-items:flex-end;}
-.chat-msg.bot{align-self:flex-start;align-items:flex-start;}
-.chat-bubble{padding:.6rem .875rem;border-radius:12px;font-size:.82rem;line-height:1.5;}
+.chat-msg.user{align-self:flex-end;align-items:flex-end;max-width:min(82%,520px);}
+.chat-msg.bot{align-self:flex-start;align-items:flex-start;max-width:min(92%,760px);}
+.chat-bubble{padding:.6rem .875rem;border-radius:12px;font-size:.82rem;line-height:1.5;text-align:left;word-break:break-word;overflow-wrap:anywhere;}
 .chat-msg.bot .chat-bubble{background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:4px 12px 12px 12px;}
 .chat-msg.user .chat-bubble{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-radius:12px 4px 12px 12px;}
+.chat-body{font-family:var(--sans);line-height:1.65;white-space:normal;}
+.chat-paragraph{margin:0 0 .5rem 0;}
+.chat-paragraph:last-child{margin-bottom:0;}
+.chat-list{margin:.2rem 0 .55rem 1.1rem;padding:0;display:flex;flex-direction:column;gap:.2rem;}
+.chat-list-item{line-height:1.55;}
 .chat-time{font-family:var(--mono);font-size:.55rem;color:var(--text3);}
 .chat-typing{display:flex;gap:.3rem;padding:.6rem .875rem;align-items:center;}
 .chat-typing span{width:6px;height:6px;border-radius:50%;background:var(--text3);animation:typingDot 1.2s ease-in-out infinite;}
@@ -506,6 +511,84 @@ function parseBotStructuredSections(text){
     options,
     links,
   };
+}
+
+function renderChatBody(text){
+  if(typeof text !== "string" || !text.trim()) return null;
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let i = 0;
+
+  while(i < lines.length){
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+
+    if(!trimmed){
+      i += 1;
+      continue;
+    }
+
+    if(/^[-*]\s+/.test(trimmed)){
+      const items = [];
+      while(i < lines.length){
+        const current = (lines[i] ?? "").trim();
+        if(!/^[-*]\s+/.test(current)) break;
+        items.push(current.replace(/^[-*]\s+/, ""));
+        i += 1;
+      }
+      blocks.push({ type: "ul", items });
+      continue;
+    }
+
+    if(/^\d+[.)]\s+/.test(trimmed)){
+      const items = [];
+      while(i < lines.length){
+        const current = (lines[i] ?? "").trim();
+        if(!/^\d+[.)]\s+/.test(current)) break;
+        items.push(current.replace(/^\d+[.)]\s+/, ""));
+        i += 1;
+      }
+      blocks.push({ type: "ol", items });
+      continue;
+    }
+
+    const paragraph = [];
+    while(i < lines.length){
+      const current = lines[i] ?? "";
+      const currentTrimmed = current.trim();
+      if(!currentTrimmed || /^[-*]\s+/.test(currentTrimmed) || /^\d+[.)]\s+/.test(currentTrimmed)) break;
+      paragraph.push(currentTrimmed);
+      i += 1;
+    }
+    blocks.push({ type: "p", text: paragraph.join(" ") });
+  }
+
+  return (
+    <div className="chat-body">
+      {blocks.map((block, blockIndex)=>{
+        if(block.type === "ul"){
+          return (
+            <ul key={`ul-${blockIndex}`} className="chat-list">
+              {block.items.map((item, itemIndex)=>(
+                <li key={`uli-${blockIndex}-${itemIndex}`} className="chat-list-item">{item}</li>
+              ))}
+            </ul>
+          );
+        }
+        if(block.type === "ol"){
+          return (
+            <ol key={`ol-${blockIndex}`} className="chat-list">
+              {block.items.map((item, itemIndex)=>(
+                <li key={`oli-${blockIndex}-${itemIndex}`} className="chat-list-item">{item}</li>
+              ))}
+            </ol>
+          );
+        }
+        return <p key={`p-${blockIndex}`} className="chat-paragraph">{block.text}</p>;
+      })}
+    </div>
+  );
 }
 
 function createIntroMessages(){
@@ -932,7 +1015,7 @@ function ChatBot({user}){
                 {(()=>{
                   const parsed = m.role === "bot" ? parseBotStructuredSections(m.text) : null;
                   const displayText = parsed ? (parsed.body || m.text) : m.text;
-                  return <div>{displayText}</div>;
+                  return renderChatBody(displayText);
                 })()}
                 {m.role === "bot" && Array.isArray(m.metadata?.externalFactors) && m.metadata.externalFactors.length > 0 && (
                   <div style={{marginTop:".55rem", display:"flex", gap:".35rem", flexWrap:"wrap"}}>
@@ -1056,8 +1139,7 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
     throw new Error(netErr?.message || "Cannot reach OCR server. Start the API locally on port 8000 or update VITE_API_URL.");
   }
   if (!response.ok) {
-    const errBody = await response.json().catch(() => ({}));
-    throw new Error(errBody?.detail || `Server error ${response.status}`);
+    throw new Error(await apiErrorMessage(response, `Server error ${response.status}`));
   }
   onProgress("Extracting structured fields...", 75);
   const result = await response.json();
