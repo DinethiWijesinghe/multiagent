@@ -660,7 +660,7 @@ async function loginUser({email,password}){
   if(!response.ok){
     const detail = payload?.detail || `Login failed (${response.status})`;
     if(String(detail).toLowerCase().includes("invalid email or password")){
-      throw new Error("Invalid email or password. If this is a new Colab session, please register first because local users reset between sessions.");
+      throw new Error("Invalid email or password. If you used the Colab full-stack cell, try seeded accounts: admin@example.com / Admin@123 or advisor@example.com / Advisor@123. If seeding failed, register a new user. With Neon DATABASE_URL, users persist across sessions.");
     }
     throw new Error(detail);
   }
