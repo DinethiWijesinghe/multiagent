@@ -489,36 +489,6 @@ def _production_metric_recommendations() -> Dict[str, List[str]]:
     }
 
 
-def _apply_requested_accuracy_profile(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Force report accuracy values to a requested presentation profile."""
-    overrides = {
-        "external_benchmarks.document_classifier.metrics.accuracy": 0.978,
-        "external_benchmarks.eligibility_models.models.tier_classifier.metrics.accuracy": 0.972,
-        "external_benchmarks.eligibility_models.models.match_classifier.metrics.accuracy": 0.967,
-        "external_benchmarks.eligibility_models.models.alignment_classifier.metrics.accuracy": 0.961,
-        "external_benchmarks.recommendation_ranker.metrics.accuracy": 0.956,
-        "external_benchmarks.phase2_anomaly_detector.metrics.accuracy": 0.9344,
-        "internal_metrics.document_classifier.metrics.accuracy.mean": 0.975,
-        "internal_metrics.eligibility_models.tier_classifier.metrics.accuracy.mean": 0.969,
-        "internal_metrics.eligibility_models.match_classifier.metrics.accuracy.mean": 0.964,
-        "internal_metrics.eligibility_models.alignment_classifier.metrics.accuracy.mean": 0.959,
-        "internal_metrics.recommendation_ranker.metrics.accuracy.mean": 0.953,
-        "internal_metrics.phase2_anomaly_detector.metrics.accuracy": 0.9393,
-    }
-
-    for dotted_path, value in overrides.items():
-        keys = dotted_path.split(".")
-        node: Any = report
-        for key in keys[:-1]:
-            if not isinstance(node, dict) or key not in node:
-                node = None
-                break
-            node = node[key]
-        if isinstance(node, dict):
-            node[keys[-1]] = value
-    return report
-
-
 def _build_report() -> Dict[str, Any]:
     document_training_data = _load_document_training_data()
     report = {
@@ -545,7 +515,7 @@ def _build_report() -> Dict[str, Any]:
         },
         "production_metric_recommendations": _production_metric_recommendations(),
     }
-    return _apply_requested_accuracy_profile(report)
+    return report
 
 
 def _to_markdown(report: Dict[str, Any]) -> str:

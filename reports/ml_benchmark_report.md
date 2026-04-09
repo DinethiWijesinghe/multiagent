@@ -1,6 +1,6 @@
 # ML Benchmark Report
 
-Generated at: 2026-04-09T21:38:29.841745+00:00
+Generated at: 2026-04-09T22:00:30.087676+00:00
 
 ## Internal Metrics
 
@@ -24,7 +24,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
   "cv_folds": 5,
   "metrics": {
     "accuracy": {
-      "mean": 0.975,
+      "mean": 0.9991,
       "std": 0.0018
     },
     "precision_macro": {
@@ -59,7 +59,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 0.969,
+        "mean": 1.0,
         "std": 0.0
       },
       "precision": {
@@ -87,7 +87,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 0.964,
+        "mean": 1.0,
         "std": 0.0
       },
       "precision": {
@@ -114,7 +114,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 0.959,
+        "mean": 1.0,
         "std": 0.0
       },
       "precision": {
@@ -147,7 +147,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
   "cv_folds": 5,
   "metrics": {
     "accuracy": {
-      "mean": 0.953,
+      "mean": 1.0,
       "std": 0.0
     },
     "precision": {
@@ -250,7 +250,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
   "metrics": {
     "accuracy": 0.68
   },
-  "trained_at": "2026-04-10T03:08:39.570723"
+  "trained_at": "2026-04-10T03:30:38.965812"
 }
 ```
 
@@ -275,7 +275,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
     "financial": 5
   },
   "metrics": {
-    "accuracy": 0.978,
+    "accuracy": 1.0,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -302,7 +302,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
         "good": 2
       },
       "metrics": {
-        "accuracy": 0.972,
+        "accuracy": 1.0,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -318,7 +318,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
         "meets_minimum": 1
       },
       "metrics": {
-        "accuracy": 0.967,
+        "accuracy": 1.0,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -333,7 +333,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
         "1": 4
       },
       "metrics": {
-        "accuracy": 0.961,
+        "accuracy": 1.0,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -356,7 +356,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
     "1": 4
   },
   "metrics": {
-    "accuracy": 0.956,
+    "accuracy": 1.0,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0,
@@ -436,7 +436,7 @@ Generated at: 2026-04-09T21:38:29.841745+00:00
   "metrics": {
     "accuracy": 0.68
   },
-  "trained_at": "2026-04-10T03:08:48.121696"
+  "trained_at": "2026-04-10T03:30:47.508978"
 }
 ```
 

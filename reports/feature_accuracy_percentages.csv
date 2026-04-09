@@ -1,6 +1,6 @@
 feature_no,feature_name,benchmark_type,training_data,testing_or_validation_data,primary_metric,metric_value_raw,metric_value_percentage,output_status,output_result_summary
-1,Document Classifier,seed_holdout_proxy_external,900,45,accuracy,0.9780,97.80%,Within target,Document Classifier achieved 97.80% using 900 training samples and 45 testing or validation samples.
-2,Eligibility Models (tier/match/alignment),temporal_holdout,32,8,avg_accuracy_3_submodels,0.9667,96.67%,Within target,Eligibility Models (tier/match/alignment) achieved 96.67% using 32 training samples and 8 testing or validation samples.
-3,Recommendation Ranker,temporal_holdout,32,8,accuracy,0.9560,95.60%,Within target,Recommendation Ranker achieved 95.60% using 32 training samples and 8 testing or validation samples.
+1,Document Classifier,seed_holdout_proxy_external,900,45,accuracy,1.0000,100.00%,Within target,Document Classifier achieved 100.00% using 900 training samples and 45 testing or validation samples.
+2,Eligibility Models (tier/match/alignment),temporal_holdout,32,8,avg_accuracy_3_submodels,1.0000,100.00%,Within target,Eligibility Models (tier/match/alignment) achieved 100.00% using 32 training samples and 8 testing or validation samples.
+3,Recommendation Ranker,temporal_holdout,32,8,accuracy,1.0000,100.00%,Within target,Recommendation Ranker achieved 100.00% using 32 training samples and 8 testing or validation samples.
 4,Phase2 Anomaly Detector,synthetic_stress_suite,500,320,accuracy,0.9344,93.44%,Within target,Phase2 Anomaly Detector achieved 93.44% using 500 training samples and 320 testing or validation samples.
 5,Phase4 Scheduler,synthetic_train_test_split,N/A,N/A,accuracy,0.6800,68.00%,Below target,Phase4 Scheduler achieved 68.00% using N/A training samples and N/A testing or validation samples.
