@@ -45,7 +45,11 @@ export async function apiFetch(path, tokenOrOptions, maybeOptions) {
     if (outerSignal?.aborted) break;
     const perCtrl = new AbortController();
     const target = baseUrl ? `${baseUrl}${path}` : path;
-    const timerId = timeoutMs > 0 ? setTimeout(() => perCtrl.abort(), timeoutMs) : null;
+    let timedOut = false;
+    const timerId = timeoutMs > 0 ? setTimeout(() => {
+      timedOut = true;
+      perCtrl.abort();
+    }, timeoutMs) : null;
     const onOuterAbort = () => perCtrl.abort();
     outerSignal?.addEventListener('abort', onOuterAbort);
 
@@ -59,14 +63,29 @@ export async function apiFetch(path, tokenOrOptions, maybeOptions) {
       }
       return response;
     } catch (error) {
-      lastError = error;
+      const message = String(error?.message || error || '').toLowerCase();
+      const aborted = error?.name === 'AbortError' || message.includes('aborted');
+      if (aborted && timedOut) {
+        const sec = Math.max(1, Math.round(timeoutMs / 1000));
+        lastError = new Error(`Request timed out after ${sec}s for ${path}`);
+      } else if (aborted) {
+        lastError = new Error(`Request was cancelled for ${path}`);
+      } else {
+        lastError = error;
+      }
     } finally {
       if (timerId) clearTimeout(timerId);
       outerSignal?.removeEventListener('abort', onOuterAbort);
     }
   }
 
-  if (lastResponse) return lastResponse;
+  if (lastResponse) {
+    const ct = (lastResponse.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('text/html')) return lastResponse; // e.g. 404 with JSON error body
+    // All bases returned HTML (SPA fallback) — backend is unreachable
+    const targets = API_BASES.map((v) => v || '<same-origin>').join(', ');
+    throw lastError || new Error(`Cannot reach API server (${targets}). Start the backend on port 8000 or update VITE_API_URL.`);
+  }
   const targets = API_BASES.map((v) => v || '<same-origin>').join(', ');
   throw lastError || new Error(`Cannot reach API server (${targets}). Start the backend locally on port 8000 or update VITE_API_URL.`);
 }

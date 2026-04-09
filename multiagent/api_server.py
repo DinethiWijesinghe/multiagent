@@ -2082,19 +2082,28 @@ _DEMO_SEED_ACCOUNTS = [
 
 
 def _auto_seed_demo_users_if_empty() -> None:
-    """Seed demo accounts (admin/advisor/student) on first run when the DB has no users at all."""
+    """Ensure demo admin/advisor/student accounts exist.
+
+    Creates any missing demo account on every startup.
+    Skips accounts that already exist so existing passwords are preserved.
+    """
     try:
         users = _load_users()
-        if users:
-            return  # DB already has users — leave it alone
-        print("[Auth] No users found — seeding default demo accounts...")
+        seeded_any = False
         for email, password, name, role in _DEMO_SEED_ACCOUNTS:
+            if email in users:
+                continue  # already exists — leave as-is
+            # Only seed demo student when DB is completely empty
+            if role == "student" and users:
+                continue
             try:
                 _upsert_user_account(email, password, name, role)
-                print(f"[Auth]   ✓ {role}: {email}  password: {password}")
+                print(f"[Auth] Demo account created — {role}: {email}  password: {password}")
+                seeded_any = True
             except Exception as exc:
-                print(f"[Auth]   ✗ Failed to seed {email}: {exc}")
-        print("[Auth] Demo seed complete. Log in with admin@example.com / Admin@123")
+                print(f"[Auth] Failed to seed {email}: {exc}")
+        if seeded_any:
+            print("[Auth] Demo seeding done. Use admin@example.com / Admin@123 to log in.")
     except Exception as exc:
         print(f"[Auth] Auto-seed skipped: {exc}")
 

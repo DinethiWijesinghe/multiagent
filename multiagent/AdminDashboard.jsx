@@ -36,6 +36,7 @@ export default function AdminDashboard({ user }) {
     rejected: { bg:'var(--red-dim)', text:'var(--red)' },
     withdrawn: { bg:'var(--bg3)', text:'var(--text3)' },
   };
+  const DASHBOARD_TIMEOUT_MS = 45000;
 
   const loadApplications = useCallback(() => {
     setAppsLoading(true);
@@ -64,23 +65,45 @@ export default function AdminDashboard({ user }) {
     }
   };
 
-  const loadData = useCallback(() => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    Promise.all([
-      apiJson('/admin/stats', user?.token).catch((e) => { throw new Error(`Stats error: ${e.message}`); }),
-      apiJson('/admin/users', user?.token).catch((e) => { throw new Error(`Users error: ${e.message}`); }),
-      apiFetch('/advisor/students', user?.token).then(r => r.ok ? r.json() : Promise.resolve({ students: [] })),
-      apiFetch('/admin/audit', user?.token).then(r => r.ok ? r.json() : Promise.resolve({ events: [] })),
-    ])
-      .then(([statsData, usersData, studentsData, auditData]) => {
-        setStats(statsData);
-        setUsers(Array.isArray(usersData.users) ? usersData.users : []);
-        setStudents(Array.isArray(studentsData.students) ? studentsData.students : []);
-        setAuditEvents(Array.isArray(auditData.events) ? auditData.events : []);
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    const [statsResult, usersResult, studentsResult, auditResult] = await Promise.allSettled([
+      apiJson('/admin/stats', user?.token, { timeoutMs: DASHBOARD_TIMEOUT_MS }),
+      apiJson('/admin/users', user?.token, { timeoutMs: DASHBOARD_TIMEOUT_MS }),
+      apiFetch('/advisor/students', user?.token, { timeoutMs: DASHBOARD_TIMEOUT_MS }).then(r => r.ok ? r.json() : Promise.resolve({ students: [] })),
+      apiFetch('/admin/audit', user?.token, { timeoutMs: DASHBOARD_TIMEOUT_MS }).then(r => r.ok ? r.json() : Promise.resolve({ events: [] })),
+    ]);
+
+    const issues = [];
+    if (statsResult.status === 'fulfilled') {
+      setStats(statsResult.value);
+    } else {
+      issues.push(`Stats error: ${statsResult.reason?.message || 'Unknown error'}`);
+    }
+
+    if (usersResult.status === 'fulfilled') {
+      setUsers(Array.isArray(usersResult.value?.users) ? usersResult.value.users : []);
+    } else {
+      issues.push(`Users error: ${usersResult.reason?.message || 'Unknown error'}`);
+    }
+
+    if (studentsResult.status === 'fulfilled') {
+      setStudents(Array.isArray(studentsResult.value?.students) ? studentsResult.value.students : []);
+    } else {
+      issues.push(`Students error: ${studentsResult.reason?.message || 'Unknown error'}`);
+    }
+
+    if (auditResult.status === 'fulfilled') {
+      setAuditEvents(Array.isArray(auditResult.value?.events) ? auditResult.value.events : []);
+    } else {
+      issues.push(`Audit error: ${auditResult.reason?.message || 'Unknown error'}`);
+    }
+
+    if (issues.length) {
+      setError(issues.join(' | '));
+    }
+    setLoading(false);
   }, [user?.token]);
 
   useEffect(() => { loadData(); }, [loadData]);
