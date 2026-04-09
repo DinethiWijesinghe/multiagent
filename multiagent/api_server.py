@@ -1323,6 +1323,7 @@ PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 6)
 PASSWORD_REQUIRE_COMPLEXITY = _env_true("PASSWORD_REQUIRE_COMPLEXITY", False)
 AUTH_WINDOW_SECONDS = _env_int("AUTH_WINDOW_SECONDS", 300)
 AUTH_MAX_LOGIN_ATTEMPTS = _env_int("AUTH_MAX_LOGIN_ATTEMPTS", 10)
+AUTO_SEED_DEMO_STUDENT = _env_true("AUTO_SEED_DEMO_STUDENT", False)
 METRICS_PUBLIC = _env_true("METRICS_PUBLIC", True)
 CORS_ALLOW_ORIGINS = _env_csv(
     "CORS_ALLOW_ORIGINS",
@@ -2657,8 +2658,11 @@ def startup():
 
     _initialize_database()
 
-    # Auto-seed demo accounts when the database is empty (first run or fresh DB)
-    _auto_seed_demo_users_if_empty()
+    # Keep production-like behavior by default: users should register their own accounts.
+    if AUTO_SEED_DEMO_STUDENT:
+        _auto_seed_demo_users_if_empty()
+    else:
+        print("[Auth] Demo auto-seeding disabled. Use /auth/register to create accounts.")
 
     try:
         migrated_docs = _backfill_document_blobs_from_disk()

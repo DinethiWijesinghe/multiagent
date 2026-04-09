@@ -664,7 +664,7 @@ async function loginUser({email,password}){
         const checkResp = await fetchApi(`/auth/check-email/${encodeURIComponent(normalizedEmail)}`);
         const checkData = await checkResp.json().catch(()=>({}));
         if(!checkData.registered){
-          hint = `No account found for "${normalizedEmail}". Please register first, or use the seeded account: student@example.com / Student@123.`;
+          hint = `No account found for "${normalizedEmail}". Please register first, then sign in with the same credentials.`;
         } else if(!checkData.login_ready){
           hint = `Account found for "${normalizedEmail}" but it appears incomplete (no password stored). Please re-register or contact support.`;
         } else {
@@ -2308,7 +2308,7 @@ function AuthPage({onLogin}){
               {loading ? "Signing In..." : "Sign In"}
             </button>
             <div style={{marginTop:".7rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
-              If you are using a fresh Colab runtime, local accounts may reset. Use <strong>Register</strong> first, then sign in.
+              Accounts are stored in Neon/PostgreSQL. Use <strong>Register</strong> once, then log in anytime with the same credentials.
             </div>
           </div>
         ) : (
@@ -2376,6 +2376,10 @@ export default function App(){
   };
   const reset=()=>{setStep(1);setProfile({});setDocData({});setElig(null);};
   const logout=async()=>{
+    if(user?.email && stateReady){
+      const latestState = { step, profile, docData, elig };
+      await saveUserState(user.email, latestState, user?.token).catch(()=>{});
+    }
     try{
       await logoutUser(user?.token);
     }catch{

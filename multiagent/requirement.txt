@@ -1,4 +1,4 @@
-# MultiAgent Backend Requirements (No Ollama)
+# MultiAgent Backend Requirements 
 # ===========================================
 # Core API
 fastapi>=0.110.0
@@ -23,7 +23,7 @@ sqlalchemy>=2.0.0
 psycopg[binary]>=3.1.0
 alembic>=1.13.0
 
-# Optional extras (install separately if needed in your runtime):
+# Optional extras:
 #   pip install easyocr
 #   pip install langchain langchain-community langchain-text-splitters chromadb sentence-transformers pypdf
 #   pip install langchain-google-genai google-generativeai
