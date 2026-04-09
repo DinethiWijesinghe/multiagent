@@ -659,8 +659,23 @@ async function loginUser({email,password}){
   const payload = await response.json().catch(()=>({}));
   if(!response.ok){
     const detail = payload?.detail || `Login failed (${response.status})`;
-    if(String(detail).toLowerCase().includes("invalid email or password")){
-      throw new Error("Invalid email or password. If you used the Colab full-stack cell, try seeded accounts: admin@example.com / Admin@123 or advisor@example.com / Advisor@123. If seeding failed, register a new user. With Neon DATABASE_URL, users persist across sessions.");
+    if(response.status === 401 && String(detail).toLowerCase().includes("invalid email or password")){
+      // Probe check-email to distinguish "not registered" from "wrong password"
+      let hint = "";
+      try {
+        const checkResp = await fetchApi(`/auth/check-email/${encodeURIComponent(normalizedEmail)}`);
+        const checkData = await checkResp.json().catch(()=>({}));
+        if(!checkData.registered){
+          hint = `No account found for "${normalizedEmail}". Please register first, or use a seeded account: admin@example.com / Admin@123 or advisor@example.com / Advisor@123.`;
+        } else if(!checkData.login_ready){
+          hint = `Account found for "${normalizedEmail}" but it appears incomplete (no password stored). Please re-register or contact support.`;
+        } else {
+          hint = `Account found for "${normalizedEmail}" — please double-check your password and try again.`;
+        }
+      } catch(_){
+        hint = "Invalid email or password. Check your credentials or register a new account.";
+      }
+      throw new Error(hint);
     }
     throw new Error(detail);
   }

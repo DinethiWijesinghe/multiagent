@@ -179,6 +179,16 @@ export default function AdvisorDashboard({ user }) {
       {/* ── Students Tab ── */}
       {activeTab === 'students' && <>
 
+      {/* Empty-state banner when no students exist */}
+      {!loading && !error && students.length === 0 && (
+        <div style={{ padding: '1.25rem', background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 'var(--r)', marginBottom: '1.25rem', fontSize: '0.85rem', color: 'var(--text3)', fontFamily: 'var(--mono)', lineHeight: 1.6 }}>
+          ℹ No student accounts yet. Student data appears here once students register and begin their applications.
+          <div style={{ marginTop: '0.5rem', fontSize: '0.75rem' }}>
+            Demo: log in as <strong>student@example.com</strong> / <strong>Student@123</strong> and complete the profile wizard.
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
         <div className="panel" style={{ textAlign: 'center' }}>
@@ -259,8 +269,10 @@ export default function AdvisorDashboard({ user }) {
         )}
 
         {!loading && !error && filteredStudents.length === 0 && (
-          <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text3)', fontFamily: 'var(--mono)', fontSize: '0.8rem' }}>
-            {students.length === 0 ? 'No students registered yet.' : 'No students match your filter.'}
+          <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text3)', fontFamily: 'var(--mono)', fontSize: '0.8rem', lineHeight: 1.7 }}>
+            {students.length === 0
+              ? <>No student accounts registered yet.<br/><span style={{fontSize:'.72rem'}}>Students will appear here after they sign up and start the application wizard.</span></>
+              : 'No students match your filter.'}
           </div>
         )}
 

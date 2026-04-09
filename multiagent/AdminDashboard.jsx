@@ -16,6 +16,10 @@ export default function AdminDashboard({ user }) {
   const [roleUpdating, setRoleUpdating] = useState(false);
   const [roleError, setRoleError] = useState(null);
 
+  // Seed state
+  const [seedLoading, setSeedLoading] = useState(false);
+  const [seedMsg, setSeedMsg] = useState('');
+
   // Applications tab state
   const [allApps, setAllApps] = useState([]);
   const [appsLoading, setAppsLoading] = useState(false);
@@ -104,6 +108,22 @@ export default function AdminDashboard({ user }) {
 
   const systemStats = stats || { totalUsers: '—', totalStudents: '—', totalAdvisors: '—', totalAdmins: '—', completedApplications: '—', pendingApplications: '—', dataQualityScore: '—' };
 
+  const seedDefaults = async () => {
+    setSeedLoading(true);
+    setSeedMsg('');
+    try {
+      const res = await apiFetch('/admin/seed-defaults', user?.token, { method: 'POST' });
+      if (!res.ok) throw new Error(await apiErrorMessage(res));
+      const data = await res.json();
+      setSeedMsg(`Seeded ${data.seeded?.length || 0} demo accounts. Refreshing…`);
+      setTimeout(() => { setSeedMsg(''); loadData(); }, 1500);
+    } catch (e) {
+      setSeedMsg(`Seed failed: ${e.message}`);
+    } finally {
+      setSeedLoading(false);
+    }
+  };
+
   return (
     <div className="fade-up">
       {/* Header */}
@@ -125,6 +145,26 @@ export default function AdminDashboard({ user }) {
       {!loading && error && (
         <div style={{ padding: '1rem', background: 'var(--red-dim)', color: 'var(--red)', borderRadius: 'var(--r)', marginBottom: '1rem', fontSize: '0.85rem' }}>
           ⚠ {error}
+        </div>
+      )}
+
+      {/* Empty DB banner — shown when there are no users yet */}
+      {!loading && !error && users.length === 0 && (
+        <div style={{ padding: '1.25rem', background: 'var(--amber-dim)', border: '1px solid var(--amber)', color: 'var(--amber)', borderRadius: 'var(--r)', marginBottom: '1.25rem', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+          <span>⚠ No users in database. Seed demo accounts (admin / advisor / student) to get started.</span>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            {seedMsg && <span style={{ fontFamily: 'var(--mono)', fontSize: '0.72rem' }}>{seedMsg}</span>}
+            <button className="btn btn-primary" style={{ fontSize: '0.78rem', padding: '0.4rem 1rem' }} onClick={seedDefaults} disabled={seedLoading}>
+              {seedLoading ? 'Seeding…' : '✦ Seed Demo Accounts'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Student-less banner — shown when users exist but no students */}
+      {!loading && !error && users.length > 0 && Array.isArray(stats?.totalStudents) === false && (stats?.totalStudents === 0 || stats?.totalStudents === '0') && (
+        <div style={{ padding: '1rem', background: 'var(--bg3)', border: '1px solid var(--border2)', borderRadius: 'var(--r)', marginBottom: '1.25rem', fontSize: '0.8rem', color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
+          ℹ No student accounts yet — student data will appear here once students register and start applications.
         </div>
       )}
 

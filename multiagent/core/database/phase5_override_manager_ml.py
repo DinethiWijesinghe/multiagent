@@ -197,11 +197,11 @@ class OverrideClassifier:
     CATEGORIES = ["criteria_update","tuition_update","ranking_update","deadline_change","new_program"]
 
     LABELS = {
-        "criteria_update": "📋 Criteria Update",
-        "tuition_update":  "💰 Tuition/Cost Update",
-        "ranking_update":  "📊 Ranking Update",
-        "deadline_change": "📅 Deadline Change",
-        "new_program":     "🎓 New Program",
+        "criteria_update": " Criteria Update",
+        "tuition_update":  " Tuition/Cost Update",
+        "ranking_update":  "Ranking Update",
+        "deadline_change": "Deadline Change",
+        "new_program":     " New Program",
     }
 
     def __init__(self):

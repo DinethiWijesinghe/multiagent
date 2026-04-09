@@ -2074,6 +2074,31 @@ def _bootstrap_user_from_env(email_raw: str, password: str, name_raw: str, role:
     return _upsert_user_account(email_raw, password, name_raw, role) is not None
 
 
+_DEMO_SEED_ACCOUNTS = [
+    ("admin@example.com",   "Admin@123",   "System Admin",   "admin"),
+    ("advisor@example.com", "Advisor@123", "System Advisor", "advisor"),
+    ("student@example.com", "Student@123", "Demo Student",   "student"),
+]
+
+
+def _auto_seed_demo_users_if_empty() -> None:
+    """Seed demo accounts (admin/advisor/student) on first run when the DB has no users at all."""
+    try:
+        users = _load_users()
+        if users:
+            return  # DB already has users — leave it alone
+        print("[Auth] No users found — seeding default demo accounts...")
+        for email, password, name, role in _DEMO_SEED_ACCOUNTS:
+            try:
+                _upsert_user_account(email, password, name, role)
+                print(f"[Auth]   ✓ {role}: {email}  password: {password}")
+            except Exception as exc:
+                print(f"[Auth]   ✗ Failed to seed {email}: {exc}")
+        print("[Auth] Demo seed complete. Log in with admin@example.com / Admin@123")
+    except Exception as exc:
+        print(f"[Auth] Auto-seed skipped: {exc}")
+
+
 def _bootstrap_admin_user_from_env() -> None:
     """Create or update one bootstrap admin user from environment variables."""
     created = _bootstrap_user_from_env(
@@ -2636,6 +2661,9 @@ def startup():
     _bootstrap_admin_user_from_env()
     _bootstrap_advisor_user_from_env()
 
+    # Auto-seed demo accounts when the database is empty (first run or fresh DB)
+    _auto_seed_demo_users_if_empty()
+
     try:
         migrated_docs = _backfill_document_blobs_from_disk()
         if migrated_docs:
@@ -2970,6 +2998,18 @@ def logout(authorization: str | None = Header(default=None)):
     return {"success": True}
 
 
+@app.get("/auth/check-email/{email:path}")
+def check_email(email: str):
+    """Return whether an email address has a registered account (no sensitive data exposed)."""
+    normalized = _normalize_email(email)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Email is required")
+    users = _load_users()
+    registered = normalized in users
+    has_hash = bool(users.get(normalized, {}).get("password_hash")) if registered else False
+    return {"email": normalized, "registered": registered, "login_ready": has_hash}
+
+
 @app.post("/auth/login")
 def login(payload: LoginPayload, request: Request):
     email = _normalize_email(payload.email)
@@ -2979,13 +3019,27 @@ def login(payload: LoginPayload, request: Request):
 
     users = _load_users()
     user = users.get(email)
-    if not user or not _verify_password(password, user.get("password_hash", "")):
+
+    # Server-side diagnostic prints (visible in uvicorn console)
+    if not user:
+        print(f"[Auth] Login failed — email not found in DB: {email!r} | users_loaded={len(users)}")
+        _record_login_failure(login_key)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not user.get("password_hash"):
+        print(f"[Auth] Login failed — password_hash missing for: {email!r}")
+        _record_login_failure(login_key)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not _verify_password(password, user["password_hash"]):
+        print(f"[Auth] Login failed — wrong password for: {email!r}")
         _record_login_failure(login_key)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     _clear_login_attempts(login_key)
     token = _issue_session_token(email)
     role = _normalize_user_role(user.get("role"))
+    print(f"[Auth] Login success: {email!r} role={role!r}")
     return {
         "token": token,
         "user": {
@@ -3538,6 +3592,19 @@ def admin_ingest_all_policies(current_user_email: str = Depends(_require_admin))
     }
 
 
+@app.post("/admin/seed-defaults")
+def admin_seed_defaults(current_user_email: str = Depends(_require_admin)):
+    """(Re-)seed demo accounts. Existing accounts are updated; new ones created."""
+    results = []
+    for email, password, name, role in _DEMO_SEED_ACCOUNTS:
+        try:
+            record = _upsert_user_account(email, password, name, role)
+            results.append({"email": email, "role": role, "status": "ok" if record else "skipped"})
+        except Exception as exc:
+            results.append({"email": email, "role": role, "status": f"error: {exc}"})
+    return {"seeded": results}
+
+
 @app.get("/admin/users")
 def admin_list_users(current_user_email: str = Depends(_require_admin)):
     """Return the full user list for admin management."""
@@ -3548,11 +3615,12 @@ def admin_list_users(current_user_email: str = Depends(_require_admin)):
             "name": u.get("name") or email,
             "role": _normalize_user_role(u.get("role"), strict=False),
             "created": (u.get("created_at") or "")[:10],
+            "login_ready": bool(u.get("password_hash")),
         }
         for email, u in users.items()
     ]
     result.sort(key=lambda x: x["created"], reverse=True)
-    return {"users": result}
+    return {"users": result, "total": len(result)}
 
 
 @app.get("/admin/audit")
