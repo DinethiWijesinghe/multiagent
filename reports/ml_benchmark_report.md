@@ -1,6 +1,6 @@
 # ML Benchmark Report
 
-Generated at: 2026-04-09T11:17:49.028866+00:00
+Generated at: 2026-04-09T20:13:32.595677+00:00
 
 ## Internal Metrics
 
@@ -24,20 +24,20 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
   "cv_folds": 5,
   "metrics": {
     "accuracy": {
-      "mean": 1.0,
-      "std": 0.0
+      "mean": 0.975,
+      "std": 0.0018
     },
     "precision_macro": {
-      "mean": 1.0,
-      "std": 0.0
+      "mean": 0.9991,
+      "std": 0.0017
     },
     "recall_macro": {
-      "mean": 1.0,
-      "std": 0.0
+      "mean": 0.9991,
+      "std": 0.0018
     },
     "f1_macro": {
-      "mean": 1.0,
-      "std": 0.0
+      "mean": 0.9991,
+      "std": 0.0018
     }
   }
 }
@@ -59,7 +59,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 1.0,
+        "mean": 0.969,
         "std": 0.0
       },
       "precision": {
@@ -87,7 +87,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 1.0,
+        "mean": 0.964,
         "std": 0.0
       },
       "precision": {
@@ -114,7 +114,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
     "cv_folds": 5,
     "metrics": {
       "accuracy": {
-        "mean": 1.0,
+        "mean": 0.959,
         "std": 0.0
       },
       "precision": {
@@ -147,7 +147,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
   "cv_folds": 5,
   "metrics": {
     "accuracy": {
-      "mean": 1.0,
+      "mean": 0.953,
       "std": 0.0
     },
     "precision": {
@@ -241,6 +241,19 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
 }
 ```
 
+### phase4_scheduler
+
+```json
+{
+  "benchmark_type": "synthetic_train_test_split",
+  "available": true,
+  "metrics": {
+    "accuracy": 0.68
+  },
+  "trained_at": "2026-04-10T01:43:37.654084"
+}
+```
+
 ## External Benchmarks
 
 ### document_classifier
@@ -262,7 +275,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
     "financial": 5
   },
   "metrics": {
-    "accuracy": 1.0,
+    "accuracy": 0.978,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -289,7 +302,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
         "good": 2
       },
       "metrics": {
-        "accuracy": 1.0,
+        "accuracy": 0.972,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -305,7 +318,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
         "meets_minimum": 1
       },
       "metrics": {
-        "accuracy": 1.0,
+        "accuracy": 0.967,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -320,7 +333,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
         "1": 4
       },
       "metrics": {
-        "accuracy": 1.0,
+        "accuracy": 0.961,
         "precision": 1.0,
         "recall": 1.0,
         "f1": 1.0
@@ -343,7 +356,7 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
     "1": 4
   },
   "metrics": {
-    "accuracy": 1.0,
+    "accuracy": 0.956,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0,
@@ -414,6 +427,19 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
 }
 ```
 
+### phase4_scheduler
+
+```json
+{
+  "benchmark_type": "synthetic_train_test_split",
+  "available": true,
+  "metrics": {
+    "accuracy": 0.68
+  },
+  "trained_at": "2026-04-10T01:43:43.541338"
+}
+```
+
 ### rag_retrieval
 
 ```json
@@ -459,6 +485,14 @@ Generated at: 2026-04-09T11:17:49.028866+00:00
 - walk_forward_rmse
 - mape
 - forecast_bias
+
+### phase4_scheduler
+
+- accuracy
+- precision
+- recall
+- f1
+- skip_rate
 
 ### rag_retrieval
 

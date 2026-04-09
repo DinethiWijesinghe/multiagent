@@ -387,7 +387,7 @@ When a user logs in, the app now persists all key data per user account:
   - Chatbot replies are served by `/chat/respond` (backend chatbot agent)
 
 - Uploaded files (images and PDFs)
-  - OCR uploads (`/ocr`) now auto-store files when Authorization token is present
+  - OCR uploads (`/ocr`) require Authorization (student token) and auto-store files for that account
   - Manual file-only upload also available via `/documents/upload`
   - List files: `/documents`
   - Open/Download file: `/documents/{document_id}/content`
@@ -415,9 +415,38 @@ Document storage hardening:
 
 - Frontend uses `/chat/respond` for live chatbot responses.
 - Frontend and backend both use token-authenticated `/chat/history` for chat persistence.
-- `/ocr` accepts optional Bearer auth. If token is present, uploaded file metadata is saved for that user.
+- `/ocr` requires Bearer auth (`student` role). Successful OCR runs also save uploaded document metadata + binary for that user.
 - `/health` now returns DB mode fields: `db`, `db_url_set`, and `db_strict_mode` in addition to OCR status.
 - PostgreSQL/Neon is mandatory for runtime persistence; JSON fallback has been removed from the API server.
+
+### Newly Aligned Endpoints (Code-Backed)
+
+- Auth UX helpers:
+  - `GET /auth/config` exposes safe auth flags (for frontend validation behavior)
+  - `GET /auth/check-email/{email}` helps frontend provide clearer login/register hints
+- OCR readiness/debug:
+  - `GET /ocr/readiness` returns OCR installation/readiness details
+- Documents:
+  - `PATCH /documents/{document_id}/corrections` applies manual field corrections and re-validates extracted payloads
+- Applications lifecycle:
+  - `POST /applications`
+  - `GET /applications`
+  - `GET /applications/{application_id}`
+  - `PATCH /applications/{application_id}/status`
+  - `DELETE /applications/{application_id}`
+- Metrics:
+  - `GET /metrics`
+  - `GET /metrics/flows`
+
+### Frontend Transport Notes (Latest)
+
+- `multiagent/apiClient.js` now supports API base fallback order:
+  - Uses `VITE_API_URL` when provided
+  - Otherwise tries local backend and same-origin targets
+- Per-target request timeout defaults to 20s in the shared API client.
+- Chat has its own longer timeout + retry window from `multiagent/app.jsx`:
+  - `VITE_CHAT_TIMEOUT_MS` (default 45000)
+  - `VITE_CHAT_RETRY_TIMEOUT_MS` (default `max(CHAT_TIMEOUT + 15000, 60000)`)
 
 Optional overrides:
 
@@ -468,7 +497,7 @@ Important practical note:
 Use this stack for your thesis implementation and low-performance laptop constraints:
 
 - OCR: Tesseract
-- Document classifier: TF-IDF + LinearSVC
+- Document classifier: TF-IDF + Multinomial Naive Bayes
 - Eligibility model: HistGradientBoostingClassifier
 - Financial model: Rule-based + regression/classifier
 - Recommendation: Weighted scoring + small ML reranker

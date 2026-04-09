@@ -148,7 +148,7 @@ def assess_diploma_eligibility(document_data: dict, profile_data: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# MAIN DYNAMIC ASSESSMENT (used by app.py)
+# MAIN DYNAMIC ASSESSMENT 
 # ─────────────────────────────────────────────
 
 def assess_eligibility_dynamic(profile_data: dict, document_data: dict) -> dict:
@@ -226,7 +226,7 @@ def assess_eligibility_dynamic(profile_data: dict, document_data: dict) -> dict:
     except Exception as e:
         # Non-fatal — basic assessment already populated
         base.setdefault("notes", []).append(
-            f"ℹ️ Enhanced eligibility check unavailable: {e}"
+            f"ℹ Enhanced eligibility check unavailable: {e}"
         )
 
     return base

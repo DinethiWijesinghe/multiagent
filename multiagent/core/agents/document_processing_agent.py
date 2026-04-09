@@ -86,7 +86,7 @@ def _load_ml_model():
     print("[Agent] No saved model found — training mini model ...")
     return _train_mini()
 
-_ML_MODEL = None   # lazy load on first use
+_ML_MODEL = None   
 
 def _get_ml_model():
     global _ML_MODEL
