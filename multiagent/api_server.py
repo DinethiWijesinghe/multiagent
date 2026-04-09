@@ -24,6 +24,7 @@ import random
 import secrets
 import time
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from hashlib import pbkdf2_hmac
 from pathlib import Path
@@ -38,7 +39,7 @@ from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import StratifiedKFold, cross_validate
 
 _MODULE_DIR = Path(__file__).resolve().parent
 for _env_path in (_MODULE_DIR / ".env", _MODULE_DIR.parent / ".env"):
@@ -50,6 +51,7 @@ for _env_path in (_MODULE_DIR / ".env", _MODULE_DIR.parent / ".env"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 MODEL_PATH           = "uniassist_classifier.pkl"
+MODEL_METRICS_PATH   = "uniassist_classifier_metrics.json"
 CONFIDENCE_THRESHOLD = 0.40
 MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
 # Default to degraded mode unless explicitly forced strict; this keeps boot probes alive
@@ -476,9 +478,8 @@ def _build_corpus():
 # ML MODEL — TF-IDF + Naive Bayes
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _train(verbose=True):
-    texts, labels = _build_corpus()
-    pipe = Pipeline([
+def _build_classifier_pipeline():
+    return Pipeline([
         ("tfidf", TfidfVectorizer(
             ngram_range=(1, 2), max_features=8000,
             sublinear_tf=True, min_df=1,
@@ -486,15 +487,75 @@ def _train(verbose=True):
         )),
         ("nb", MultinomialNB(alpha=0.3)),
     ])
+
+
+def _max_stratified_folds(labels, max_folds=5):
+    counts = Counter(labels)
+    if not counts:
+        return 0
+    min_count = min(counts.values())
+    if min_count < 2:
+        return 0
+    return min(max_folds, min_count)
+
+
+def _evaluate_document_classifier(texts, labels):
+    folds = _max_stratified_folds(labels)
+    if folds < 2:
+        return {
+            "available": False,
+            "reason": "Need at least 2 samples per class for stratified cross-validation.",
+            "samples": len(labels),
+            "classes": dict(Counter(labels)),
+        }
+
+    scoring = {
+        "accuracy": "accuracy",
+        "precision_macro": "precision_macro",
+        "recall_macro": "recall_macro",
+        "f1_macro": "f1_macro",
+    }
+    cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+    result = cross_validate(_build_classifier_pipeline(), texts, labels, cv=cv, scoring=scoring, n_jobs=1)
+
+    metrics = {
+        name.replace("test_", ""): {
+            "mean": round(float(values.mean()), 4),
+            "std": round(float(values.std()), 4),
+        }
+        for name, values in result.items()
+        if name.startswith("test_")
+    }
+    return {
+        "available": True,
+        "samples": len(labels),
+        "classes": dict(Counter(labels)),
+        "cv_folds": folds,
+        "metrics": metrics,
+    }
+
+
+def _train(verbose=True):
+    texts, labels = _build_corpus()
+    pipe = _build_classifier_pipeline()
+    metrics = _evaluate_document_classifier(texts, labels)
     if verbose:
-        cv = cross_val_score(pipe, texts, labels, cv=5, scoring="accuracy")
-        print(f"[ML] CV accuracy: {cv.mean():.1%} ± {cv.std():.1%}")
+        if metrics.get("available"):
+            accuracy = metrics["metrics"]["accuracy"]
+            f1_macro = metrics["metrics"]["f1_macro"]
+            print(f"[ML] CV accuracy: {accuracy['mean']:.1%} ± {accuracy['std']:.1%}")
+            print(f"[ML] CV macro F1: {f1_macro['mean']:.1%} ± {f1_macro['std']:.1%}")
+        else:
+            print(f"[ML] Internal evaluation unavailable: {metrics.get('reason', 'unknown reason')}")
         print(f"[ML] Training {len(texts)} samples | {len(TRAINING_DATA)} classes ...")
     pipe.fit(texts, labels)
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(pipe, f)
+    with open(MODEL_METRICS_PATH, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
     if verbose:
         print(f"[ML] Saved → {MODEL_PATH}")
+        print(f"[ML] Metrics → {MODEL_METRICS_PATH}")
     return pipe
 
 
@@ -1258,15 +1319,8 @@ POLICY_SCHOLARSHIPS_CONFIDENCE = _env_float("POLICY_SCHOLARSHIPS_CONFIDENCE", 0.
 POLICY_ELIGIBILITY_THRESHOLDS_URL = (os.environ.get("POLICY_ELIGIBILITY_THRESHOLDS_URL") or "").strip()
 POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE = _env_float("POLICY_ELIGIBILITY_THRESHOLDS_CONFIDENCE", 0.9)
 SESSION_TTL_HOURS = _env_int("SESSION_TTL_HOURS", 24 * 30)
-ALLOW_PRIVILEGED_SELF_REGISTRATION = _env_true("ALLOW_PRIVILEGED_SELF_REGISTRATION", False)
 PASSWORD_MIN_LENGTH = _env_int("PASSWORD_MIN_LENGTH", 6)
 PASSWORD_REQUIRE_COMPLEXITY = _env_true("PASSWORD_REQUIRE_COMPLEXITY", False)
-BOOTSTRAP_ADMIN_EMAIL = (os.environ.get("BOOTSTRAP_ADMIN_EMAIL") or "").strip().lower()
-BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD") or ""
-BOOTSTRAP_ADMIN_NAME = (os.environ.get("BOOTSTRAP_ADMIN_NAME") or "System Admin").strip() or "System Admin"
-BOOTSTRAP_ADVISOR_EMAIL = (os.environ.get("BOOTSTRAP_ADVISOR_EMAIL") or "").strip().lower()
-BOOTSTRAP_ADVISOR_PASSWORD = os.environ.get("BOOTSTRAP_ADVISOR_PASSWORD") or ""
-BOOTSTRAP_ADVISOR_NAME = (os.environ.get("BOOTSTRAP_ADVISOR_NAME") or "System Advisor").strip() or "System Advisor"
 AUTH_WINDOW_SECONDS = _env_int("AUTH_WINDOW_SECONDS", 300)
 AUTH_MAX_LOGIN_ATTEMPTS = _env_int("AUTH_MAX_LOGIN_ATTEMPTS", 10)
 METRICS_PUBLIC = _env_true("METRICS_PUBLIC", True)
@@ -1328,7 +1382,7 @@ class RegisterPayload(BaseModel):
     name: str
     email: str
     password: str
-    role: Literal["student", "advisor", "admin"] = "student"
+    role: Literal["student"] = "student"
 
 
 class LoginPayload(BaseModel):
@@ -1339,10 +1393,6 @@ class LoginPayload(BaseModel):
 class UserStatePayload(BaseModel):
     user_id: str
     state: dict[str, Any]
-
-
-class UpdateRolePayload(BaseModel):
-    role: Literal["student", "advisor", "admin"]
 
 
 class SubmitApplicationPayload(BaseModel):
@@ -1358,7 +1408,6 @@ class SubmitApplicationPayload(BaseModel):
 
 class UpdateApplicationStatusPayload(BaseModel):
     status: Literal["submitted", "under_review", "accepted", "rejected", "withdrawn"]
-    advisor_notes: str | None = None
 
 
 class HistoricalOutcomePayload(BaseModel):
@@ -1401,25 +1450,11 @@ def _normalize_email(value: str) -> str:
 
 
 def _normalize_user_role(value: str | None, *, strict: bool = False) -> str:
-    """Normalize role labels from payloads or persisted records.
-
-    strict=True should be used for external input validation.
-    strict=False is tolerant for legacy stored values to prevent auth lockouts.
-    """
     raw = (value or "student").strip().lower()
-    alias_map = {
-        "adviser": "advisor",
-        "advisr": "advisor",
-        "counselor": "advisor",
-        "counsellor": "advisor",
-        "administrator": "admin",
-        "superadmin": "admin",
-    }
-    role = alias_map.get(raw, raw)
-    if role in {"student", "advisor", "admin"}:
-        return role
+    if raw == "student":
+        return "student"
     if strict:
-        raise HTTPException(status_code=400, detail="Role must be one of: student, advisor, admin")
+        raise HTTPException(status_code=400, detail="Role must be student")
     return "student"
 
 
@@ -2069,31 +2104,19 @@ def _upsert_user_account(email_raw: str, password: str, name_raw: str, role: str
     return users[email]
 
 
-def _bootstrap_user_from_env(email_raw: str, password: str, name_raw: str, role: str) -> bool:
-    """Create or update one bootstrap user from environment variables."""
-    return _upsert_user_account(email_raw, password, name_raw, role) is not None
-
-
 _DEMO_SEED_ACCOUNTS = [
-    ("admin@example.com",   "Admin@123",   "System Admin",   "admin"),
-    ("advisor@example.com", "Advisor@123", "System Advisor", "advisor"),
     ("student@example.com", "Student@123", "Demo Student",   "student"),
 ]
 
 
 def _auto_seed_demo_users_if_empty() -> None:
-    """Ensure demo admin/advisor/student accounts exist.
-
-    Creates any missing demo account on every startup.
-    Skips accounts that already exist so existing passwords are preserved.
-    """
+    """Ensure one demo student account exists for fresh environments."""
     try:
         users = _load_users()
         seeded_any = False
         for email, password, name, role in _DEMO_SEED_ACCOUNTS:
             if email in users:
                 continue  # already exists — leave as-is
-            # Only seed demo student when DB is completely empty
             if role == "student" and users:
                 continue
             try:
@@ -2103,33 +2126,9 @@ def _auto_seed_demo_users_if_empty() -> None:
             except Exception as exc:
                 print(f"[Auth] Failed to seed {email}: {exc}")
         if seeded_any:
-            print("[Auth] Demo seeding done. Use admin@example.com / Admin@123 to log in.")
+            print("[Auth] Demo seeding done. Use student@example.com / Student@123 to log in.")
     except Exception as exc:
         print(f"[Auth] Auto-seed skipped: {exc}")
-
-
-def _bootstrap_admin_user_from_env() -> None:
-    """Create or update one bootstrap admin user from environment variables."""
-    created = _bootstrap_user_from_env(
-        BOOTSTRAP_ADMIN_EMAIL,
-        BOOTSTRAP_ADMIN_PASSWORD or "",
-        BOOTSTRAP_ADMIN_NAME,
-        "admin",
-    )
-    if created:
-        print(f"[Auth] Bootstrap admin ensured: {_normalize_email(BOOTSTRAP_ADMIN_EMAIL)}")
-
-
-def _bootstrap_advisor_user_from_env() -> None:
-    """Create or update one bootstrap advisor user from environment variables."""
-    created = _bootstrap_user_from_env(
-        BOOTSTRAP_ADVISOR_EMAIL,
-        BOOTSTRAP_ADVISOR_PASSWORD or "",
-        BOOTSTRAP_ADVISOR_NAME,
-        "advisor",
-    )
-    if created:
-        print(f"[Auth] Bootstrap advisor ensured: {_normalize_email(BOOTSTRAP_ADVISOR_EMAIL)}")
 
 
 def _load_sessions() -> dict[str, dict[str, Any]]:
@@ -2308,17 +2307,8 @@ def _require_role(authorization: str | None, allowed: set[str]) -> str:
     return email
 
 
-def _require_admin(authorization: str | None = Header(default=None)) -> str:
-    return _require_role(authorization, {"admin"})
-
-
-def _require_advisor_or_admin(authorization: str | None = Header(default=None)) -> str:
-    return _require_role(authorization, {"advisor", "admin"})
-
-
 def _require_auth(authorization: str | None = Header(default=None)) -> str:
-    """Any authenticated user (student, advisor, or admin)."""
-    return _require_role(authorization, {"student", "advisor", "admin"})
+    return _require_role(authorization, {"student"})
 
 
 def _ensure_user_access(user_id: str, current_user_email: str) -> str:
@@ -2667,9 +2657,6 @@ def startup():
 
     _initialize_database()
 
-    _bootstrap_admin_user_from_env()
-    _bootstrap_advisor_user_from_env()
-
     # Auto-seed demo accounts when the database is empty (first run or fresh DB)
     _auto_seed_demo_users_if_empty()
 
@@ -2876,7 +2863,7 @@ def ocr_readiness():
 @app.get("/metrics")
 def get_metrics(authorization: str | None = Header(default=None)):
     if not METRICS_PUBLIC:
-        _require_admin(authorization)
+        _require_auth(authorization)
     if _metrics_collector is None:
         raise HTTPException(status_code=503, detail="Metrics collector is unavailable")
     return _metrics_collector.get_summary()
@@ -2885,7 +2872,7 @@ def get_metrics(authorization: str | None = Header(default=None)):
 @app.get("/metrics/flows")
 def get_metrics_flows(limit: int = 20, authorization: str | None = Header(default=None)):
     if not METRICS_PUBLIC:
-        _require_admin(authorization)
+        _require_auth(authorization)
     if _metrics_collector is None:
         raise HTTPException(status_code=503, detail="Metrics collector is unavailable")
     safe_limit = max(1, min(int(limit), 200))
@@ -2940,8 +2927,7 @@ def register(payload: RegisterPayload):
     name = (payload.name or "").strip()
     email = _normalize_email(payload.email)
     password = payload.password or ""
-    requested_role = _normalize_user_role(payload.role, strict=True)
-    role = "student"
+    _normalize_user_role(payload.role, strict=True)
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
     if not email:
@@ -2952,17 +2938,11 @@ def register(payload: RegisterPayload):
     if email in users:
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
-    if requested_role != "student":
-        if ALLOW_PRIVILEGED_SELF_REGISTRATION:
-            role = requested_role
-        else:
-            role = "student"
-
     users[email] = {
         "name": name,
         "email": email,
         "password_hash": _hash_password(password),
-        "role": role,
+        "role": "student",
         "created_at": _utc_now(),
     }
     _save_users(users)
@@ -2971,7 +2951,7 @@ def register(payload: RegisterPayload):
         "user": {
             "name": name,
             "email": email,
-            "role": role,
+            "role": "student",
         },
     }
 
@@ -2980,7 +2960,7 @@ def register(payload: RegisterPayload):
 def auth_config():
     """Return safe auth-related feature flags for frontend UX."""
     return {
-        "allow_privileged_self_registration": ALLOW_PRIVILEGED_SELF_REGISTRATION,
+        "allow_privileged_self_registration": False,
         "password_min_length": PASSWORD_MIN_LENGTH,
         "password_require_complexity": PASSWORD_REQUIRE_COMPLEXITY,
     }
@@ -3480,289 +3460,6 @@ async def ocr_endpoint(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ADVISOR / ADMIN ENDPOINTS
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.get("/advisor/students")
-def advisor_list_students(current_user_email: str = Depends(_require_advisor_or_admin)):
-    """Return all student accounts with their live application state and document counts."""
-    users = _load_users()
-    result = []
-    for email, u in users.items():
-        role = _normalize_user_role(u.get("role"), strict=False)
-        if role != "student":
-            continue
-        state = _load_user_state_record(email)
-        docs = _load_document_records(email)
-        if not isinstance(docs, list):
-            docs = []
-
-        raw_step = state.get("step", 1) if isinstance(state, dict) else 1
-        try:
-            step = int(raw_step)
-        except Exception:
-            step = 1
-        step = max(1, min(step, 4))
-
-        doc_count = len(docs)
-        completion = min(int((step / 4) * 100), 100)
-        if step >= 4:
-            status = "completed"
-        elif step >= 2:
-            status = "in-progress"
-        else:
-            status = "started"
-        quality = "excellent" if doc_count >= 3 else ("good" if doc_count >= 1 else "warning")
-        elig = state.get("elig") if isinstance(state, dict) else None
-        if elig is None:
-            eligibility = "pending"
-        elif isinstance(elig, dict) and bool(elig.get("eligible")):
-            eligibility = "eligible"
-        else:
-            eligibility = "ineligible"
-        result.append({
-            "email": email,
-            "name": u.get("name") or email,
-            "status": status,
-            "completion": completion,
-            "lastUpdated": (u.get("created_at") or "")[:10],
-            "dataQuality": quality,
-            "documents": doc_count,
-            "eligibility": eligibility,
-            "step": step,
-        })
-    result.sort(key=lambda x: x["name"].lower())
-    return {"students": result}
-
-
-@app.get("/admin/stats")
-def admin_stats(current_user_email: str = Depends(_require_admin)):
-    """Return live system statistics derived from real user and application data."""
-    users = _load_users()
-    role_counts: dict[str, int] = {"student": 0, "advisor": 0, "admin": 0}
-    completed = 0
-    pending = 0
-    for email, u in users.items():
-        role = _normalize_user_role(u.get("role"), strict=False)
-        role_counts[role] += 1
-        if role == "student":
-            state = _load_user_state_record(email)
-            step = state.get("step", 1) if isinstance(state, dict) else 1
-            if step >= 4:
-                completed += 1
-            elif step >= 2:
-                pending += 1
-    n_students = role_counts["student"]
-    return {
-        "totalUsers": len(users),
-        "totalStudents": n_students,
-        "totalAdvisors": role_counts["advisor"],
-        "totalAdmins": role_counts["admin"],
-        "completedApplications": completed,
-        "pendingApplications": pending,
-        "dataQualityScore": round((completed / n_students * 100) if n_students else 0.0, 1),
-    }
-
-
-@app.get("/admin/policies/{policy_key}")
-def admin_get_policy_snapshot(policy_key: str, current_user_email: str = Depends(_require_admin)):
-    snapshot = _load_policy_snapshot(policy_key)
-    if not snapshot:
-        raise HTTPException(status_code=404, detail=f"Policy snapshot not found: {policy_key}")
-    return snapshot
-
-
-@app.post("/admin/policies/ingest/visa-risk")
-def admin_ingest_visa_risk_policy(current_user_email: str = Depends(_require_admin)):
-    _ingest_visa_risk_snapshot()
-    snapshot = _load_policy_snapshot("visa_risk_matrix")
-    if not snapshot:
-        raise HTTPException(status_code=500, detail="Visa risk snapshot ingestion did not produce a persisted record")
-    return {
-        "success": True,
-        "policy_key": "visa_risk_matrix",
-        "source": snapshot.get("source"),
-        "updated_at": snapshot.get("updated_at"),
-        "confidence": snapshot.get("confidence"),
-    }
-
-
-@app.post("/admin/policies/ingest/all")
-def admin_ingest_all_policies(current_user_email: str = Depends(_require_admin)):
-    _run_policy_ingestion_jobs()
-    return {
-        "success": True,
-        "snapshots": {
-            "visa_risk_matrix": _policy_snapshot_status("visa_risk_matrix"),
-            "living_costs": _policy_snapshot_status("living_costs"),
-            "scholarships": _policy_snapshot_status("scholarships"),
-            "eligibility_thresholds": _policy_snapshot_status("eligibility_thresholds"),
-        },
-    }
-
-
-@app.post("/admin/seed-defaults")
-def admin_seed_defaults(current_user_email: str = Depends(_require_admin)):
-    """(Re-)seed demo accounts. Existing accounts are updated; new ones created."""
-    results = []
-    for email, password, name, role in _DEMO_SEED_ACCOUNTS:
-        try:
-            record = _upsert_user_account(email, password, name, role)
-            results.append({"email": email, "role": role, "status": "ok" if record else "skipped"})
-        except Exception as exc:
-            results.append({"email": email, "role": role, "status": f"error: {exc}"})
-    return {"seeded": results}
-
-
-@app.get("/admin/users")
-def admin_list_users(current_user_email: str = Depends(_require_admin)):
-    """Return the full user list for admin management."""
-    users = _load_users()
-    result = [
-        {
-            "email": email,
-            "name": u.get("name") or email,
-            "role": _normalize_user_role(u.get("role"), strict=False),
-            "created": (u.get("created_at") or "")[:10],
-            "login_ready": bool(u.get("password_hash")),
-        }
-        for email, u in users.items()
-    ]
-    result.sort(key=lambda x: x["created"], reverse=True)
-    return {"users": result, "total": len(result)}
-
-
-@app.get("/admin/audit")
-def admin_audit_events(current_user_email: str = Depends(_require_admin)):
-    """Return a best-effort audit stream derived from live persisted records."""
-    events: list[dict[str, Any]] = []
-
-    users = _load_users()
-    for email, user in users.items():
-        created_at = user.get("created_at")
-        if created_at:
-            events.append({
-                "timestamp": created_at,
-                "action": "USER_REGISTER",
-                "actor": email,
-                "target": "AUTH",
-                "details": f"Registered as {_normalize_user_role(user.get('role'), strict=False)}",
-            })
-
-    sessions = _load_sessions()
-    for _, session_data in sessions.items():
-        email = _normalize_email(session_data.get("email", ""))
-        created_at = session_data.get("created_at")
-        if email and created_at:
-            events.append({
-                "timestamp": created_at,
-                "action": "LOGIN",
-                "actor": email,
-                "target": "AUTH",
-                "details": "Logged in successfully",
-            })
-
-    for email in users.keys():
-        for doc in _load_document_records(email):
-            timestamp = doc.get("stored_at")
-            if not timestamp:
-                continue
-            doc_name = doc.get("filename") or "document"
-            events.append({
-                "timestamp": timestamp,
-                "action": "DOCUMENT_UPLOAD",
-                "actor": email,
-                "target": email,
-                "details": f"Uploaded {doc_name}",
-            })
-
-    events.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
-    return {"events": events[:200]}
-
-
-@app.patch("/admin/users/{user_email}/role")
-def admin_update_user_role(
-    user_email: str,
-    payload: UpdateRolePayload,
-    current_user_email: str = Depends(_require_admin),
-):
-    """Change a user's role. Admins cannot change their own role."""
-    normalized = _normalize_email(user_email)
-    if normalized == current_user_email:
-        raise HTTPException(status_code=400, detail="You cannot change your own role")
-    users = _load_users()
-    if normalized not in users:
-        raise HTTPException(status_code=404, detail="User not found")
-    new_role = _normalize_user_role(payload.role, strict=True)
-    users[normalized]["role"] = new_role
-    users[normalized]["updated_at"] = _utc_now()
-    _save_users(users)
-    return {"success": True, "email": normalized, "role": new_role}
-
-
-@app.post("/admin/historical-outcomes/import")
-def admin_import_historical_outcomes(
-    payload: ImportHistoricalOutcomesPayload,
-    current_user_email: str = Depends(_require_admin),
-):
-    """Import real historical admissions outcomes for model training."""
-    records = payload.records or []
-    if not records:
-        raise HTTPException(status_code=400, detail="No records provided")
-
-    imported = 0
-    skipped = 0
-    for item in records:
-        ok = _append_imported_historical_outcome(item.model_dump())
-        if ok:
-            imported += 1
-        else:
-            skipped += 1
-    return {
-        "success": True,
-        "imported": imported,
-        "skipped": skipped,
-        "path": str(HISTORICAL_OUTCOMES_PATH),
-    }
-
-
-@app.get("/admin/historical-outcomes/stats")
-def admin_historical_outcomes_stats(
-    current_user_email: str = Depends(_require_admin),
-):
-    total = 0
-    accepted = 0
-    rejected = 0
-    if HISTORICAL_OUTCOMES_PATH.exists():
-        try:
-            with open(HISTORICAL_OUTCOMES_PATH, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    raw = (line or "").strip()
-                    if not raw:
-                        continue
-                    try:
-                        row = json.loads(raw)
-                    except Exception:
-                        continue
-                    if not isinstance(row, dict):
-                        continue
-                    total += 1
-                    outcome = str(row.get("admission_outcome", "")).strip().lower()
-                    if outcome == "accepted":
-                        accepted += 1
-                    elif outcome == "rejected":
-                        rejected += 1
-        except Exception:
-            pass
-    return {
-        "total": total,
-        "accepted": accepted,
-        "rejected": rejected,
-        "path": str(HISTORICAL_OUTCOMES_PATH),
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # APPLICATIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3799,7 +3496,6 @@ def submit_application(
         "eligibility_tier": payload.eligibility_tier or "",
         "grade_point": payload.grade_point or 0.0,
         "notes": payload.notes or "",
-        "advisor_notes": "",
         "university_data": payload.university_data or {},
         "status": "submitted",
         "submitted_at": _utc_now(),
@@ -3813,12 +3509,8 @@ def submit_application(
 def list_applications(
     current_user_email: str = Depends(_require_auth),
 ):
-    """List applications. Students see their own; advisors/admins see all."""
-    users = _load_users()
-    role = (users.get(current_user_email, {}).get("role") or "student").lower()
+    """List applications for the currently authenticated student."""
     all_apps = _load_applications()
-    if role in ("advisor", "admin"):
-        return {"applications": sorted(all_apps, key=lambda a: a.get("submitted_at", ""), reverse=True)}
     own = [a for a in all_apps if a.get("user_id") == current_user_email]
     return {"applications": sorted(own, key=lambda a: a.get("submitted_at", ""), reverse=True)}
 
@@ -3832,9 +3524,7 @@ def get_application(
     app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
     if not app_record:
         raise HTTPException(status_code=404, detail="Application not found")
-    users = _load_users()
-    role = (users.get(current_user_email, {}).get("role") or "student").lower()
-    if role not in ("advisor", "admin") and app_record.get("user_id") != current_user_email:
+    if app_record.get("user_id") != current_user_email:
         raise HTTPException(status_code=403, detail="Access denied")
     return app_record
 
@@ -3845,24 +3535,18 @@ def update_application_status(
     payload: UpdateApplicationStatusPayload,
     current_user_email: str = Depends(_require_auth),
 ):
-    """Advisor/admin updates status; student can only withdraw their own."""
+    """Students can only withdraw their own submitted applications."""
     all_apps = _load_applications()
     app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
     if not app_record:
         raise HTTPException(status_code=404, detail="Application not found")
     previous_status = str(app_record.get("status", "")).strip().lower()
-    users = _load_users()
-    role = (users.get(current_user_email, {}).get("role") or "student").lower()
-    if role not in ("advisor", "admin"):
-        # Students may only withdraw their own
-        if app_record.get("user_id") != current_user_email:
-            raise HTTPException(status_code=403, detail="Access denied")
-        if payload.status != "withdrawn":
-            raise HTTPException(status_code=403, detail="Students can only withdraw applications")
+    if app_record.get("user_id") != current_user_email:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if payload.status != "withdrawn":
+        raise HTTPException(status_code=403, detail="Students can only withdraw applications")
     app_record["status"] = payload.status
     app_record["updated_at"] = _utc_now()
-    if payload.advisor_notes is not None:
-        app_record["advisor_notes"] = payload.advisor_notes
     _save_application(app_record)
 
     new_status = str(payload.status).strip().lower()
@@ -3880,18 +3564,12 @@ def delete_application(
     application_id: str,
     current_user_email: str = Depends(_require_auth),
 ):
-    """Hard-delete (admin only) or withdraw (student/advisor)."""
+    """Students can withdraw their own applications."""
     all_apps = _load_applications()
     app_record = next((a for a in all_apps if a.get("application_id") == application_id), None)
     if not app_record:
         raise HTTPException(status_code=404, detail="Application not found")
-    users = _load_users()
-    role = (users.get(current_user_email, {}).get("role") or "student").lower()
-    if role == "admin":
-        app_record["status"] = "withdrawn"
-        app_record["updated_at"] = _utc_now()
-        _save_application(app_record)
-    elif app_record.get("user_id") == current_user_email:
+    if app_record.get("user_id") == current_user_email:
         app_record["status"] = "withdrawn"
         app_record["updated_at"] = _utc_now()
         _save_application(app_record)

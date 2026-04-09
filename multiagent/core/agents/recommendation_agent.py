@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
+from collections import Counter
 import json
 import logging
 import os
@@ -9,6 +10,8 @@ import urllib.request
 
 try:
     from sklearn.ensemble import RandomForestClassifier as _RFC
+    from sklearn.metrics import brier_score_loss
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict, cross_validate
 except Exception:
     _RFC = None
 
@@ -85,6 +88,7 @@ class RecommendationAgent:
         self.ml_mode = (os.environ.get("RECOMMENDATION_ML_MODE", "auto") or "auto").strip().lower()
         self._ml_model = None
         self._ml_trained = False
+        self.model_metrics: Dict[str, Any] = {}
         self._init_ml_model()
 
     def _normalize_country_label(self, value: str) -> str:
@@ -197,25 +201,24 @@ class RecommendationAgent:
             return
         if _RFC is None:
             logger.warning("RecommendationAgent: scikit-learn unavailable; using heuristic mode.")
+            self.model_metrics = {"available": False, "reason": "scikit-learn unavailable"}
             return
 
         rows = self._load_outcomes(self.historical_outcomes_path)
-        X: List[List[float]] = []
-        y: List[int] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            outcome = str(row.get("admission_outcome", "")).strip().lower()
-            if outcome not in {"accepted", "rejected"}:
-                continue
-            X.append(self._features_from_record(row))
-            y.append(1 if outcome == "accepted" else 0)
+        X, y = self._build_training_dataset(rows)
 
         # Safety gate: avoid unstable training with tiny datasets.
         if len(X) < 30 or len(set(y)) < 2:
+            self.model_metrics = {
+                "available": False,
+                "reason": "Need at least 30 labeled outcomes across 2 classes.",
+                "samples": len(y),
+                "classes": dict(Counter(y)),
+            }
             return
 
         try:
+            self.model_metrics = self._evaluate_model(X, y)
             self._ml_model = _RFC(n_estimators=120, random_state=42, class_weight="balanced")
             self._ml_model.fit(X, y)
             self._ml_trained = True
@@ -224,6 +227,7 @@ class RecommendationAgent:
             logger.warning(f"RecommendationAgent: ML train failed; fallback to heuristic. {exc}")
             self._ml_model = None
             self._ml_trained = False
+            self.model_metrics = {"available": False, "reason": str(exc)}
 
     def _load_outcomes(self, path: str) -> list:
         if not path or not os.path.exists(path):
@@ -248,6 +252,80 @@ class RecommendationAgent:
         risk = self._resolve_visa_risk(country, nationality)
         # Higher value = lower risk
         return {"low": 1.0, "medium": 0.6, "high": 0.2, "unknown": 0.5}.get(risk, 0.5)
+
+    def _build_training_dataset(self, rows: List[Dict]) -> tuple[List[List[float]], List[int]]:
+        X: List[List[float]] = []
+        y: List[int] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            outcome = str(row.get("admission_outcome", "")).strip().lower()
+            if outcome not in {"accepted", "rejected"}:
+                continue
+            X.append(self._features_from_record(row))
+            y.append(1 if outcome == "accepted" else 0)
+        return X, y
+
+    def _max_cv_splits(self, labels: List[int], max_splits: int = 5) -> int:
+        counts = Counter(labels)
+        if not counts:
+            return 0
+        min_count = min(counts.values())
+        if min_count < 2:
+            return 0
+        return min(max_splits, min_count)
+
+    def _evaluate_model(self, X: List[List[float]], y: List[int]) -> Dict[str, Any]:
+        folds = self._max_cv_splits(y)
+        if folds < 2:
+            return {
+                "available": False,
+                "reason": "Need at least 2 samples per class for stratified cross-validation.",
+                "samples": len(y),
+                "classes": dict(Counter(y)),
+            }
+
+        estimator = _RFC(n_estimators=120, random_state=42, class_weight="balanced")
+        cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+        scoring = {
+            "accuracy": "accuracy",
+            "precision": "precision",
+            "recall": "recall",
+            "f1": "f1",
+            "roc_auc": "roc_auc",
+            "average_precision": "average_precision",
+            "neg_log_loss": "neg_log_loss",
+        }
+        results = cross_validate(estimator, X, y, cv=cv, scoring=scoring, n_jobs=1)
+        probabilities = cross_val_predict(estimator, X, y, cv=cv, method="predict_proba", n_jobs=1)[:, 1]
+        metrics = {
+            name.replace("test_", ""): {
+                "mean": round(float(values.mean()), 4),
+                "std": round(float(values.std()), 4),
+            }
+            for name, values in results.items()
+            if name.startswith("test_")
+        }
+        if "neg_log_loss" in metrics:
+            metrics["log_loss"] = {
+                "mean": round(-metrics.pop("neg_log_loss")["mean"], 4),
+                "std": metrics.get("log_loss", {}).get("std", 0.0),
+            }
+            metrics["log_loss"]["std"] = round(float(results["test_neg_log_loss"].std()), 4)
+        metrics["brier_score"] = {
+            "mean": round(float(brier_score_loss(y, probabilities)), 4),
+            "std": 0.0,
+        }
+        return {
+            "available": True,
+            "samples": len(y),
+            "classes": dict(Counter(y)),
+            "cv_folds": folds,
+            "metrics": metrics,
+        }
+
+    def get_model_metrics(self) -> Dict[str, Any]:
+        return dict(self.model_metrics)
 
     def _features_from_record(self, row: Dict) -> List[float]:
         gpa = float(row.get("gpa") or 0.0)

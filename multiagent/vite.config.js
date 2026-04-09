@@ -13,8 +13,6 @@ export default defineConfig({
       '/documents': 'http://127.0.0.1:8000',
       '/chat': 'http://127.0.0.1:8000',
       '/ocr': 'http://127.0.0.1:8000',
-      '/admin': 'http://127.0.0.1:8000',
-      '/advisor': 'http://127.0.0.1:8000',
       '/applications': 'http://127.0.0.1:8000',
       '/metrics': 'http://127.0.0.1:8000',
     },

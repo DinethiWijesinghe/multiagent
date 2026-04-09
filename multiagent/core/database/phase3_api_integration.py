@@ -44,6 +44,7 @@ import numpy as np
 try:
     from sklearn.linear_model import Ridge
     from sklearn.metrics import mean_absolute_error
+    from sklearn.metrics import mean_squared_error
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import PolynomialFeatures, StandardScaler
     ML_AVAILABLE = True
@@ -290,6 +291,7 @@ class Phase3MLEngine:
     def __init__(self):
         self.models  = {}
         self.trained = False
+        self.model_metrics = {}
         self._try_load()
 
     def _try_load(self):
@@ -305,6 +307,45 @@ class Phase3MLEngine:
             except Exception as e:
                 print(f"[Phase3-ML] Load failed: {e}")
 
+    def _build_model(self) -> Pipeline:
+        return Pipeline([
+            ("poly", PolynomialFeatures(degree=2, include_bias=True)),
+            ("scaler", StandardScaler()),
+            ("reg", Ridge(alpha=1.0)),
+        ])
+
+    def _walk_forward_metrics(self, history: List[tuple[int, int, float]], min_train_size: int = 8) -> dict:
+        if len(history) <= min_train_size:
+            return {
+                "available": False,
+                "reason": f"Need more than {min_train_size} observations for walk-forward validation.",
+                "observations": len(history),
+            }
+
+        actuals = []
+        predictions = []
+        for idx in range(min_train_size, len(history)):
+            train_history = history[:idx]
+            target_year, target_month, target_rate = history[idx]
+            X_train = np.array([[_months_since_2020(y, m)] for y, m, _ in train_history])
+            y_train = np.array([r for _, _, r in train_history])
+            model = self._build_model()
+            model.fit(X_train, y_train)
+            X_test = np.array([[_months_since_2020(target_year, target_month)]])
+            predictions.append(float(model.predict(X_test)[0]))
+            actuals.append(float(target_rate))
+
+        actual_arr = np.array(actuals)
+        pred_arr = np.array(predictions)
+        mape = float(np.mean(np.abs((actual_arr - pred_arr) / np.clip(actual_arr, 1e-9, None))) * 100)
+        return {
+            "available": True,
+            "backtest_points": len(actuals),
+            "mae_lkr": round(float(mean_absolute_error(actual_arr, pred_arr)), 4),
+            "rmse_lkr": round(float(np.sqrt(mean_squared_error(actual_arr, pred_arr))), 4),
+            "mape_pct": round(mape, 4),
+        }
+
     def train(self, verbose=True) -> dict:
         if not ML_AVAILABLE:
             return {"error": "scikit-learn not available"}
@@ -312,17 +353,22 @@ class Phase3MLEngine:
         for currency, history in HISTORICAL_RATES_LKR.items():
             X = np.array([[_months_since_2020(y, m)] for y, m, _ in history])
             y = np.array([r for _, _, r in history])
-            model = Pipeline([
-                ("poly",   PolynomialFeatures(degree=2, include_bias=True)),
-                ("scaler", StandardScaler()),
-                ("reg",    Ridge(alpha=1.0)),
-            ])
+            model = self._build_model()
             model.fit(X, y)
             mae = mean_absolute_error(y, model.predict(X))
             self.models[currency] = model
-            metrics[currency] = {"mae_lkr": round(mae, 2), "data_points": len(history)}
+            walk_forward = self._walk_forward_metrics(history)
+            metrics[currency] = {
+                "train_mae_lkr": round(float(mae), 4),
+                "data_points": len(history),
+                "walk_forward": walk_forward,
+            }
             if verbose:
-                print(f"[Phase3-ML] {currency} trained | MAE: {mae:.1f} LKR")
+                msg = f"[Phase3-ML] {currency} trained | train MAE: {mae:.1f} LKR"
+                if walk_forward.get("available"):
+                    msg += f" | walk-forward MAE: {walk_forward['mae_lkr']:.1f}"
+                print(msg)
+        self.model_metrics = metrics
         self.trained = True
         os.makedirs(_MODEL_DIR, exist_ok=True)
         with open(os.path.join(_MODEL_DIR, "phase3_rate_models.pkl"), "wb") as f:

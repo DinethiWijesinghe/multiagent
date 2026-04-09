@@ -1,6 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import AdvisorDashboard from "./AdvisorDashboard.jsx";
-import AdminDashboard from "./AdminDashboard.jsx";
 import { apiFetch as fetchApi } from "./apiClient.js";
 
 // ── STYLES ─────────────────────────────────────────────────────────────────
@@ -449,7 +447,7 @@ function normalizeGpa(val,system){
 
 // ── CHATBOT ────────────────────────────────────────────────────────────────
 const BOT_INTRO = [
-  {id:"intro",role:"bot",text:"Hi! 👋 I'm your UniAssist advisor. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
+  {id:"intro",role:"bot",text:"Hi! 👋 I'm your UniAssist assistant. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
 ];
 
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
@@ -666,7 +664,7 @@ async function loginUser({email,password}){
         const checkResp = await fetchApi(`/auth/check-email/${encodeURIComponent(normalizedEmail)}`);
         const checkData = await checkResp.json().catch(()=>({}));
         if(!checkData.registered){
-          hint = `No account found for "${normalizedEmail}". Please register first, or use a seeded account: admin@example.com / Admin@123 or advisor@example.com / Advisor@123.`;
+          hint = `No account found for "${normalizedEmail}". Please register first, or use the seeded account: student@example.com / Student@123.`;
         } else if(!checkData.login_ready){
           hint = `Account found for "${normalizedEmail}" but it appears incomplete (no password stored). Please re-register or contact support.`;
         } else {
@@ -692,13 +690,6 @@ async function logoutUser(token){
     const payload = await response.json().catch(()=>({}));
     throw new Error(payload?.detail || `Logout failed (${response.status})`);
   }
-}
-
-async function fetchAuthConfig(){
-  const response = await fetchApi("/auth/config");
-  const payload = await response.json().catch(()=>({}));
-  if(!response.ok) throw new Error(payload?.detail || `Config load failed (${response.status})`);
-  return payload;
 }
 
 const CHAT_TIMEOUT_MS = (()=>{
@@ -911,7 +902,7 @@ function ChatBot({user}){
 
   return(
     <>
-      <button className="chat-fab" onClick={()=>setOpen(p=>!p)} title="Chat with AI Advisor">
+      <button className="chat-fab" onClick={()=>setOpen(p=>!p)} title="Chat with AI Assistant">
         {open ? "✕" : "💬"}
         {!open && unread>0 && <div className="chat-fab-badge">{unread}</div>}
       </button>
@@ -919,7 +910,7 @@ function ChatBot({user}){
         <div className="chat-header">
           <div className="chat-avatar">🎓</div>
           <div className="chat-header-info">
-            <div className="chat-header-name">UniAssist AI Advisor</div>
+            <div className="chat-header-name">UniAssist AI Assistant</div>
             <div className="chat-header-status"><div className="chat-header-dot"/>Online · Always ready</div>
           </div>
           <button className="chat-close" onClick={handleClearChat} type="button">Clear</button>
@@ -1273,15 +1264,6 @@ async function fetchApplications(token) {
   if (!res.ok) throw new Error("Failed to load applications.");
   const { applications } = await res.json();
   return applications;
-}
-
-async function updateApplicationStatus(appId, status, advisorNotes, token) {
-  const res = await fetchApi(`/applications/${appId}/status`, token, {
-    method: "PATCH",
-    body: JSON.stringify({ status, advisor_notes: advisorNotes || null }),
-  });
-  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(t || "Update failed."); }
-  return res.json();
 }
 
 async function withdrawApplication(appId, token) {
@@ -2109,7 +2091,6 @@ function ApplicationsTracker({ user, refreshKey }) {
             <div>
               <div style={{ fontWeight: 700, fontSize: ".92rem" }}>{app.university_name}</div>
               <div style={{ fontFamily: "var(--mono)", fontSize: ".68rem", color: "var(--text3)", marginTop: ".2rem" }}>{app.program} · {app.country}</div>
-              {app.advisor_notes && <div style={{ fontFamily: "var(--mono)", fontSize: ".66rem", color: "var(--amber)", marginTop: ".3rem" }}>Advisor: {app.advisor_notes}</div>}
               <div style={{ fontFamily: "var(--mono)", fontSize: ".62rem", color: "var(--text3)", marginTop: ".2rem" }}>Submitted {new Date(app.submitted_at).toLocaleDateString()}</div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: ".4rem" }}>
@@ -2249,25 +2230,9 @@ function AuthPage({onLogin}){
   const [email,setEmail]=useState("");
   const [pw,setPw]=useState("");
   const [name,setName]=useState("");
-  const [role,setRole]=useState("student");
   const [err,setErr]=useState("");
   const [ok,setOk]=useState("");
   const [loading,setLoading]=useState(false);
-  const [allowPrivilegedSelfRegistration, setAllowPrivilegedSelfRegistration] = useState(false);
-
-  useEffect(()=>{
-    let cancelled = false;
-    fetchAuthConfig()
-      .then((cfg)=>{
-        if(cancelled) return;
-        setAllowPrivilegedSelfRegistration(Boolean(cfg?.allow_privileged_self_registration));
-      })
-      .catch(()=>{
-        if(cancelled) return;
-        setAllowPrivilegedSelfRegistration(false);
-      });
-    return ()=>{cancelled = true;};
-  },[]);
 
   const login=async()=>{
     const normalizedEmail = (email || "").trim();
@@ -2308,7 +2273,7 @@ function AuthPage({onLogin}){
     setOk("");
     setLoading(true);
     try{
-      await registerUser({ name: normalizedName, email: normalizedEmail, password: pw, role });
+      await registerUser({ name: normalizedName, email: normalizedEmail, password: pw, role: "student" });
       setOk("Account created. You can now sign in.");
       setTimeout(()=>{
         setOk("");
@@ -2360,20 +2325,9 @@ function AuthPage({onLogin}){
               <label className="flabel">Password</label>
               <input type="password" value={pw} onChange={e=>setPw(e.target.value)} />
             </div>
-            {allowPrivilegedSelfRegistration ? (
-              <div className="field" style={{marginBottom:"1.5rem"}}>
-                <label className="flabel">Role</label>
-                <select value={role} onChange={e=>setRole(e.target.value)}>
-                  <option value="student">Student</option>
-                  <option value="advisor">Advisor</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
-            ) : (
-              <div style={{marginBottom:"1.5rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
-                New registrations are created as <strong>student</strong>. Admins can later promote accounts to advisor or admin.
-              </div>
-            )}
+            <div style={{marginBottom:"1.5rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
+              New registrations are created as <strong>student</strong>.
+            </div>
             {err&&<Alert type="error">{err}</Alert>}
             {ok&&<Alert type="ok">{ok}</Alert>}
             <button className="btn btn-primary btn-full" onClick={register} style={{marginTop:"1rem"}} disabled={loading}>
@@ -2403,8 +2357,8 @@ export default function App(){
   const [docData,setDocData]=useState({});
   const [elig,setElig]=useState(null);
   const [stateReady,setStateReady]=useState(false);
-  const role = (user?.role || "student").toLowerCase();
-  const dashboardLabel = role === "admin" ? "Admin Dashboard" : role === "advisor" ? "Advisor Dashboard" : "Student Dashboard";
+  const role = "student";
+  const dashboardLabel = "Student Dashboard";
 
   const handleDoc=(docPayload)=>{
     if(!docPayload) return;
@@ -2464,56 +2418,6 @@ export default function App(){
   },[user?.email,stateReady,step,profile,docData,elig]);
 
   if(!user) return <><style>{STYLES}</style><AuthPage onLogin={u=>{setUser(u);setProfile(p=>({...p,email:u.email}));}} /></>;
-
-  if(role === "admin"){
-    return (
-      <>
-        <style>{STYLES}</style>
-        <div className="app">
-          <div className="topbar">
-            <div className="logo">
-              <div className="logo-icon">🎓</div>
-              <span>UniAssist</span>
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
-              <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
-              <span className="user-tag" style={{textTransform:"uppercase"}}>{role}</span>
-              <button className="btn btn-danger btn-sm" onClick={logout}>Logout</button>
-            </div>
-          </div>
-          <div className="main">
-            <AdminDashboard user={user} />
-          </div>
-        </div>
-        <ChatBot user={user} />
-      </>
-    );
-  }
-
-  if(role === "advisor"){
-    return (
-      <>
-        <style>{STYLES}</style>
-        <div className="app">
-          <div className="topbar">
-            <div className="logo">
-              <div className="logo-icon">🎓</div>
-              <span>UniAssist</span>
-            </div>
-            <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
-              <span style={{fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>{user.name||user.email}</span>
-              <span className="user-tag" style={{textTransform:"uppercase"}}>{role}</span>
-              <button className="btn btn-danger btn-sm" onClick={logout}>Logout</button>
-            </div>
-          </div>
-          <div className="main">
-            <AdvisorDashboard user={user} />
-          </div>
-        </div>
-        <ChatBot user={user} />
-      </>
-    );
-  }
 
   return(
     <>

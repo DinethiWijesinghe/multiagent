@@ -302,70 +302,53 @@ $env:NEON_DATABASE_URL = "postgresql://<user>:<password>@<host>/<db>?channel_bin
 uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### Admin and Advisor Credentials (Neon)
+### Student Account Flow (Neon)
 
-There are no hardcoded default admin/advisor credentials in source code.
-You can seed them into PostgreSQL/Neon at startup using environment variables.
+The system is now student-only for login and dashboard access.
 
-Recommended production flow:
+Current behavior:
 
-1. Keep `ALLOW_PRIVILEGED_SELF_REGISTRATION=false`.
-2. Register users normally (they become `student`).
-3. Use an existing admin account to promote roles via API:
+1. UI registration always creates a `student` account.
+2. Login only uses student flow (admin/advisor role login and dashboards were removed).
+3. Demo seeding creates student account only.
 
-```powershell
-# List users (admin token required)
-curl -H "Authorization: Bearer <ADMIN_TOKEN>" http://127.0.0.1:8000/admin/users
-
-# Promote to advisor
-curl -X PATCH -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Content-Type: application/json" -d '{"role":"advisor"}' http://127.0.0.1:8000/admin/users/user@example.com/role
-
-# Promote to admin
-curl -X PATCH -H "Authorization: Bearer <ADMIN_TOKEN>" -H "Content-Type: application/json" -d '{"role":"admin"}' http://127.0.0.1:8000/admin/users/user@example.com/role
-```
-
-Recommended development flow:
+Recommended development seed command:
 
 ```powershell
 python scripts/dev_seed_users.py
 ```
 
-That command writes preset accounts directly into PostgreSQL/Neon without needing to export bootstrap env vars first.
-
-Default seeded accounts:
-
-- admin: `admin@example.com` / `Admin@123`
-- advisor: `advisor@example.com` / `Advisor@123`
-
-Optional demo student:
-
-```powershell
-python scripts/dev_seed_users.py --include-student
-```
-
-This also seeds:
+Default seeded account:
 
 - student: `student@example.com` / `Student@123`
 
-Bootstrap first admin + advisor (optional):
+### Real-Time Accuracy Check (Live API)
+
+Run the automated external-factor regression checker against the running backend:
 
 ```powershell
-$env:BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
-$env:BOOTSTRAP_ADMIN_PASSWORD = "Admin@123"
-$env:BOOTSTRAP_ADMIN_NAME = "System Admin"
-$env:BOOTSTRAP_ADVISOR_EMAIL = "advisor@example.com"
-$env:BOOTSTRAP_ADVISOR_PASSWORD = "Advisor@Me123"
-$env:BOOTSTRAP_ADVISOR_NAME = "System Advisor"
-uvicorn multiagent.api_server:app --host 127.0.0.1 --port 8000 --reload
+python scripts/run_realtime_accuracy_check.py --email student@example.com --password Student@123
 ```
+
+Quick release check (5 critical cases):
+
+```powershell
+python scripts/run_realtime_accuracy_check.py --email student@example.com --password Student@123 --quick
+```
+
+What it validates per case:
+
+- detected `intent`
+- `agent_data.external_factors` contains expected IDs
+- returned `actions` includes expected action hints
+- response text contains expected meaning keywords
+
+Reports are written to `reports/realtime_accuracy_*.json` and `reports/realtime_accuracy_*.md`.
 
 Notes:
 
-- Students can always register from the UI and are stored in DB as `student` by default.
-- For local development, `python scripts/dev_seed_users.py` is usually simpler than setting bootstrap env vars on every run.
-- Bootstrap runs at startup and ensures configured users exist with fixed roles: admin or advisor.
-- Change bootstrap password immediately after first login and remove bootstrap env vars from long-running environments.
-- All user/session data is persisted in Neon/PostgreSQL tables (`users`, `sessions`).
+- User/session data is persisted in Neon/PostgreSQL tables (`users`, `sessions`).
+- Legacy admin/advisor role APIs and dashboards are removed from active runtime.
 
 Verify backend DB mode:
 
@@ -574,18 +557,11 @@ The following variables control auth and security behaviour. All have safe defau
 | Variable | Default | Description |
 |---|---|---|
 | `SESSION_TTL_HOURS` | `720` (30 days) | How long a session token stays valid. |
-| `ALLOW_PRIVILEGED_SELF_REGISTRATION` | `false` | When `false`, users can only self-register as `student`. Advisor/admin roles must be assigned manually by an existing admin. |
 | `PASSWORD_MIN_LENGTH` | `6` | Minimum accepted password length. |
 | `PASSWORD_REQUIRE_COMPLEXITY` | `false` | Require uppercase, lowercase, digit, and special character. |
-| `BOOTSTRAP_ADMIN_EMAIL` | empty | If set with password, upserts an admin account at startup. |
-| `BOOTSTRAP_ADMIN_PASSWORD` | empty | Password for bootstrap admin account. |
-| `BOOTSTRAP_ADMIN_NAME` | `System Admin` | Display name for bootstrap admin. |
-| `BOOTSTRAP_ADVISOR_EMAIL` | empty | If set with password, upserts an advisor account at startup. |
-| `BOOTSTRAP_ADVISOR_PASSWORD` | empty | Password for bootstrap advisor account. |
-| `BOOTSTRAP_ADVISOR_NAME` | `System Advisor` | Display name for bootstrap advisor. |
 | `AUTH_MAX_LOGIN_ATTEMPTS` | `10` | Failed attempts allowed per email+IP pair within the window. |
 | `AUTH_WINDOW_SECONDS` | `300` | Rolling window (seconds) for counting failed attempts. |
-| `METRICS_PUBLIC` | `true` | Expose `/metrics` and `/metrics/flows` without auth. Set `false` to restrict to admins only. |
+| `METRICS_PUBLIC` | `true` | Expose `/metrics` and `/metrics/flows` without auth. Set `false` to require authenticated access. |
 | `CORS_ALLOW_ORIGINS` | `http://127.0.0.1:5173,...` | Comma-separated list of exact origins allowed. |
 | `CORS_ALLOW_ORIGIN_REGEX` | auto | Regex for dynamic origins. Set automatically from `COLAB_RELEASE_TAG` for Cloudflare tunnels. |
 
@@ -595,7 +571,6 @@ For a production or shared deployment, tighten the defaults:
 
 ```powershell
 $env:SESSION_TTL_HOURS = "24"
-$env:ALLOW_PRIVILEGED_SELF_REGISTRATION = "false"
 $env:PASSWORD_MIN_LENGTH = "10"
 $env:PASSWORD_REQUIRE_COMPLEXITY = "true"
 $env:AUTH_MAX_LOGIN_ATTEMPTS = "5"

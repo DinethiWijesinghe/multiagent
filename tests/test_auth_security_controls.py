@@ -41,12 +41,11 @@ class AuthSecurityControlsTests(unittest.TestCase):
 
         self.assertEqual(email, "user@example.com")
 
-    def test_register_forces_student_role_by_default(self):
+    def test_register_creates_student_role(self):
         payload = api_server.RegisterPayload(
-            name="Admin Candidate",
-            email="admin.candidate@example.com",
+            name="Student Candidate",
+            email="student.candidate@example.com",
             password="Secret123!",
-            role="admin",
         )
         users_written = {}
 
@@ -55,7 +54,7 @@ class AuthSecurityControlsTests(unittest.TestCase):
 
         with patch("multiagent.api_server._load_users", return_value={}), patch(
             "multiagent.api_server._save_users", side_effect=_capture_save
-        ), patch("multiagent.api_server.ALLOW_PRIVILEGED_SELF_REGISTRATION", False):
+        ):
             result = api_server.register(payload)
 
         self.assertTrue(result["success"])
@@ -91,9 +90,9 @@ class AuthSecurityControlsTests(unittest.TestCase):
         save_sessions.assert_called_once()
 
     def test_auth_config_exposes_expected_flags(self):
-        with patch("multiagent.api_server.ALLOW_PRIVILEGED_SELF_REGISTRATION", False), patch(
-            "multiagent.api_server.PASSWORD_MIN_LENGTH", 10
-        ), patch("multiagent.api_server.PASSWORD_REQUIRE_COMPLEXITY", True):
+        with patch("multiagent.api_server.PASSWORD_MIN_LENGTH", 10), patch(
+            "multiagent.api_server.PASSWORD_REQUIRE_COMPLEXITY", True
+        ):
             result = api_server.auth_config()
 
         self.assertIn("allow_privileged_self_registration", result)
@@ -161,17 +160,15 @@ class ApiEndpointTests(unittest.TestCase):
         mock_collector.get_recent_flows.assert_called_once_with(limit=10)
 
     def test_register_with_api_payload_returns_student_role(self):
-        """register() called via API payload downgrades admin → student by default."""
+        """register() called via API payload creates student role."""
         payload = api_server.RegisterPayload(
-            name="Sneaky Admin",
+            name="Demo Student",
             email="sneaky@example.com",
             password="ValidPass1!",
-            role="advisor",
         )
 
         with patch("multiagent.api_server._load_users", return_value={}), \
-                patch("multiagent.api_server._save_users"), \
-                patch("multiagent.api_server.ALLOW_PRIVILEGED_SELF_REGISTRATION", False):
+                patch("multiagent.api_server._save_users"):
             result = api_server.register(payload)
 
         self.assertTrue(result["success"])

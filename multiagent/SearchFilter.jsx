@@ -8,7 +8,7 @@ export function SearchFilter({
   onFilterChange = () => {},
   filterOptions = {
     status: ['All', 'Incomplete', 'Complete', 'Approved', 'Rejected'],
-    role: ['All', 'student', 'advisor', 'admin'],
+    role: ['All', 'student'],
     dateRange: true,
     customFilters: []
   }

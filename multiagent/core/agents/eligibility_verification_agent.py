@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import Counter
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Optional
@@ -11,6 +12,8 @@ from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier as _RFC
 from sklearn.svm import LinearSVC as _SVC
 from sklearn.feature_extraction.text import TfidfVectorizer as _TfIdf
+from sklearn.model_selection import StratifiedKFold, cross_validate
+from sklearn.pipeline import Pipeline as _Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,7 @@ class EligibilityVerificationAgent:
             self._default_english_requirement_baseline.update(default_english_requirement_snapshot)
 
         self.policy_metadata = policy_metadata or {}
+        self.model_metrics: dict = {}
 
         if self.training_data:
             self._special_reqs        = self.training_data.get("university_specific_requirements", {})
@@ -215,7 +219,61 @@ class EligibilityVerificationAgent:
             return []
         return rows
 
-    def _train_from_real_outcomes(self, outcomes: list[dict]) -> bool:
+    def _max_cv_splits(self, labels: list, max_splits: int = 5) -> int:
+        counts = Counter(labels)
+        if not counts:
+            return 0
+        min_count = min(counts.values())
+        if min_count < 2:
+            return 0
+        return min(max_splits, min_count)
+
+    def _evaluate_classifier(self, estimator, X, y, average: str = "macro") -> dict:
+        folds = self._max_cv_splits(y)
+        if folds < 2:
+            return {
+                "available": False,
+                "reason": "Need at least 2 samples per class for stratified cross-validation.",
+                "samples": len(y),
+                "classes": dict(Counter(y)),
+            }
+
+        if average == "binary":
+            scoring = {
+                "accuracy": "accuracy",
+                "precision": "precision",
+                "recall": "recall",
+                "f1": "f1",
+            }
+        else:
+            scoring = {
+                "accuracy": "accuracy",
+                "precision": f"precision_{average}",
+                "recall": f"recall_{average}",
+                "f1": f"f1_{average}",
+            }
+        scoring = {
+            **scoring,
+        }
+        cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=42)
+        results = cross_validate(estimator, X, y, cv=cv, scoring=scoring, n_jobs=1)
+        metrics = {
+            name.replace("test_", ""): {
+                "mean": round(float(values.mean()), 4),
+                "std": round(float(values.std()), 4),
+            }
+            for name, values in results.items()
+            if name.startswith("test_")
+        }
+        return {
+            "available": True,
+            "samples": len(y),
+            "classes": dict(Counter(y)),
+            "cv_folds": folds,
+            "metrics": metrics,
+        }
+
+    def _prepare_training_datasets(self, outcomes: list[dict]) -> dict[str, dict]:
         tier_x: list[list[float]] = []
         tier_y: list[str] = []
         match_x: list[list[float]] = []
@@ -266,17 +324,58 @@ class EligibilityVerificationAgent:
                     align_texts.append(f"{stream} {program}")
                     align_y.append(int(raw_align))
 
+        return {
+            "tier": {"X": tier_x, "y": tier_y},
+            "match": {"X": match_x, "y": match_y},
+            "alignment": {"X": align_texts, "y": align_y},
+        }
+
+    def _train_from_real_outcomes(self, outcomes: list[dict]) -> bool:
+        datasets = self._prepare_training_datasets(outcomes)
+        tier_x = datasets["tier"]["X"]
+        tier_y = datasets["tier"]["y"]
+        match_x = datasets["match"]["X"]
+        match_y = datasets["match"]["y"]
+        align_texts = datasets["alignment"]["X"]
+        align_y = datasets["alignment"]["y"]
         can_train_tier = len(set(tier_y)) >= 2 and len(tier_y) >= 20
         can_train_match = len(set(match_y)) >= 2 and len(match_y) >= 20
         can_train_align = len(set(align_y)) >= 2 and len(align_y) >= 20
 
         if not (can_train_tier and can_train_match and can_train_align):
+            self.model_metrics = {
+                "available": False,
+                "reason": "Need at least 20 samples and 2 classes for tier, match, and alignment models.",
+                "dataset_sizes": {
+                    "tier": len(tier_y),
+                    "match": len(match_y),
+                    "alignment": len(align_y),
+                },
+            }
             return False
+
+        self.model_metrics = {
+            "available": True,
+            "tier_classifier": self._evaluate_classifier(self._tier_clf, tier_x, tier_y, average="macro"),
+            "match_classifier": self._evaluate_classifier(self._match_clf, match_x, match_y, average="macro"),
+            "alignment_classifier": self._evaluate_classifier(
+                _Pipeline([
+                    ("tfidf", _TfIdf(ngram_range=(1, 2))),
+                    ("svc", _SVC(C=1.0, max_iter=3000, dual=True)),
+                ]),
+                align_texts,
+                align_y,
+                average="binary",
+            ),
+        }
 
         self._tier_clf.fit(tier_x, tier_y)
         self._match_clf.fit(match_x, match_y)
         self._align_clf.fit(self._align_vec.fit_transform(align_texts), align_y)
         return True
+
+    def get_model_metrics(self) -> dict:
+        return dict(self.model_metrics)
 
     # ── Public API ────────────────────────────────────────────────────────
 

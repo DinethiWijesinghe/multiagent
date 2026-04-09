@@ -13,6 +13,7 @@ import numpy as np
 
 try:
     from sklearn.ensemble import IsolationForest
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
     from sklearn.preprocessing import StandardScaler
     ML_AVAILABLE = True
 except ImportError:
@@ -286,6 +287,7 @@ class Phase2AnomalyDetector:
         self.scaler  = StandardScaler() if ML_AVAILABLE else None
         self.trained = False
         self.extractor = RankingExtractor()
+        self.model_metrics = {}
         self._try_load()
 
     def _try_load(self):
@@ -299,10 +301,80 @@ class Phase2AnomalyDetector:
                 print("[Phase2-ML] Loaded Isolation Forest model from disk")
             except Exception: pass
 
+    def _build_baseline_samples(self, rng: np.random.Generator, samples_per_uni: int) -> np.ndarray:
+        samples = []
+        for ranks in KNOWN_RANKINGS.values():
+            qs_b = ranks["qs"] or 500
+            the_b = ranks["the"] or 200
+            for _ in range(samples_per_uni):
+                qv = max(1, int(qs_b * rng.uniform(0.75, 1.25)))
+                tv = max(1, int(the_b * rng.uniform(0.75, 1.25)))
+                samples.append([qv, tv, qv / max(tv, 1), np.log1p(qv), np.log1p(tv)])
+        return np.array(samples, dtype=float)
+
+    def _build_anomaly_samples(self, rng: np.random.Generator, samples_per_uni: int) -> np.ndarray:
+        samples = []
+        for ranks in KNOWN_RANKINGS.values():
+            qs_b = ranks["qs"] or 500
+            the_b = ranks["the"] or 200
+            for _ in range(samples_per_uni):
+                qv = max(1, int(qs_b * rng.uniform(1.8, 4.5)))
+                tv = max(1, int(the_b * rng.uniform(0.1, 0.5)))
+                if rng.random() > 0.5:
+                    qv, tv = max(qv, 1200), min(tv, 25)
+                samples.append([qv, tv, qv / max(tv, 1), np.log1p(qv), np.log1p(tv)])
+        return np.array(samples, dtype=float)
+
+    def _evaluate_detector(self) -> dict:
+        if not ML_AVAILABLE:
+            return {"available": False, "reason": "scikit-learn not available"}
+
+        rng = np.random.default_rng(42)
+        normal = self._build_baseline_samples(rng, samples_per_uni=30)
+        anomalies = self._build_anomaly_samples(np.random.default_rng(7), samples_per_uni=8)
+        order = rng.permutation(len(normal))
+        normal = normal[order]
+        split_index = max(int(len(normal) * 0.8), 1)
+        train_normal = normal[:split_index]
+        test_normal = normal[split_index:]
+        if len(test_normal) == 0 or len(anomalies) == 0:
+            return {"available": False, "reason": "Synthetic evaluation dataset is empty"}
+
+        scaler = StandardScaler()
+        train_scaled = scaler.fit_transform(train_normal)
+        detector = IsolationForest(n_estimators=100, contamination=0.05, random_state=42)
+        detector.fit(train_scaled)
+
+        X_test = np.vstack([test_normal, anomalies])
+        y_true = np.concatenate([
+            np.zeros(len(test_normal), dtype=int),
+            np.ones(len(anomalies), dtype=int),
+        ])
+        X_test_scaled = scaler.transform(X_test)
+        anomaly_scores = -detector.decision_function(X_test_scaled)
+        y_pred = (detector.predict(X_test_scaled) == -1).astype(int)
+        false_positive_rate = float(((y_pred == 1) & (y_true == 0)).sum() / max((y_true == 0).sum(), 1))
+
+        return {
+            "available": True,
+            "train_samples": int(len(train_normal)),
+            "test_samples": int(len(X_test)),
+            "synthetic_anomalies": int(len(anomalies)),
+            "metrics": {
+                "accuracy": round(float(accuracy_score(y_true, y_pred)), 4),
+                "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 4),
+                "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
+                "f1": round(float(f1_score(y_true, y_pred, zero_division=0)), 4),
+                "roc_auc": round(float(roc_auc_score(y_true, anomaly_scores)), 4),
+                "false_positive_rate": round(false_positive_rate, 4),
+            },
+        }
+
     def fit_baseline(self, verbose: bool = True) -> dict:
         """Train Isolation Forest on known-good ranking baselines + variations."""
         if not ML_AVAILABLE:
             return {"error": "scikit-learn not available"}
+        self.model_metrics = self._evaluate_detector()
         np.random.seed(42)
         X = []
         for ranks in KNOWN_RANKINGS.values():
@@ -321,7 +393,12 @@ class Phase2AnomalyDetector:
         with open(os.path.join(_MODEL_DIR,"phase2_anomaly_model.pkl"),"wb") as f: pickle.dump(self.model,f)
         with open(os.path.join(_MODEL_DIR,"phase2_anomaly_scaler.pkl"),"wb") as f: pickle.dump(self.scaler,f)
         if verbose: print(f"[Phase2-ML] Trained on {len(X)} ranking samples")
-        return {"trained_on": len(X), "universities": len(KNOWN_RANKINGS), "trained_at": datetime.now().isoformat()}
+        return {
+            "trained_on": len(X),
+            "universities": len(KNOWN_RANKINGS),
+            "trained_at": datetime.now().isoformat(),
+            "evaluation": self.model_metrics,
+        }
 
     def check_ranking(self, uni_id: str, new_qs: Optional[int], new_the: Optional[int]) -> dict:
         """Check if newly scraped ranking looks anomalous."""
