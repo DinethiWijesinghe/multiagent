@@ -55,6 +55,8 @@ Avoids unsuitable universities and reduces financial risk.
 **How it works:**
 - Chatbot provides verified, up-to-date answers to common questions.
 - Recommendation Agent uses validated datasets and scraped university data only.
+- These datasets are gathered from user-provided input, university websites, global ranking systems, and publicly accessible educational resources.
+- Data is stored in structured JSON databases (for example `data/databases/universities_database.json`) and accessed through the code's `UnifiedDataManager` and phased database modules (`phase1_curated_db.py`, `phase2_web_scraper.py`, etc.) to ensure efficient retrieval and processing.
 - Explains eligibility, fees, deadlines clearly.
 - Chatbot integrates recommendation output with RAG-grounded answers so students receive one consistent explanation.
 
@@ -349,7 +351,7 @@ Notes:
 
 - User/session data is persisted in Neon/PostgreSQL tables (`users`, `sessions`).
 - Legacy admin/advisor role APIs and dashboards are removed from active runtime.
-
+        
 Verify backend DB mode:
 
 1. Open /health endpoint.

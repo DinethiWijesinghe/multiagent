@@ -60,7 +60,7 @@ _ROOT      = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 _CACHE_DIR = os.path.join(_ROOT, "data", "scraped")
 _MODEL_DIR = os.path.join(_ROOT, "data", "ml_models")
 
-# ─── Historical LKR rates (training data) ────────────────────────────────────
+
 
 HISTORICAL_RATES_LKR = {
     "GBP": [

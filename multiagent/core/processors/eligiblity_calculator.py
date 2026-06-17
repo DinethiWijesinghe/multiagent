@@ -48,9 +48,7 @@ def normalize_gpa(gpa_value, gpa_system: str) -> float:
     return 3.0  # safe default
 
 
-# ─────────────────────────────────────────────
-# A/L-SPECIFIC ASSESSMENTS
-# ─────────────────────────────────────────────
+
 
 def assess_alevel_eligibility(document_data: dict, profile_data: dict) -> dict:
     """Eligibility assessment specifically for A/L qualifications."""

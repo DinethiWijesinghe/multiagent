@@ -14,7 +14,7 @@ from .phase5_override_manager_ml import Phase5 as OverrideManager
 
 class UnifiedDataManager:
     def __init__(self, start_scheduler: bool = False):
-        print("🚀 Initialising Unified Data Manager...")
+        print(" Initialising Unified Data Manager...")
         print("=" * 60)
         self.db_manager       = CuratedDatabaseManager()
         self.scraper          = WebScraper()
@@ -29,12 +29,12 @@ class UnifiedDataManager:
         if start_scheduler:
             self.scheduler.start()
 
-        print("\n✅ All phases initialised!")
-        print("   Phase 1: Curated DB        ✅")
-        print("   Phase 2: Web Scraper        ✅")
-        print("   Phase 3: API Integration    ✅  [Hipo, REST Countries, Open Exchange Rates]")
-        print("   Phase 4: Scheduler          ✅  [APScheduler — start with start_scheduler=True]")
-        print("   Phase 5: Override Manager   ✅")
+        print("\n All phases initialised!")
+        print("   Phase 1: Curated DB        ")
+        print("   Phase 2: Web Scraper        ")
+        print("   Phase 3: API Integration      [Hipo, REST Countries, Open Exchange Rates]")
+        print("   Phase 4: Scheduler            [APScheduler — start with start_scheduler=True]")
+        print("   Phase 5: Override Manager   ")
 
     # ── Phase 1 ───────────────────────────────────────────────────────────
 

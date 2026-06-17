@@ -25,8 +25,6 @@ Usage:
     # Auto-scan DB for stale/suspicious values
     suggestions = p5.suggest_overrides(universities)
 
-    # Full ML activity report
-    report = p5.get_ml_report()
 """
 
 from __future__ import annotations
@@ -149,15 +147,13 @@ class AnomalyDetector:
         return result
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  ML-2 — NLP CLASSIFIER (TF-IDF + Naive Bayes)
-# ══════════════════════════════════════════════════════════════════════════════
+
 
 class OverrideClassifier:
     """Classifies override reason text into 5 semantic categories."""
 
     TRAINING_EXAMPLES = [
-        # criteria_update
+        # criteria_update 
         ("IELTS minimum raised to 6.5 for 2026 intake",                    "criteria_update"),
         ("TOEFL minimum updated to 96 verified on Imperial website",        "criteria_update"),
         ("Min GPA corrected back to 3.5 erroneous entry rolled back",       "criteria_update"),
