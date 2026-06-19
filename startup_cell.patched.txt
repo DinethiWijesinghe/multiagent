@@ -1,0 +1,370 @@
+# One-click full stack: refresh repo, install current deps, start backend + frontend, create two public URLs
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from getpass import getpass
+
+import requests
+
+REPO_URL = "https://github.com/DinethiWijesinghe/multiagent.git"
+REPO_BRANCH = "main"
+REPO_DIR = "/content/multiagent"
+FRONTEND_DIR = f"{REPO_DIR}/multiagent"
+REQUIREMENTS_PATH = f"{FRONTEND_DIR}/requirement.txt"
+VENV_DIR = "/content/.venvs/multiagent"
+PYTHON_BIN = f"{VENV_DIR}/bin/python"
+CORE_BACKEND_PACKAGES = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "python-multipart>=0.0.9",
+    "opencv-python-headless>=4.9.0",
+    "Pillow>=10.0.0",
+    "pytesseract>=0.3.10",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.1.0",
+]
+OPTIONAL_BACKEND_PACKAGES = [
+    "easyocr",
+    "langchain",
+    "langchain-community",
+    "langchain-text-splitters",
+    "chromadb",
+    "sentence-transformers",
+    "pypdf",
+    "langchain-google-genai",
+    "google-generativeai",
+]
+CLOUDFLARED = "/content/cloudflared-linux-amd64"
+RUNTIME_PROFILE = "LITE"
+RAG_LLM_PROVIDER = "none"
+SAFE_CWD = "/content"
+
+
+def run(cmd, cwd=None, shell=False):
+    print("$", cmd if isinstance(cmd, str) else " ".join(cmd))
+    subprocess.run(cmd, check=True, cwd=cwd or SAFE_CWD, shell=shell, executable="/bin/bash" if shell else None)
+
+
+def ensure_python_env():
+    if os.path.exists(PYTHON_BIN):
+        return
+
+    cmd = [sys.executable, "-m", "venv", VENV_DIR]
+    print("$", " ".join(cmd))
+    first = subprocess.run(cmd, text=True, capture_output=True)
+    if first.returncode == 0:
+        return
+
+    print("Initial venv creation failed; installing fallback venv packages...")
+    for pkg in ["python3-venv", "python3.12-venv", "python3-full"]:
+        install_cmd = ["apt-get", "install", "-y", "-qq", pkg]
+        print("$", " ".join(install_cmd))
+        attempt = subprocess.run(install_cmd, text=True, capture_output=True)
+        if attempt.returncode != 0 and attempt.stderr:
+            print(attempt.stderr[-800:])
+
+    second = subprocess.run(cmd, text=True, capture_output=True)
+    if second.returncode != 0:
+        if second.stderr:
+            print(second.stderr[-2000:])
+        elif second.stdout:
+            print(second.stdout[-2000:])
+        raise subprocess.CalledProcessError(second.returncode, cmd, output=second.stdout, stderr=second.stderr)
+
+
+def pip_install(args, optional=False):
+    base_cmd = [PYTHON_BIN, "-m", "pip", "install", *args]
+    # In a venv this normally succeeds; keep one fallback for stricter images.
+    attempts = [base_cmd, base_cmd + ["--break-system-packages"]]
+
+    last_error = None
+    for cmd in attempts:
+        print("$", " ".join(cmd))
+        result = subprocess.run(cmd, text=True, capture_output=True, cwd=SAFE_CWD)
+        if result.returncode == 0:
+            if result.stdout.strip():
+                print(result.stdout[-1200:])
+            return
+
+        last_error = subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+        print(f"Install attempt failed (exit={result.returncode}).")
+        if result.stderr:
+            print(result.stderr[-1200:])
+        elif result.stdout:
+            print(result.stdout[-1200:])
+
+    if optional:
+        print(f"Warning: optional pip install failed after retries: {last_error}")
+        return
+    raise last_error
+
+
+def install_packages_one_by_one(packages, optional=False):
+    failed = []
+    for pkg in packages:
+        try:
+            pip_install([pkg], optional=False)
+        except Exception as exc:
+            failed.append((pkg, exc))
+            print(f"Package failed: {pkg} -> {exc}")
+
+    if failed and not optional:
+        failed_list = ", ".join(pkg for pkg, _ in failed)
+        raise RuntimeError(f"Failed required packages: {failed_list}")
+
+
+def refresh_repo():
+    repo_slug = REPO_URL.removeprefix("https://github.com/").removesuffix(".git").strip("/")
+    repo_name = repo_slug.rsplit("/", 1)[-1]
+    archive_url = f"https://codeload.github.com/{repo_slug}/tar.gz/refs/heads/{REPO_BRANCH}"
+    archive_path = f"/content/{repo_name}-{REPO_BRANCH}.tar.gz"
+    extracted_dir = f"/content/{repo_name}-{REPO_BRANCH}"
+
+    shutil.rmtree(REPO_DIR, ignore_errors=True)
+    shutil.rmtree(extracted_dir, ignore_errors=True)
+    clone_env = os.environ.copy()
+    clone_env["GIT_TERMINAL_PROMPT"] = "0"
+
+    clone_cmd = [
+        "git",
+        "-c",
+        "http.version=HTTP/1.1",
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        REPO_BRANCH,
+        REPO_URL,
+        REPO_DIR,
+    ]
+
+    last_error = None
+    for attempt in range(1, 4):
+        print(f"Clone attempt {attempt}/3...")
+        result = subprocess.run(
+            clone_cmd,
+            cwd="/content",
+            env=clone_env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            if result.stdout.strip():
+                print(result.stdout.strip())
+            return
+        last_error = result.stderr.strip() or result.stdout.strip() or f"git clone exited {result.returncode}"
+        print(last_error)
+        shutil.rmtree(REPO_DIR, ignore_errors=True)
+        time.sleep(2)
+
+    print("Git clone failed in Colab. Falling back to GitHub source archive...")
+    run(["curl", "-fL", "--retry", "5", "--retry-delay", "2", "--retry-all-errors", archive_url, "-o", archive_path])
+    run(["tar", "-xzf", archive_path, "-C", "/content"])
+    if not os.path.exists(extracted_dir):
+        raise RuntimeError(f"Repository download fallback failed. Last git error: {last_error}")
+    shutil.move(extracted_dir, REPO_DIR)
+    os.remove(archive_path)
+
+
+def wait_http_ok(url, attempts=20, delay=2, expect_status=None):
+    last_error = None
+    for i in range(1, attempts + 1):
+        try:
+            response = requests.get(url, timeout=20)
+            if expect_status is not None and response.status_code == expect_status:
+                return response
+            if expect_status is None and response.status_code < 500:
+                return response
+            last_error = f"HTTP {response.status_code}: {response.text[:300]}"
+        except Exception as exc:
+            last_error = exc
+        print(f"Wait {i}/{attempts}: {url} not ready yet")
+        time.sleep(delay)
+    raise RuntimeError(f"Failed to reach {url}. Last error: {last_error}")
+
+
+def start_tunnel(local_url, read_timeout=120):
+    proc = subprocess.Popen(
+        [CLOUDFLARED, "tunnel", "--url", local_url, "--no-autoupdate"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd="/content",
+    )
+
+    public_url = None
+    start = time.time()
+    while time.time() - start < read_timeout:
+        line = proc.stdout.readline()
+        if not line:
+            continue
+        print(line.rstrip())
+        match = re.search(r"https://[-a-zA-Z0-9]+\.trycloudflare\.com", line)
+        if match:
+            public_url = match.group(0).strip()
+            break
+
+    return proc, public_url
+
+
+def start_tunnel_with_retries(local_url, attempts=5, delay=6):
+    last_error = None
+    for i in range(1, attempts + 1):
+        print(f"Creating tunnel for {local_url} (attempt {i}/{attempts})...")
+        proc, public_url = start_tunnel(local_url)
+        if public_url:
+            return proc, public_url
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        last_error = f"No public URL returned for {local_url}"
+        print(f"Tunnel attempt {i} failed. Retrying in {delay}s...")
+        time.sleep(delay)
+    raise RuntimeError(last_error or f"Could not create Cloudflare URL for {local_url}")
+
+
+print("[1/8] Refreshing repository from GitHub...")
+os.chdir(SAFE_CWD)
+refresh_repo()
+
+if not os.path.exists(REQUIREMENTS_PATH):
+    raise FileNotFoundError(f"Missing backend requirements file: {REQUIREMENTS_PATH}")
+
+print("[2/8] Installing system dependencies...")
+run(["apt-get", "update", "-qq"])
+run(["apt-get", "install", "-y", "-qq", "tesseract-ocr", "libgl1", "libglib2.0-0", "wget", "curl", "ca-certificates", "gnupg", "git", "python3-venv"])
+essure_python_env()
+
+print("[3/8] Installing backend Python dependencies from multiagent/requirement.txt...")
+pip_install(["--upgrade", "pip", "setuptools", "wheel"], optional=True)
+try:
+    pip_install(["-r", REQUIREMENTS_PATH])
+except Exception as exc:
+    print(f"Warning: requirements file install failed ({exc}). Falling back to package-by-package core install...")
+    install_packages_one_by_one(CORE_BACKEND_PACKAGES, optional=False)
+
+install_packages_one_by_one(OPTIONAL_BACKEND_PACKAGES, optional=True)
+
+print("[4/8] Installing Node.js 20 for the Vite frontend...")
+run("curl -fsSL https://deb.nodesource.com/setup_20.x | bash -", shell=True)
+run(["apt-get", "install", "-y", "-qq", "nodejs"])
+run(["node", "--version"])
+try:
+    run(["npm", "--version"])
+except subprocess.CalledProcessError:
+    print("npm command failed after nodejs install; attempting npm repair...")
+    run(["apt-get", "install", "-y", "-qq", "npm"])
+    run(["npm", "--version"])
+
+print("[5/8] Installing frontend dependencies from package.json...")
+run(["npm", "install"], cwd=FRONTEND_DIR)
+
+print("[6/8] Collecting runtime secrets and starting backend...")
+database_url = getpass("Neon DATABASE_URL (required): ").strip()
+auth_secret = getpass("AUTH_SECRET (leave blank to keep dev default): ").strip()
+if database_url.startswith("postgresql://"):
+    database_url = "postgresql+psycopg://" + database_url[len("postgresql://"):]
+if database_url.startswith("postgres://"):
+    database_url = "postgresql+psycopg://" + database_url[len("postgres://"):]
+if not database_url:
+    raise RuntimeError("DATABASE_URL is required by this backend. Set a reachable Neon/PostgreSQL URL and rerun the cell.")
+
+backend_env = os.environ.copy()
+backend_env["RUNTIME_PROFILE"] = RUNTIME_PROFILE
+backend_env["RAG_LLM_PROVIDER"] = RAG_LLM_PROVIDER
+backend_env["PYTHONUNBUFFERED"] = "1"
+backend_env["DATABASE_URL"] = database_url
+print("Injected DATABASE_URL into backend environment.")
+if auth_secret:
+    backend_env["AUTH_SECRET"] = auth_secret
+    print("Injected AUTH_SECRET into backend environment.")
+else:
+    print("AUTH_SECRET not provided. Backend will use the default dev secret.")
+
+# Optional: Gemini API key for rich LLM-backed RAG responses
+# Leave blank to keep keyless (grounded snippets) mode
+google_api_key = getpass("Google API key for Gemini (leave blank for keyless mode): ").strip()
+if google_api_key:
+    backend_env["GOOGLE_API_KEY"] = google_api_key
+    backend_env["RAG_LLM_PROVIDER"] = "gemini"
+    print("Gemini API key injected -- RAG will use Gemini for rich responses.")
+else:
+    print("No Gemini key -- running in keyless grounded mode.")
+
+# Allow both Cloudflare tunnel URLs as valid CORS origins so the frontend
+# tunnel can reach the backend tunnel without a CORS error.
+backend_env["CORS_ALLOW_ORIGIN_REGEX"] = r"^https://[-a-zA-Z0-9]+\.trycloudflare\.com$"
+
+backend_proc = subprocess.Popen(
+    [PYTHON_BIN, "-m", "uvicorn", "multiagent.api_server:app", "--host", "0.0.0.0", "--port", "8000"],
+    cwd=REPO_DIR,
+    env=backend_env,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+)
+print(f"Backend PID: {backend_proc.pid}")
+
+# Read and print initial backend logs while waiting for startup.
+start_time = time.time()
+startup_logs = []
+while time.time() - start_time < 10:
+    line = backend_proc.stdout.readline()
+    if not line:
+        break
+    startup_logs.append(line.rstrip())
+    print(f"[backend] {line.rstrip()}")
+
+local_backend = "http://127.0.0.1:8000/health"
+wait_http_ok(local_backend, attempts=40, delay=2, expect_status=200)
+
+print("[6.5/8] User accounts persist in Neon/PostgreSQL. Register from the UI if needed.")
+
+print("[7/8] Creating backend public tunnel URL...")
+subprocess.run(["rm", "-rf", CLOUDFLARED], check=False)
+run(["curl", "-fL", "--retry", "5", "--retry-delay", "2", "--retry-all-errors", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-o", CLOUDFLARED])
+run(["chmod", "+x", CLOUDFLARED])
+backend_tunnel_proc, backend_public_url = start_tunnel_with_retries("http://127.0.0.1:8000")
+if not backend_public_url:
+    raise RuntimeError("Failed to create backend public tunnel URL.")
+print("Backend URL:", backend_public_url)
+
+print("[8/8] Starting frontend and creating frontend public tunnel URL...")
+frontend_env = os.environ.copy()
+frontend_env["VITE_API_URL"] = backend_public_url
+frontend_env["PYTHONUNBUFFERED"] = "1"
+
+frontend_proc = subprocess.Popen(
+    ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"],
+    cwd=FRONTEND_DIR,
+    env=frontend_env,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+)
+print(f"Frontend PID: {frontend_proc.pid}")
+
+wait_http_ok("http://127.0.0.1:5173", attempts=50, delay=2)
+frontend_tunnel_proc, frontend_public_url = start_tunnel_with_retries("http://127.0.0.1:5173")
+if not frontend_public_url:
+    raise RuntimeError("Failed to create frontend public tunnel URL.")
+
+print("\n================ LIVE URLS ================")
+print("Frontend URL:", frontend_public_url)
+print("Backend URL:", backend_public_url)
+print("===========================================")
+print("Keep this runtime running. URLs are temporary and change after restart.")
+
+# Keep process handles in globals for optional cleanup/debugging in later cells
+globals()["_backend_proc"] = backend_proc
+globals()["_frontend_proc"] = frontend_proc
+globals()["_backend_tunnel_proc"] = backend_tunnel_proc
+globals()["_frontend_tunnel_proc"] = frontend_tunnel_proc

@@ -287,7 +287,7 @@ class UpdateScheduler:
         if self._scheduler and self._running:
             self._scheduler.shutdown(wait=False)
             self._running = False
-            print("🛑 Phase4: Scheduler stopped")
+            print("Phase4: Scheduler stopped")
 
     def run_now(self, task: str = "daily") -> Dict:
         """Manually trigger a task immediately."""
