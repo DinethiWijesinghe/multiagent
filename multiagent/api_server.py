@@ -3099,6 +3099,44 @@ def save_user_state(payload: UserStatePayload, current_user_email: str = Depends
     }
 
 
+@app.get("/user/onboarding-status")
+def get_onboarding_status(current_user_email: str = Depends(_require_current_user)):
+    """
+    Check user's onboarding completion status.
+    Returns what data the user has already provided.
+    """
+    profile_data = _load_user_state_record(current_user_email)
+    documents = _load_document_records(current_user_email)
+    
+    # Check which profile fields are filled
+    has_name = bool(profile_data.get("first_name") or profile_data.get("last_name"))
+    has_country = bool(profile_data.get("target_country") or profile_data.get("target_countries"))
+    has_budget = bool(profile_data.get("annual_budget") or profile_data.get("budget"))
+    has_academic = bool(profile_data.get("education_level") or profile_data.get("academic_background"))
+    has_documents = len(documents) > 0
+    
+    return {
+        "has_profile": has_name or has_country or has_budget or has_academic,
+        "has_documents": has_documents,
+        "has_budget": has_budget,
+        "completed_steps": [
+            step for step, complete in [
+                ("name", has_name),
+                ("country", has_country),
+                ("budget", has_budget),
+                ("academic_background", has_academic),
+                ("documents", has_documents),
+            ] if complete
+        ],
+        "next_step": (
+            "upload_documents" if not has_documents else
+            "complete_profile" if not has_name else
+            "set_budget" if not has_budget else
+            "start_chat"
+        ),
+    }
+
+
 @app.get("/documents")
 def list_documents(current_user_email: str = Depends(_require_current_user)):
     return {

@@ -250,6 +250,7 @@
   },
   "general_responses": {
     "greeting": "Hello! I'm here to help you navigate your study abroad journey. What would you like to know about eligibility, costs, or university recommendations?",
+    "no_data_intro": "Welcome! I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n1. **Upload your documents** (transcripts, test scores like IELTS/TOEFL)\n2. **Complete your profile** (target countries, budget, academic background)\n3. **Then I can check eligibility and find universities for you**\n\nWhat would you like to do first?",
     "eligibility_help": "To check eligibility, please upload your academic documents (A/L results, degrees, IELTS/TOEFL scores) and fill in your profile. I'll analyze them against university requirements.",
     "financial_help": "For financial planning, tell me your budget and preferred country. I'll calculate costs, suggest scholarships, and find affordable options.",
     "recommendation_help": "I can recommend universities based on your eligibility and budget. Share your profile and preferences, and I'll provide personalized suggestions.",

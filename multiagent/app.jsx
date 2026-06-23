@@ -595,13 +595,48 @@ function createIntroMessages(){
   return [{...BOT_INTRO[0]}];
 }
 
+function createOnboardingMessages(onboardingStatus){
+  if(!onboardingStatus) return createIntroMessages();
+  
+  const { has_documents, has_profile, completed_steps, next_step } = onboardingStatus;
+  
+  // If user has documents and profile started, show regular greeting
+  if(has_documents && has_profile){
+    return [{...BOT_INTRO[0]}];
+  }
+  
+  // Build onboarding message based on what's missing
+  let message = "";
+  if(!has_documents){
+    message = "Welcome! 👋 I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n"
+      + "**Step 1: Upload your documents** (transcripts, test scores like IELTS/TOEFL)\n"
+      + "**Step 2: Complete your profile** (target countries, budget, academic background)\n"
+      + "**Step 3: Then I can check eligibility and recommend universities**\n\n"
+      + "Let's start with uploading your documents. Click the 'Documents' tab above to get started! 📄";
+  } else if(!has_profile){
+    message = "Great! You've uploaded documents. Now let's build your profile so I can give you personalized recommendations.\n\n"
+      + "Please fill in:\n"
+      + "• Your target country/countries\n"
+      + "• Your annual budget\n"
+      + "• Your current academic qualifications\n\n"
+      + "Then I'll be able to suggest universities and check your eligibility! 🎓";
+  }
+  
+  return [{
+    id: "onboarding",
+    role: "bot",
+    text: message,
+    time: now(),
+  }];
+}
+
 function getChatStorageKey(user){
   const email = user?.email?.trim().toLowerCase();
   return email ? `uniassist.chat.${email}` : null;
 }
 
 function isIntroMessage(message){
-  return message?.id === "intro" || (message?.role === "bot" && message?.text === BOT_INTRO[0].text);
+  return message?.id === "intro" || message?.id === "onboarding" || (message?.role === "bot" && message?.text === BOT_INTRO[0].text);
 }
 
 function dedupeMessages(messages){
@@ -853,6 +888,7 @@ function ChatBot({user}){
   const [input,setInput]=useState("");
   const [typing,setTyping]=useState(false);
   const [unread,setUnread]=useState(0);
+  const [onboardingStatus,setOnboardingStatus]=useState(null);
   const messagesEndRef=useRef(null);
   const inputRef=useRef(null);
   const storageKey = getChatStorageKey(user);
@@ -875,6 +911,24 @@ function ChatBot({user}){
     if(!storageKey || !user?.email) return ()=>{cancelled=true;};
 
     (async()=>{
+      try{
+        // Fetch onboarding status to show smart greeting
+        const statusResponse = await fetchApi("/user/onboarding-status", {
+          headers: authHeaders(user?.token),
+        });
+        if(cancelled) return;
+        if(statusResponse.ok){
+          const status = await statusResponse.json();
+          setOnboardingStatus(status);
+          // Update initial messages based on onboarding status
+          if(!hasConversationContent(localMessages)){
+            setMessages(normalizeMessages(createOnboardingMessages(status)));
+          }
+        }
+      }catch(err){
+        console.warn("Could not fetch onboarding status:", err);
+      }
+      
       try{
         const remoteMessages = await fetchChatHistory(user.email, user?.token);
         if(cancelled) return;

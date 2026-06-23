@@ -87,6 +87,25 @@ class ChatbotAgent:
             "processed_at": datetime.now(timezone.utc).isoformat(),
         }
 
+        # Check if user has no data (first-time or incomplete setup)
+        has_profile_data = bool(context.get("profile_data"))
+        has_document_data = bool(context.get("document_data"))
+        has_any_data = has_profile_data or has_document_data
+        
+        # For first-time users with no data, show onboarding guidance
+        if not has_any_data and intent != "general":
+            response = self.general_responses.get("no_data_intro", 
+                "Welcome! Let's get you started. Upload your documents first so I can give you personalized guidance.")
+            actions = ["Upload academic documents", "Complete your profile", "Chat with me"]
+            agent_data["onboarding"] = True
+            return {
+                "response": response,
+                "intent": "onboarding",
+                "actions": actions,
+                "agent_calls": agent_calls,
+                "agent_data": agent_data,
+            }
+
         if intent == "eligibility":
             response, agent_calls, agent_result = self._handle_eligibility(context)
             if agent_result:
