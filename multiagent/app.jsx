@@ -1216,6 +1216,7 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
     message:result.message||`OCR — ${Math.round((result.confidence??0.75)*100)}% confidence`,
     ocrEngine:result.ocr_engine||"auto",
     warnings:result.warnings||[],
+    extractionFocusAreas:Array.isArray(result.extraction_focus_areas)?result.extraction_focus_areas:[],
     requested_doc_type:docType||"auto",
     classification_method:result.classification_method,
   };
@@ -2133,6 +2134,11 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
               <div style={{marginTop:"1.25rem"}}>
                 <div className="slabel">Extracted Data</div>
                 {aiResult.warnings&&aiResult.warnings.length>0&&aiResult.warnings.map((w,i)=><Alert key={i} type="warn">{w}</Alert>)}
+                {Array.isArray(aiResult.extractionFocusAreas)&&aiResult.extractionFocusAreas.length>0&&(
+                  <Alert type="info">
+                    Verify these document areas: {aiResult.extractionFocusAreas.map((section)=>`${section.area} (${(section.fields||[]).join(", ")})`).join(" • ")}
+                  </Alert>
+                )}
                 <ExtractedDisplay data={aiResult.data} confidence={aiResult.confidence} ocrEngine={aiResult.ocrEngine} />
                 {needsEng&&<div style={{marginTop:"1.25rem"}}><EnglishSection value={eng} onChange={setEng} /></div>}
                 <div className="btn-row" style={{marginTop:"1.5rem"}}>

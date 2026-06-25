@@ -584,7 +584,13 @@ _FIXES = {
 
 
 def _correct(text):
-    return " ".join(_FIXES.get(w.lower(), w) for w in text.split())
+    # Preserve original spacing/newlines so downstream line-based extractors
+    # (especially A/L table parsing) can still reason about layout.
+    return re.sub(
+        r"\b[\w']+\b",
+        lambda m: _FIXES.get(m.group(0).lower(), m.group(0)),
+        text,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -617,6 +623,109 @@ def _preprocess(image_path):
     gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
     _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return gray
+
+
+def _region_windows_for_doc(doc_type_hint: str) -> list[tuple[str, float, float]]:
+    """Return normalized vertical slices (start_ratio, end_ratio) per document type."""
+    hint = (doc_type_hint or "auto").strip().lower()
+
+    # Always include full page first.
+    windows: list[tuple[str, float, float]] = [("full", 0.0, 1.0)]
+
+    if hint == "passport":
+        # Passport data is usually in upper block + MRZ at bottom.
+        windows.extend([
+            ("identity_block", 0.05, 0.62),
+            ("mrz_block", 0.72, 1.0),
+        ])
+    elif hint == "financial":
+        # Statements often place balances in lower sections.
+        windows.extend([
+            ("header", 0.0, 0.30),
+            ("account_section", 0.25, 0.70),
+            ("balance_footer", 0.58, 1.0),
+        ])
+    elif hint == "alevel":
+        # A/L layouts typically have candidate details on top and grades table in middle.
+        windows.extend([
+            ("header", 0.0, 0.35),
+            ("results_table", 0.28, 0.82),
+            ("footer", 0.72, 1.0),
+        ])
+    elif hint in {"ielts", "toefl", "pte"}:
+        windows.extend([
+            ("candidate_block", 0.0, 0.45),
+            ("scores_block", 0.30, 0.88),
+        ])
+    else:
+        windows.extend([
+            ("top_half", 0.0, 0.55),
+            ("mid_band", 0.22, 0.82),
+            ("bottom_half", 0.45, 1.0),
+        ])
+
+    return windows
+
+
+def _merge_text_blocks(blocks: list[str]) -> str:
+    """Merge OCR text blocks while preserving line structure and removing duplicates."""
+    seen: set[str] = set()
+    merged_lines: list[str] = []
+
+    for block in blocks:
+        for raw_line in str(block or "").splitlines():
+            line = re.sub(r"\s+", " ", raw_line).strip()
+            if not line:
+                continue
+            key = line.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged_lines.append(line)
+
+    return "\n".join(merged_lines)
+
+
+def _run_multi_region_ocr(image_path: str, doc_type_hint: str = "auto") -> tuple[str, float, str]:
+    """
+    Run OCR on multiple vertical regions and merge results.
+    Helps scanned PDFs where key fields are missed in single full-page OCR.
+    """
+    gray = _preprocess(image_path)
+    h, _w = gray.shape[:2]
+    windows = _region_windows_for_doc(doc_type_hint)
+
+    text_blocks: list[str] = []
+    confs: list[float] = []
+    preset = "unknown"
+
+    for _name, start_ratio, end_ratio in windows:
+        y1 = int(max(0.0, min(1.0, start_ratio)) * h)
+        y2 = int(max(0.0, min(1.0, end_ratio)) * h)
+        if y2 - y1 < 24:
+            continue
+
+        roi = gray[y1:y2, :]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png", prefix="ocr_roi_") as tmp_roi:
+            cv2.imwrite(tmp_roi.name, roi)
+            roi_path = tmp_roi.name
+
+        try:
+            region_text, region_conf, region_preset = _run_ocr(roi_path, doc_type_hint=doc_type_hint)
+            if region_text.strip():
+                text_blocks.append(region_text)
+                confs.append(region_conf)
+                if preset == "unknown":
+                    preset = region_preset
+        finally:
+            try:
+                os.unlink(roi_path)
+            except OSError:
+                pass
+
+    merged_text = _merge_text_blocks(text_blocks)
+    merged_conf = float(np.mean(confs)) if confs else 0.0
+    return merged_text, merged_conf, preset
 
 
 def _tesseract_config_for_doc(doc_type_hint):
@@ -697,40 +806,38 @@ def _convert_pdf_to_images(pdf_path: str, max_pages: int = 5) -> list[str]:
 
 def _process_pdf_for_ocr(pdf_path: str, doc_type_hint: str = "auto") -> tuple[str, float, str]:
     """
-    Process PDF file: convert to images and run OCR on first page.
+    Process PDF file: convert to images and run OCR on pages.
     Returns combined text from all pages, average confidence, and OCR engine used.
     """
     temp_image_paths = []
     try:
-        temp_image_paths = _convert_pdf_to_images(pdf_path, max_pages=5)
+        max_pages = int(os.environ.get("OCR_PDF_MAX_PAGES", "5") or "5")
+        max_pages = max(1, min(max_pages, 12))
+        temp_image_paths = _convert_pdf_to_images(pdf_path, max_pages=max_pages)
         if not temp_image_paths:
             raise RuntimeError("No pages extracted from PDF")
 
-        # Extract text from first page for classification and initial OCR
+        # Extract text from pages and keep line breaks for parsers.
         text_parts = []
         confidences = []
 
         for page_idx, img_path in enumerate(temp_image_paths):
             try:
-                if _OCR_ENGINE == "tesseract":
-                    page_text, page_conf, _ = _run_tesseract(img_path, doc_type_hint)
-                elif _OCR_ENGINE == "easyocr":
-                    page_text, page_conf, _ = _run_easyocr_engine(img_path)
-                else:
-                    page_text, page_conf = "", 0.0
+                page_text, page_conf, _ = _run_multi_region_ocr(img_path, doc_type_hint=doc_type_hint)
 
                 if page_text.strip():
                     text_parts.append(page_text)
                     confidences.append(page_conf)
 
-                # Stop if we have enough text from first page for classification
-                if page_idx == 0 and len(text_parts[0].split()) > 50:
+                # For auto-classification, one rich first page is usually enough.
+                # For explicit doc types, continue scanning all configured pages.
+                if doc_type_hint == "auto" and page_idx == 0 and len(page_text.split()) > 80:
                     break
             except Exception as e:
                 print(f"[PDF] Error processing page {page_idx + 1}: {e}")
                 continue
 
-        combined_text = " ".join(text_parts)
+        combined_text = "\n\n".join(text_parts)
         avg_confidence = float(np.mean(confidences)) if confidences else 0.0
 
         return combined_text, avg_confidence, _OCR_ENGINE or "unknown"
@@ -1292,6 +1399,56 @@ def _extract(doc_type, text):
             "period":      _f(r"(?:statement period|from)[\s:]+([0-9/\-\s\w]+)", t),
         }
     return {}
+
+
+def _extraction_focus_areas(doc_type: str) -> list[dict[str, Any]]:
+    """Return practical field regions to guide manual checks per document type."""
+    key = (doc_type or "").strip().lower()
+    areas = {
+        "alevel": [
+            {"area": "header", "fields": ["name", "index_number", "year", "stream"]},
+            {"area": "results table", "fields": ["subjects", "grades"]},
+            {"area": "summary/footer", "fields": ["z_score", "district_rank", "island_rank"]},
+        ],
+        "bachelor": [
+            {"area": "student identity block", "fields": ["name"]},
+            {"area": "award statement", "fields": ["degree", "class", "gpa"]},
+            {"area": "institution/date line", "fields": ["university", "year"]},
+        ],
+        "master": [
+            {"area": "student identity block", "fields": ["name"]},
+            {"area": "award statement", "fields": ["degree", "class", "gpa"]},
+            {"area": "institution/date line", "fields": ["university", "year"]},
+        ],
+        "diploma": [
+            {"area": "student identity block", "fields": ["name"]},
+            {"area": "qualification line", "fields": ["degree", "class"]},
+            {"area": "institution/date line", "fields": ["university", "year"]},
+        ],
+        "ielts": [
+            {"area": "candidate details", "fields": ["name", "trf", "test_date"]},
+            {"area": "band score panel", "fields": ["overall", "listening", "reading", "writing", "speaking"]},
+        ],
+        "toefl": [
+            {"area": "test summary", "fields": ["total", "test_date"]},
+            {"area": "section scores", "fields": ["reading", "listening", "speaking", "writing"]},
+        ],
+        "pte": [
+            {"area": "score summary", "fields": ["overall", "test_date"]},
+            {"area": "communicative skills", "fields": ["listening", "reading", "writing", "speaking"]},
+        ],
+        "passport": [
+            {"area": "identity page header", "fields": ["surname", "given_names", "passport_no", "nationality"]},
+            {"area": "dates section", "fields": ["dob", "expiry"]},
+            {"area": "mrz bottom lines", "fields": ["mrz"]},
+        ],
+        "financial": [
+            {"area": "bank header", "fields": ["bank_name"]},
+            {"area": "account details", "fields": ["account_no", "currency", "period"]},
+            {"area": "balance summary / last page", "fields": ["closing_bal"]},
+        ],
+    }
+    return areas.get(key, [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3620,6 +3777,7 @@ async def ocr_endpoint(
                 ["Low confidence extraction — please verify fields manually."]
                 if conf < 0.5 else []
             ),
+            "extraction_focus_areas": _extraction_focus_areas(detected),
         }
         if missing_field_reasons:
             response_payload["warnings"] = [
