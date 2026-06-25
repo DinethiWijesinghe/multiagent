@@ -641,6 +641,84 @@ def _tesseract_config_for_doc(doc_type_hint):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PDF HANDLING
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _convert_pdf_to_images(pdf_path: str, max_pages: int = 5) -> list[str]:
+    """
+    Convert PDF file to temporary image files (one per page).
+    Processes only the first `max_pages` pages.
+    Returns list of temporary image file paths.
+    """
+    try:
+        from pdf2image import convert_from_path
+    except ImportError:
+        raise ImportError("pdf2image is required for PDF support. Run: pip install pdf2image")
+
+    try:
+        images = convert_from_path(pdf_path, first_page=1, last_page=max_pages, dpi=300)
+    except Exception as e:
+        raise RuntimeError(f"PDF conversion failed: {str(e)}")
+
+    temp_image_paths = []
+    for idx, image in enumerate(images):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png", prefix="pdf_page_") as tmp:
+            image.save(tmp.name, "PNG")
+            temp_image_paths.append(tmp.name)
+
+    return temp_image_paths
+
+
+def _process_pdf_for_ocr(pdf_path: str, doc_type_hint: str = "auto") -> tuple[str, float, str]:
+    """
+    Process PDF file: convert to images and run OCR on first page.
+    Returns combined text from all pages, average confidence, and OCR engine used.
+    """
+    temp_image_paths = []
+    try:
+        temp_image_paths = _convert_pdf_to_images(pdf_path, max_pages=5)
+        if not temp_image_paths:
+            raise RuntimeError("No pages extracted from PDF")
+
+        # Extract text from first page for classification and initial OCR
+        text_parts = []
+        confidences = []
+
+        for page_idx, img_path in enumerate(temp_image_paths):
+            try:
+                if _OCR_ENGINE == "tesseract":
+                    page_text, page_conf, _ = _run_tesseract(img_path, doc_type_hint)
+                elif _OCR_ENGINE == "easyocr":
+                    page_text, page_conf, _ = _run_easyocr_engine(img_path)
+                else:
+                    page_text, page_conf = "", 0.0
+
+                if page_text.strip():
+                    text_parts.append(page_text)
+                    confidences.append(page_conf)
+
+                # Stop if we have enough text from first page for classification
+                if page_idx == 0 and len(text_parts[0].split()) > 50:
+                    break
+            except Exception as e:
+                print(f"[PDF] Error processing page {page_idx + 1}: {e}")
+                continue
+
+        combined_text = " ".join(text_parts)
+        avg_confidence = float(np.mean(confidences)) if confidences else 0.0
+
+        return combined_text, avg_confidence, _OCR_ENGINE or "unknown"
+
+    finally:
+        # Cleanup temporary images
+        for tmp_path in temp_image_paths:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OCR ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3417,13 +3495,35 @@ async def ocr_endpoint(
 
     file_bytes = await file.read()
     suffix = os.path.splitext(file.filename or "doc.jpg")[1] or ".jpg"
+    
+    # Validate file type — allow PDF, JPG, PNG, and other common image formats
+    allowed_extensions = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp"}
+    file_ext = suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
     try:
         t0 = time.time()
-        text, ocr_conf, ocr_preset = _run_ocr(tmp_path, doc_type_hint=doc_type)
+        
+        # Handle PDF files separately
+        if file_ext == ".pdf":
+            try:
+                text, ocr_conf, ocr_preset = _process_pdf_for_ocr(tmp_path, doc_type_hint=doc_type)
+            except ImportError as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"PDF support unavailable: {str(e)}. Run: pip install pdf2image"
+                )
+        else:
+            text, ocr_conf, ocr_preset = _run_ocr(tmp_path, doc_type_hint=doc_type)
+        
         ocr_time = round(time.time() - t0, 2)
 
         if not text.strip():
