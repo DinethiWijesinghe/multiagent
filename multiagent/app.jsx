@@ -1175,6 +1175,8 @@ const UPLOAD_DOC_TYPE_OPTIONS = [
   ...Object.keys(API_DOC_TYPE_MAP).map((label) => ({ value: API_DOC_TYPE_MAP[label], label })),
 ];
 
+const OCR_UPLOAD_TIMEOUT_MS = 170000;
+
 async function extractDocumentWithAI(file, docType, onProgress, token) {
   onProgress("Reading file...", 10);
   const formData = new FormData();
@@ -1188,7 +1190,12 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
   let response;
   try {
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    response = await fetchApi("/ocr", { method: "POST", headers, body: formData });
+    response = await fetchApi("/ocr", {
+      method: "POST",
+      headers,
+      body: formData,
+      timeoutMs: OCR_UPLOAD_TIMEOUT_MS,
+    });
   } catch (netErr) {
     throw new Error(netErr?.message || "Cannot reach OCR server. Start the API locally on port 8000 or update VITE_API_URL.");
   }
