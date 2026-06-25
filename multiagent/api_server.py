@@ -22,6 +22,7 @@ import json
 import pickle
 import random
 import secrets
+import shutil
 import time
 import urllib.request
 from collections import Counter
@@ -655,8 +656,33 @@ def _convert_pdf_to_images(pdf_path: str, max_pages: int = 5) -> list[str]:
     except ImportError:
         raise ImportError("pdf2image is required for PDF support. Run: pip install pdf2image")
 
+    poppler_path = os.environ.get("POPPLER_PATH", "").strip() or None
+    if poppler_path and not os.path.isdir(poppler_path):
+        raise RuntimeError(f"POPPLER_PATH is set but does not exist: {poppler_path}")
+
+    # On Linux/Colab, Poppler should be available via `poppler-utils` package.
+    if poppler_path is None and shutil.which("pdfinfo") is None:
+        if sys.platform.startswith("linux"):
+            raise RuntimeError(
+                "Poppler is not installed or not on PATH. "
+                "On Colab/Linux run: apt-get update -qq && apt-get install -y -qq poppler-utils"
+            )
+        if sys.platform == "win32":
+            raise RuntimeError(
+                "Poppler is not installed or not on PATH. "
+                "Install Poppler for Windows and add its bin folder to PATH, "
+                "or set POPPLER_PATH to that bin directory."
+            )
+
     try:
-        images = convert_from_path(pdf_path, first_page=1, last_page=max_pages, dpi=300)
+        convert_kwargs = {
+            "first_page": 1,
+            "last_page": max_pages,
+            "dpi": 300,
+        }
+        if poppler_path:
+            convert_kwargs["poppler_path"] = poppler_path
+        images = convert_from_path(pdf_path, **convert_kwargs)
     except Exception as e:
         raise RuntimeError(f"PDF conversion failed: {str(e)}")
 
@@ -3521,6 +3547,8 @@ async def ocr_endpoint(
                     status_code=503,
                     detail=f"PDF support unavailable: {str(e)}. Run: pip install pdf2image"
                 )
+            except RuntimeError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         else:
             text, ocr_conf, ocr_preset = _run_ocr(tmp_path, doc_type_hint=doc_type)
         

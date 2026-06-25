@@ -240,7 +240,7 @@ if not os.path.exists(REQUIREMENTS_PATH):
 
 print("[2/8] Installing system dependencies...")
 run(["apt-get", "update", "-qq"])
-run(["apt-get", "install", "-y", "-qq", "tesseract-ocr", "libgl1", "libglib2.0-0", "wget", "curl", "ca-certificates", "gnupg", "git", "python3-venv"])
+run(["apt-get", "install", "-y", "-qq", "tesseract-ocr", "poppler-utils", "libgl1", "libglib2.0-0", "wget", "curl", "ca-certificates", "gnupg", "git", "python3-venv"])
 ensure_python_env()
 
 print("[3/8] Installing backend Python dependencies from multiagent/requirement.txt...")

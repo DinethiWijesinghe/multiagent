@@ -141,6 +141,9 @@
    ```bash
    pip install pdf2image pypdf
    
+  # On Colab/Linux:
+  sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+   
    # On Windows, you may also need:
    # Download and install Poppler: https://github.com/oschwartz10612/poppler-windows/releases/
    ```
