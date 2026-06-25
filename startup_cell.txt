@@ -265,7 +265,10 @@ except subprocess.CalledProcessError:
     run(["npm", "--version"])
 
 print("[5/8] Installing frontend dependencies from package.json...")
-run(["npm", "install"], cwd=FRONTEND_DIR)
+if os.path.exists(os.path.join(FRONTEND_DIR, "package-lock.json")):
+    run(["npm", "ci"], cwd=FRONTEND_DIR)
+else:
+    run(["npm", "install"], cwd=FRONTEND_DIR)
 
 print("[6/8] Collecting runtime secrets and starting backend...")
 database_url = getpass("Neon DATABASE_URL (required): ").strip()

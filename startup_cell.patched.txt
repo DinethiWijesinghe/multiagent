@@ -1,4 +1,4 @@
-# One-click full stack: refresh repo, install current deps, start backend + frontend, create two public URLs
+﻿# One-click full stack: refresh repo, install current deps, start backend + frontend, create two public URLs
 import os
 import re
 import shutil
@@ -241,7 +241,7 @@ if not os.path.exists(REQUIREMENTS_PATH):
 print("[2/8] Installing system dependencies...")
 run(["apt-get", "update", "-qq"])
 run(["apt-get", "install", "-y", "-qq", "tesseract-ocr", "poppler-utils", "libgl1", "libglib2.0-0", "wget", "curl", "ca-certificates", "gnupg", "git", "python3-venv"])
-essure_python_env()
+ensure_python_env()
 
 print("[3/8] Installing backend Python dependencies from multiagent/requirement.txt...")
 pip_install(["--upgrade", "pip", "setuptools", "wheel"], optional=True)
@@ -265,7 +265,10 @@ except subprocess.CalledProcessError:
     run(["npm", "--version"])
 
 print("[5/8] Installing frontend dependencies from package.json...")
-run(["npm", "install"], cwd=FRONTEND_DIR)
+if os.path.exists(os.path.join(FRONTEND_DIR, "package-lock.json")):
+    run(["npm", "ci"], cwd=FRONTEND_DIR)
+else:
+    run(["npm", "install"], cwd=FRONTEND_DIR)
 
 print("[6/8] Collecting runtime secrets and starting backend...")
 database_url = getpass("Neon DATABASE_URL (required): ").strip()
@@ -368,3 +371,4 @@ globals()["_backend_proc"] = backend_proc
 globals()["_frontend_proc"] = frontend_proc
 globals()["_backend_tunnel_proc"] = backend_tunnel_proc
 globals()["_frontend_tunnel_proc"] = frontend_tunnel_proc
+
