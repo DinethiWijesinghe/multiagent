@@ -1435,6 +1435,12 @@ def _normalize_alevel_subject_code_token(token: str) -> str | None:
     # OCR confusions in numeric part.
     t = t.replace("O", "0").replace("I", "1").replace("L", "1")
 
+    # OCR often reads trailing S as 5/8 in tabular cells (e.g., 015, 098).
+    if len(t) == 3 and t[:2].isdigit():
+        suffix = t[2]
+        if suffix == "5" or suffix == "8":
+            t = f"{t[:2]}S"
+
     # Accept 2-digit + optional suffix letter.
     if re.fullmatch(r"\d{2}[A-Z]", t):
         return t
@@ -1442,6 +1448,39 @@ def _normalize_alevel_subject_code_token(token: str) -> str | None:
         # Most A/L subject numbers in this format use an S suffix.
         return f"{t}S"
     return None
+
+
+def _extract_general_english_grade(text: str) -> str | None:
+    """Extract General English grade while avoiding nearby table headers."""
+    cleaned_lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
+    indices = [i for i, ln in enumerate(cleaned_lines) if "general english" in ln.lower()]
+
+    def _line_grade(line: str) -> str | None:
+        ll = line.lower()
+        if "passes" in ll or "total" in ll:
+            return None
+        if re.search(r"\bA\s+B\s+C\s+S\b", line.upper()):
+            return None
+
+        grade_label = re.search(r"\bgrade\b[^ABCSF85]{0,12}\b([ABCSF85])\b", line.upper())
+        if grade_label:
+            return _normalize_alevel_grade_token(grade_label.group(1))
+
+        singles = re.findall(r"\b([ABCSF85])\b", line.upper())
+        if len(singles) == 1:
+            return _normalize_alevel_grade_token(singles[0])
+        return None
+
+    for idx in indices:
+        for j in range(idx, min(idx + 5, len(cleaned_lines))):
+            parsed = _line_grade(cleaned_lines[j])
+            if parsed:
+                return parsed
+
+    ge_grade = _f(r"general\s*english[^\n]{0,120}\b([ABCSF85])\b", text)
+    if not ge_grade:
+        ge_grade = _f(r"general\s*english[\s\S]{0,120}\b([ABCSF85])\b", text)
+    return _normalize_alevel_grade_token(ge_grade)
 
 
 def _extract_alevel_subjects_grades(text):
@@ -1497,12 +1536,12 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
     code_line_idx = -1
     subject_codes: list[str] = []
     for idx, line in enumerate(cleaned_lines):
-        raw_tokens = re.findall(r"\b[0-9OIL]{2}[A-Z5]?\b", line.upper())
+        raw_tokens = re.findall(r"\b[0-9OIL]{2}[A-Z58]?\b", line.upper())
         if len(raw_tokens) < 2:
             # Handle compact OCR like "01S02S09S" without spaces.
-            compact_chunks = re.findall(r"(?:[0-9OIL]{2}[A-Z5]){2,}", line.upper())
+            compact_chunks = re.findall(r"(?:[0-9OIL]{2}[A-Z58]){2,}", line.upper())
             for chunk in compact_chunks:
-                raw_tokens.extend(re.findall(r"[0-9OIL]{2}[A-Z5]", chunk))
+                raw_tokens.extend(re.findall(r"[0-9OIL]{2}[A-Z58]", chunk))
         normalized_codes = []
         for tok in raw_tokens:
             code = _normalize_alevel_subject_code_token(tok)
@@ -1517,7 +1556,7 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
 
     if not subject_codes:
         # Global fallback when OCR splits each code into different lines/cells.
-        compact = re.findall(r"(?:[0-9OIL]{2}[S5])", text.upper())
+        compact = re.findall(r"(?:[0-9OIL]{2}[S58])", text.upper())
         for tok in compact:
             code = _normalize_alevel_subject_code_token(tok)
             if code and code not in subject_codes:
@@ -1538,6 +1577,15 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
 
         tokens = re.findall(r"\b[ABCSF85]\b", line.upper())
         normalized = [g for g in (_normalize_alevel_grade_token(t) for t in tokens) if g]
+        if not normalized:
+            # Handle compact OCR grade rows like "CAC" (no spaces between cells).
+            compact_line = re.sub(r"\s+", "", line.upper())
+            if re.fullmatch(r"[ABCSF85]{2,6}", compact_line):
+                normalized = [
+                    g for g in
+                    (_normalize_alevel_grade_token(ch) for ch in compact_line)
+                    if g
+                ]
         if not normalized:
             continue
 
@@ -1605,10 +1653,7 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
                 subject_grade_map[f"Main Subject {idx}"] = grade
 
     # Capture General English separately when present.
-    ge_grade = _f(r"general\s*english[^\n]{0,120}\b([ABCSF85])\b", text)
-    if not ge_grade:
-        ge_grade = _f(r"general\s*english[\s\S]{0,120}\b([ABCSF85])\b", text)
-    ge_norm = _normalize_alevel_grade_token(ge_grade)
+    ge_norm = _extract_general_english_grade(text)
     if ge_norm:
         subject_grade_map["General English"] = ge_norm
 
