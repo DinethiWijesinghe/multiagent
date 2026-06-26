@@ -1054,6 +1054,25 @@ def _field_diagnostics(doc_type, fields, ocr_conf, ml_conf):
     return field_confidence, missing_reasons
 
 
+def _missing_required_fields(doc_type: str, fields: dict[str, Any]) -> list[str]:
+    required = _REQUIRED_FIELDS.get(doc_type, [])
+    return [key for key in required if not _has_value(fields.get(key))]
+
+
+def _extraction_completeness_score(doc_type: str, fields: dict[str, Any]) -> float:
+    """Score extraction completeness with higher weight for required fields."""
+    required = _REQUIRED_FIELDS.get(doc_type, [])
+    required_total = max(1, len(required))
+    required_hit = sum(1 for key in required if _has_value(fields.get(key)))
+
+    weighted_keys = _FW.get(doc_type, {})
+    weighted_total = sum(float(w) for w in weighted_keys.values()) or 1.0
+    weighted_hit = sum(float(w) for key, w in weighted_keys.items() if _has_value(fields.get(key)))
+
+    # Required-field coverage is the primary signal.
+    return round((required_hit / required_total) * 0.7 + (weighted_hit / weighted_total) * 0.3, 4)
+
+
 def _normalize_fields(doc_type, fields):
     """Add normalized schema keys while keeping existing keys for compatibility."""
     normalized = dict(fields)
@@ -1081,6 +1100,41 @@ def _normalize_fields(doc_type, fields):
         normalized["subjects"] = subject_grade_map
         normalized["subjects_list"] = list(subject_grade_map.keys())
         normalized["grades"] = list(subject_grade_map.values())
+
+        # Frontend aliases
+        normalized["full_name"] = normalized.get("name")
+        normalized["subject_stream"] = normalized.get("stream")
+
+    elif doc_type in {"bachelor", "master", "diploma"}:
+        # Frontend aliases
+        normalized["student_name"] = normalized.get("name")
+        normalized["degree_title"] = normalized.get("degree")
+        normalized["degree_class"] = normalized.get("class")
+        normalized["gpa_value"] = normalized.get("gpa")
+        normalized["graduation_date"] = normalized.get("year")
+
+    elif doc_type == "ielts":
+        # Frontend aliases
+        normalized["trf_number"] = normalized.get("trf")
+        if not normalized.get("candidate_name") and normalized.get("name"):
+            normalized["candidate_name"] = normalized.get("name")
+
+    elif doc_type in {"toefl", "pte"}:
+        # Frontend aliases
+        if not normalized.get("candidate_name") and normalized.get("name"):
+            normalized["candidate_name"] = normalized.get("name")
+
+    elif doc_type == "passport":
+        # Frontend aliases
+        normalized["passport_number"] = normalized.get("passport_no")
+        normalized["date_of_birth"] = normalized.get("dob")
+        normalized["expiry_date"] = normalized.get("expiry")
+
+    elif doc_type == "financial":
+        # Frontend aliases
+        normalized["account_number"] = normalized.get("account_no")
+        normalized["closing_balance"] = normalized.get("closing_bal")
+        normalized["statement_period"] = normalized.get("period")
 
     return normalized
 
@@ -1248,6 +1302,87 @@ _ALEVEL_SUBJECT_MAP = [
 ]
 
 
+_ALEVEL_SUBJECT_CODE_MAP_DEFAULT: dict[str, dict[str, str]] = {
+    # Global fallback map regardless of stream (keep intentionally minimal).
+    "GLOBAL": {
+        "01S": "Biology",
+        "02S": "Chemistry",
+        "09S": "Physics",
+    },
+    # Stream-specific overrides when stream is confidently detected.
+    "BIO": {
+        "01S": "Biology",
+        "02S": "Chemistry",
+        "09S": "Physics",
+    },
+}
+
+
+def _load_alevel_subject_code_map() -> dict[str, dict[str, str]]:
+    """
+    Load A/L subject code map from env override while preserving defaults.
+    Env: ALEVEL_SUBJECT_CODE_MAP as JSON object, e.g.
+    {
+      "GLOBAL": {"01S": "Biology"},
+      "BIO": {"09S": "Physics"}
+    }
+    """
+    merged = {
+        k: dict(v)
+        for k, v in _ALEVEL_SUBJECT_CODE_MAP_DEFAULT.items()
+    }
+    raw = (os.environ.get("ALEVEL_SUBJECT_CODE_MAP") or "").strip()
+    if not raw:
+        return merged
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            for stream_key, mapping in payload.items():
+                if not isinstance(mapping, dict):
+                    continue
+                skey = str(stream_key).strip().upper()
+                if skey not in merged:
+                    merged[skey] = {}
+                for code, label in mapping.items():
+                    ckey = str(code).strip().upper()
+                    if not re.fullmatch(r"\d{2}[A-Z]", ckey):
+                        continue
+                    lbl = str(label).strip()
+                    if lbl:
+                        merged[skey][ckey] = lbl
+    except Exception as exc:
+        print(f"[OCR] Invalid ALEVEL_SUBJECT_CODE_MAP JSON, using defaults: {exc}")
+    return merged
+
+
+_ALEVEL_SUBJECT_CODE_MAP = _load_alevel_subject_code_map()
+
+
+def _normalize_alevel_stream_key(stream: str | None) -> str | None:
+    if not stream:
+        return None
+    s = str(stream).strip().upper()
+    if "BIO" in s:
+        return "BIO"
+    if "ART" in s:
+        return "ARTS"
+    if "COMMERCE" in s:
+        return "COMMERCE"
+    if "PHYSICAL" in s or "MATH" in s:
+        return "PHYSICAL"
+    return s
+
+
+def _resolve_alevel_subject_label(code: str, stream_hint: str | None = None) -> str:
+    c = str(code or "").strip().upper()
+    stream_key = _normalize_alevel_stream_key(stream_hint)
+    if stream_key and c in (_ALEVEL_SUBJECT_CODE_MAP.get(stream_key) or {}):
+        return _ALEVEL_SUBJECT_CODE_MAP[stream_key][c]
+    if c in (_ALEVEL_SUBJECT_CODE_MAP.get("GLOBAL") or {}):
+        return _ALEVEL_SUBJECT_CODE_MAP["GLOBAL"][c]
+    return f"Subject {c}"
+
+
 def _normalize_alevel_grade_token(token):
     if token is None:
         return None
@@ -1310,12 +1445,70 @@ def _extract_alevel_subjects_grades(text):
     return subjects, grades
 
 
+def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = None) -> dict[str, Any]:
+    """
+    Parse Sri Lanka A/L "Results Schedule" style table where subject numbers
+    and grade row are shown separately (e.g., 01S 02S 09S + C A C).
+    """
+    cleaned_lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
+
+    code_line_idx = -1
+    subject_codes: list[str] = []
+    for idx, line in enumerate(cleaned_lines):
+        codes = re.findall(r"\b\d{2}[A-Z]\b", line.upper())
+        if len(codes) >= 2:
+            subject_codes = codes[:6]
+            code_line_idx = idx
+            if "subject" in line.lower():
+                break
+
+    grade_tokens: list[str] = []
+    search_start = max(0, code_line_idx)
+    search_end = min(len(cleaned_lines), code_line_idx + 6) if code_line_idx >= 0 else len(cleaned_lines)
+    for line in cleaned_lines[search_start:search_end]:
+        tokens = re.findall(r"\b[ABCSF85]\b", line.upper())
+        normalized = [g for g in (_normalize_alevel_grade_token(t) for t in tokens) if g]
+        if len(normalized) >= 2:
+            grade_tokens = normalized[:6]
+            if "grade" in line.lower() or len(normalized) == len(subject_codes):
+                break
+
+    subject_grade_map: dict[str, str] = {}
+    if subject_codes and grade_tokens:
+        for idx, code in enumerate(subject_codes):
+            if idx >= len(grade_tokens):
+                break
+            subject_grade_map[_resolve_alevel_subject_label(code, stream_hint=stream_hint)] = grade_tokens[idx]
+
+    # Capture General English separately when present.
+    ge_grade = _f(r"general\s*english[^\n]{0,80}\b([ABCSF85])\b", text)
+    ge_norm = _normalize_alevel_grade_token(ge_grade)
+    if ge_norm:
+        subject_grade_map["General English"] = ge_norm
+
+    return {
+        "subject_grade_map": subject_grade_map,
+        "subject_codes": subject_codes,
+    }
+
+
 def _extract(doc_type, text):
     t = text.lower()
     if doc_type == "alevel":
-        subjects, grades = _extract_alevel_subjects_grades(text)
+        stream_guess = _f(r"(?:subject\s*)?stream[:\s]+([A-Z]{2,15})", text)
+        if not stream_guess:
+            stream_guess = _f(r"\b(?:stream)\b[^\n]*\b(BIO|ARTS?|COMMERCE|MATHS?|TECH)\b", text)
 
-        stream = _f(r"(?:subject\s*)?stream[:\s]+([A-Z]+)", text)
+        subjects, grades = _extract_alevel_subjects_grades(text)
+        schedule_table = _extract_alevel_results_schedule_table(text, stream_hint=stream_guess)
+        schedule_map = schedule_table.get("subject_grade_map") or {}
+
+        if schedule_map:
+            # Prefer table-aligned extraction for Results Schedule scans.
+            subjects = schedule_map
+            grades = list(schedule_map.values())
+
+        stream = stream_guess
         if not stream:
             if any(s in subjects for s in ["Physics", "Chemistry", "Biology"]):
                 stream = "BIO SCIENCE"
@@ -1325,14 +1518,16 @@ def _extract(doc_type, text):
                 stream = "ARTS"
 
         return {
-            "name":          _f(r"(?:certify\s+that|candidate\s*name)[:\s]+([A-Z][A-Z.\s]{3,})", text),
-            "index_number":  _f(r"(?:index\s*(?:number|no\.?))[:\s]*([0-9]{6,10})", text),
+            "name":          _f(r"(?:certify\s+that|candidate\s*name|full\s*name\s*of\s*the\s*candidate)[:\s]+([A-Z][A-Z.\s]{3,})", text),
+            "index_number":  _f(r"(?:index\s*(?:number|no\.?))[:\s]*([0-9]{5,10})", text),
+            "centre_no":     _f(r"(?:centre\s*no\.?|center\s*no\.?)[:\s]*([0-9]{2,6})", text),
             "year":          _f(r"(20\d{2})", text),
             "subjects":      subjects,
             "grades":        grades,
-            "z_score":       _f(r"z\s*[-.]?\s*score[:\s]*([0-9.]+)", text),
-            "district_rank": _f(r"District\s*Rank[:\s]+(\d+)", text),
-            "island_rank":   _f(r"Island\s*Rank[:\s]+(\d+)", text),
+            "subject_codes": schedule_table.get("subject_codes") or [],
+            "z_score":       _f(r"(?:z\s*[-.]?\s*score|z\s*score)[:\s]*([0-9]*\.?[0-9]{3,6})", text),
+            "district_rank": _f(r"(?:district\s*(?:rank|/\s*district))[^0-9]{0,20}(\d{1,6})", text),
+            "island_rank":   _f(r"(?:island\s*(?:rank|/\s*island))[^0-9]{0,20}(\d{1,6})", text),
             "stream":        stream,
             "date_of_issue": _f(r"(?:date\s*of\s*issue|issued\s*date|date)[:\s]+(.+?\d{4})", text),
         }
@@ -3744,6 +3939,32 @@ async def ocr_endpoint(
         fields_raw = _extract(detected, text)
         fields = _normalize_fields(detected, fields_raw)
         fields["document_type"] = _TYPE_MAP.get(detected, detected)
+
+        # Retry extraction with a stronger multi-region OCR pass when required
+        # fields are missing (common in scanned PDFs and dense statements).
+        retry_used = False
+        retry_error = None
+        initial_missing = _missing_required_fields(detected, fields)
+        if initial_missing:
+            try:
+                retry_text, retry_conf, _retry_preset = _run_multi_region_ocr(tmp_path, doc_type_hint=detected)
+                if retry_text.strip():
+                    merged_text = _merge_text_blocks([text, retry_text])
+                    retry_fields_raw = _extract(detected, merged_text)
+                    retry_fields = _normalize_fields(detected, retry_fields_raw)
+                    retry_fields["document_type"] = _TYPE_MAP.get(detected, detected)
+
+                    base_score = _extraction_completeness_score(detected, fields)
+                    retry_score = _extraction_completeness_score(detected, retry_fields)
+                    if retry_score > base_score:
+                        fields = retry_fields
+                        text = merged_text
+                        ocr_conf = max(ocr_conf, retry_conf)
+                        ocr_preset = f"{ocr_preset}+region_retry"
+                        retry_used = True
+            except Exception as retry_exc:
+                retry_error = str(retry_exc)
+
         fields, validation_issues, parse_confidence = _validate_parsed_fields(detected, fields)
         field_confidence, missing_field_reasons = _field_diagnostics(
             detected, fields, ocr_conf, final_conf
@@ -3778,7 +3999,13 @@ async def ocr_endpoint(
                 if conf < 0.5 else []
             ),
             "extraction_focus_areas": _extraction_focus_areas(detected),
+            "retry_used":             retry_used,
         }
+        if retry_error:
+            response_payload["warnings"] = [
+                *response_payload["warnings"],
+                "Fallback extraction retry did not complete fully; please verify fields manually.",
+            ]
         if missing_field_reasons:
             response_payload["warnings"] = [
                 *response_payload["warnings"],
@@ -3808,6 +4035,7 @@ async def ocr_endpoint(
                 "missing_field_reasons": response_payload["missing_field_reasons"],
                 "validation_issues": response_payload["validation_issues"],
                 "manual_review": response_payload["manual_review"],
+                "retry_used": response_payload.get("retry_used", False),
             },
         )
         return response_payload
