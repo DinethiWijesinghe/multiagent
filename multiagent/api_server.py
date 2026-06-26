@@ -2116,6 +2116,12 @@ class OCRManualCorrectionPayload(BaseModel):
     reviewer_note: str | None = None
 
 
+class OCRAlevelDebugPayload(BaseModel):
+    text: str
+    stream_hint: str | None = None
+    include_subject_scan: bool = True
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -4257,6 +4263,66 @@ async def ocr_endpoint(
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+@app.post("/ocr/debug/alevel-table")
+def ocr_debug_alevel_table(
+    payload: OCRAlevelDebugPayload,
+    current_user_email: str = Depends(_require_auth),
+):
+    """
+    Parser-only diagnostics for Sri Lanka A/L Results Schedule OCR text.
+    Useful when iterating parser fixes without re-uploading image files.
+    """
+    _ = current_user_email  # Endpoint is auth-protected; user id unused for diagnostics.
+
+    raw_text = (payload.text or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    schedule_eval = _extract_alevel_results_schedule_table(raw_text, stream_hint=payload.stream_hint)
+    schedule_map = schedule_eval.get("subject_grade_map") or {}
+
+    subject_scan_subjects: list[str] = []
+    subject_scan_grades: list[str] = []
+    if payload.include_subject_scan:
+        subject_scan_subjects, subject_scan_grades = _extract_alevel_subjects_grades(raw_text)
+
+    extracted = _extract("alevel", raw_text)
+    normalized = _normalize_fields("alevel", extracted)
+    normalized["document_type"] = _TYPE_MAP.get("alevel", "alevel")
+
+    missing_required = _missing_required_fields("alevel", normalized)
+    completeness = _extraction_completeness_score("alevel", normalized)
+
+    return {
+        "success": True,
+        "doc_type": "alevel",
+        "stream_hint": payload.stream_hint,
+        "subject_codes": schedule_eval.get("subject_codes") or [],
+        "subject_grade_map": schedule_map,
+        "subject_scan": {
+            "enabled": payload.include_subject_scan,
+            "subjects": subject_scan_subjects,
+            "grades": subject_scan_grades,
+        },
+        "missing_required_fields": missing_required,
+        "completeness_score": completeness,
+        "normalized_preview": {
+            "name": normalized.get("name"),
+            "index_number": normalized.get("index_number"),
+            "year": normalized.get("year"),
+            "stream": normalized.get("stream"),
+            "z_score": normalized.get("z_score"),
+            "subjects": normalized.get("subjects"),
+            "subject_codes": normalized.get("subject_codes"),
+            "general_english": (normalized.get("subjects") or {}).get("General English")
+            if isinstance(normalized.get("subjects"), dict)
+            else None,
+        },
+        "table_debug": schedule_eval.get("debug") if OCR_DEBUG_MODE else None,
+        "raw_text_preview": raw_text[:2000],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
