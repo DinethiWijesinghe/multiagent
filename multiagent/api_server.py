@@ -1674,6 +1674,85 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
     return result
 
 
+def _extract_alevel_name(text: str) -> str | None:
+    """Extract candidate full name from Results Schedule layouts."""
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
+
+    for idx, line in enumerate(lines):
+        ll = line.lower()
+        if "full name of the candidate" in ll or "candidate name" in ll:
+            inline = re.search(r"[:\-]\s*([A-Z][A-Z .]{5,})$", line)
+            if inline:
+                return inline.group(1).strip(" .,")
+            if idx + 1 < len(lines):
+                nxt = lines[idx + 1].upper().strip(" .,")
+                if re.fullmatch(r"[A-Z][A-Z\s.]{7,}", nxt):
+                    return nxt
+
+    for line in lines:
+        line_up = line.upper()
+        # Heuristic: all-caps person-like line, not a heading label.
+        if (
+            re.fullmatch(r"[A-Z][A-Z\s.]{7,}", line_up)
+            and "DEPARTMENT" not in line_up
+            and "EXAMINATION" not in line_up
+            and "RESULT" not in line_up
+            and "GENERAL" not in line_up
+            and "SCHEDULE" not in line_up
+        ):
+            tokens = [tok for tok in line_up.split() if len(tok) >= 2]
+            if len(tokens) >= 2:
+                return line_up.strip(" .,")
+    return None
+
+
+def _extract_alevel_index_number(text: str) -> str | None:
+    return (
+        _f(r"(?:index\s*(?:number|no\.?))\s*[:\-]?\s*([0-9]{5,10})", text)
+        or _f(r"\bindex\b[^0-9]{0,20}([0-9]{5,10})", text)
+    )
+
+
+def _extract_alevel_z_score(text: str) -> str | None:
+    raw = (
+        _f(r"(?:z\s*[-.]?\s*score|z\s*score)\s*[:\-]?\s*([0-9]*[\.,]?[0-9]{3,6})", text)
+        or _f(r"\bz\s*score\b[\s\S]{0,60}?([0-9]*[\.,]?[0-9]{3,6})", text)
+    )
+    if not raw:
+        return None
+    normalized = raw.replace(",", ".").strip()
+    # Normalize values like .9947 and 9947 into decimal-like form when plausible.
+    if normalized.startswith("."):
+        return f"0{normalized}"
+    if re.fullmatch(r"\d{4}", normalized):
+        return f"0.{normalized}"
+    return normalized
+
+
+def _extract_alevel_stream(text: str, subjects: Any, stream_hint: str | None = None) -> str | None:
+    if stream_hint:
+        return stream_hint
+
+    explicit = _f(r"\bstream\b[^A-Z\n]{0,10}(BIO|ARTS?|COMMERCE|MATHS?|TECH|PHYSICAL)\b", text)
+    if explicit:
+        return explicit
+
+    if isinstance(subjects, dict):
+        subject_names = set(subjects.keys())
+    elif isinstance(subjects, list):
+        subject_names = set(subjects)
+    else:
+        subject_names = set()
+
+    if any(s in subject_names for s in ["Physics", "Chemistry", "Biology"]):
+        return "BIO SCIENCE"
+    if "Combined Mathematics" in subject_names:
+        return "PHYSICAL SCIENCE"
+    if any(s in subject_names for s in ["Political Science", "Sinhala", "Economics"]):
+        return "ARTS"
+    return None
+
+
 def _extract(doc_type, text):
     t = text.lower()
     if doc_type == "alevel":
@@ -1690,27 +1769,31 @@ def _extract(doc_type, text):
             subjects = schedule_map
             grades = list(schedule_map.values())
 
-        stream = stream_guess
-        if not stream:
-            if any(s in subjects for s in ["Physics", "Chemistry", "Biology"]):
-                stream = "BIO SCIENCE"
-            elif "Combined Mathematics" in subjects:
-                stream = "PHYSICAL SCIENCE"
-            elif any(s in subjects for s in ["Political Science", "Sinhala", "Economics"]):
-                stream = "ARTS"
+        stream = _extract_alevel_stream(text, subjects, stream_hint=stream_guess)
 
         return {
-            "name":          _f(r"(?:certify\s+that|candidate\s*name|full\s*name\s*of\s*the\s*candidate)[:\s]+([A-Z][A-Z.\s]{3,})", text),
-            "index_number":  _f(r"(?:index\s*(?:number|no\.?))[:\s]*([0-9]{5,10})", text),
+            "name":          _extract_alevel_name(text),
+            "index_number":  _extract_alevel_index_number(text),
             "centre_no":     _f(r"(?:centre\s*no\.?|center\s*no\.?)[:\s]*([0-9]{2,6})", text),
             "year":          _f(r"(20\d{2})", text),
             "subjects":      subjects,
             "grades":        grades,
             "subject_codes": schedule_table.get("subject_codes") or [],
-            "z_score":       _f(r"(?:z\s*[-.]?\s*score|z\s*score)[:\s]*([0-9]*\.?[0-9]{3,6})", text),
-            "district_rank": _f(r"(?:district\s*(?:rank|/\s*district))[^0-9]{0,20}(\d{1,6})", text),
-            "island_rank":   _f(r"(?:island\s*(?:rank|/\s*island))[^0-9]{0,20}(\d{1,6})", text),
+            "z_score":       _extract_alevel_z_score(text),
+            "district_rank": (
+                _f(r"(?:district\s*(?:rank|/\s*district))[^0-9]{0,20}(\d{1,6})", text)
+                or _f(r"\bdistrict\b[^0-9]{0,20}(\d{1,6})", text)
+            ),
+            "island_rank":   (
+                _f(r"(?:island\s*(?:rank|/\s*island))[^0-9]{0,20}(\d{1,6})", text)
+                or _f(r"\bisland\b[^0-9]{0,20}(\d{1,6})", text)
+            ),
             "stream":        stream,
+            "common_general_test": _f(r"common\s*general\s*test[^0-9]{0,20}(\d{1,3})", text),
+            "general_english_grade": (
+                (subjects.get("General English") if isinstance(subjects, dict) else None)
+                or _extract_general_english_grade(text)
+            ),
             "date_of_issue": _f(r"(?:date\s*of\s*issue|issued\s*date|date)[:\s]+(.+?\d{4})", text),
         }
     elif doc_type in ("bachelor", "master", "diploma"):
@@ -2114,12 +2197,6 @@ class ChatRespondPayload(BaseModel):
 class OCRManualCorrectionPayload(BaseModel):
     corrected_fields: dict[str, Any]
     reviewer_note: str | None = None
-
-
-class OCRAlevelDebugPayload(BaseModel):
-    text: str
-    stream_hint: str | None = None
-    include_subject_scan: bool = True
 
 
 def _utc_now() -> str:
@@ -4177,7 +4254,6 @@ async def ocr_endpoint(
             "missing_field_reasons":  missing_field_reasons,
             "manual_review":          manual_review,
             "requires_manual_review": manual_review["required"],
-            "raw_text_preview":       text[:800],
             "message":                (
                 f"{_OCR_ENGINE.capitalize()} OCR — "
                 f"{round(conf * 100)}% confidence — {_TYPE_MAP.get(detected, detected)}"
@@ -4190,6 +4266,7 @@ async def ocr_endpoint(
             "retry_used":             retry_used,
         }
         if OCR_DEBUG_MODE:
+            response_payload["raw_text_preview"] = text[:800]
             debug_payload: dict[str, Any] = {
                 "doc_type": detected,
                 "requested_doc_type": doc_type,
@@ -4263,66 +4340,6 @@ async def ocr_endpoint(
             os.unlink(tmp_path)
         except OSError:
             pass
-
-
-@app.post("/ocr/debug/alevel-table")
-def ocr_debug_alevel_table(
-    payload: OCRAlevelDebugPayload,
-    current_user_email: str = Depends(_require_auth),
-):
-    """
-    Parser-only diagnostics for Sri Lanka A/L Results Schedule OCR text.
-    Useful when iterating parser fixes without re-uploading image files.
-    """
-    _ = current_user_email  # Endpoint is auth-protected; user id unused for diagnostics.
-
-    raw_text = (payload.text or "").strip()
-    if not raw_text:
-        raise HTTPException(status_code=400, detail="text is required")
-
-    schedule_eval = _extract_alevel_results_schedule_table(raw_text, stream_hint=payload.stream_hint)
-    schedule_map = schedule_eval.get("subject_grade_map") or {}
-
-    subject_scan_subjects: list[str] = []
-    subject_scan_grades: list[str] = []
-    if payload.include_subject_scan:
-        subject_scan_subjects, subject_scan_grades = _extract_alevel_subjects_grades(raw_text)
-
-    extracted = _extract("alevel", raw_text)
-    normalized = _normalize_fields("alevel", extracted)
-    normalized["document_type"] = _TYPE_MAP.get("alevel", "alevel")
-
-    missing_required = _missing_required_fields("alevel", normalized)
-    completeness = _extraction_completeness_score("alevel", normalized)
-
-    return {
-        "success": True,
-        "doc_type": "alevel",
-        "stream_hint": payload.stream_hint,
-        "subject_codes": schedule_eval.get("subject_codes") or [],
-        "subject_grade_map": schedule_map,
-        "subject_scan": {
-            "enabled": payload.include_subject_scan,
-            "subjects": subject_scan_subjects,
-            "grades": subject_scan_grades,
-        },
-        "missing_required_fields": missing_required,
-        "completeness_score": completeness,
-        "normalized_preview": {
-            "name": normalized.get("name"),
-            "index_number": normalized.get("index_number"),
-            "year": normalized.get("year"),
-            "stream": normalized.get("stream"),
-            "z_score": normalized.get("z_score"),
-            "subjects": normalized.get("subjects"),
-            "subject_codes": normalized.get("subject_codes"),
-            "general_english": (normalized.get("subjects") or {}).get("General English")
-            if isinstance(normalized.get("subjects"), dict)
-            else None,
-        },
-        "table_debug": schedule_eval.get("debug") if OCR_DEBUG_MODE else None,
-        "raw_text_preview": raw_text[:2000],
-    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
