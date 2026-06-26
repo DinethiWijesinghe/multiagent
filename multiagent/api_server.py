@@ -885,9 +885,29 @@ def _run_easyocr_engine(image_path):
         beamWidth=3,
     )
 
-    words = [t for (_, t, c) in results if t.strip() and c > 0.25]
-    confs = [c for (_, t, c) in results if t.strip() and c > 0.25]
-    text = " ".join(words)
+    filtered = [(bbox, t, c) for (bbox, t, c) in results if t.strip() and c > 0.25]
+    confs = [c for (_bbox, _t, c) in filtered]
+
+    # Keep approximate line structure so table parsers can work.
+    line_tol = max(10, int(bgr_img.shape[0] * 0.02))
+    positioned = []
+    for bbox, token_text, _c in filtered:
+        xs = [pt[0] for pt in bbox]
+        ys = [pt[1] for pt in bbox]
+        positioned.append((float(sum(ys) / len(ys)), float(min(xs)), token_text))
+    positioned.sort(key=lambda item: (item[0], item[1]))
+
+    lines: list[list[str]] = []
+    current_y = None
+    for cy, _x, token_text in positioned:
+        if current_y is None or abs(cy - current_y) > line_tol:
+            lines.append([token_text])
+            current_y = cy
+        else:
+            lines[-1].append(token_text)
+            current_y = (current_y + cy) / 2.0
+
+    text = "\n".join(" ".join(parts).strip() for parts in lines if parts)
     conf = float(np.mean(confs)) if confs else 0.0
     text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
     return _correct(text.strip()), conf, "easyocr_default"
@@ -1402,6 +1422,26 @@ def _normalize_alevel_grade_token(token):
     return None
 
 
+def _normalize_alevel_subject_code_token(token: str) -> str | None:
+    """Normalize noisy OCR subject-code token to canonical form like 01S."""
+    if not token:
+        return None
+    t = re.sub(r"[^A-Za-z0-9]", "", str(token).upper())
+    if len(t) < 2:
+        return None
+
+    # OCR confusions in numeric part.
+    t = t.replace("O", "0").replace("I", "1").replace("L", "1")
+
+    # Accept 2-digit + optional suffix letter.
+    if re.fullmatch(r"\d{2}[A-Z]", t):
+        return t
+    if re.fullmatch(r"\d{2}", t):
+        # Most A/L subject numbers in this format use an S suffix.
+        return f"{t}S"
+    return None
+
+
 def _extract_alevel_subjects_grades(text):
     subjects = []
     grades = []
@@ -1455,23 +1495,55 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
     code_line_idx = -1
     subject_codes: list[str] = []
     for idx, line in enumerate(cleaned_lines):
-        codes = re.findall(r"\b\d{2}[A-Z]\b", line.upper())
-        if len(codes) >= 2:
-            subject_codes = codes[:6]
+        raw_tokens = re.findall(r"\b[0-9OIL]{2}[A-Z5]?\b", line.upper())
+        if len(raw_tokens) < 2:
+            # Handle compact OCR like "01S02S09S" without spaces.
+            compact_chunks = re.findall(r"(?:[0-9OIL]{2}[A-Z5]){2,}", line.upper())
+            for chunk in compact_chunks:
+                raw_tokens.extend(re.findall(r"[0-9OIL]{2}[A-Z5]", chunk))
+        normalized_codes = []
+        for tok in raw_tokens:
+            code = _normalize_alevel_subject_code_token(tok)
+            if code and code not in normalized_codes:
+                normalized_codes.append(code)
+
+        if len(normalized_codes) >= 2:
+            subject_codes = normalized_codes[:6]
             code_line_idx = idx
             if "subject" in line.lower():
                 break
 
     grade_tokens: list[str] = []
     search_start = max(0, code_line_idx)
-    search_end = min(len(cleaned_lines), code_line_idx + 6) if code_line_idx >= 0 else len(cleaned_lines)
+    search_end = min(len(cleaned_lines), code_line_idx + 8) if code_line_idx >= 0 else len(cleaned_lines)
+
+    candidate_grade_rows: list[list[str]] = []
     for line in cleaned_lines[search_start:search_end]:
+        ll = line.lower()
+        if "passes" in ll or "total" in ll:
+            continue
+
         tokens = re.findall(r"\b[ABCSF85]\b", line.upper())
         normalized = [g for g in (_normalize_alevel_grade_token(t) for t in tokens) if g]
-        if len(normalized) >= 2:
-            grade_tokens = normalized[:6]
-            if "grade" in line.lower() or len(normalized) == len(subject_codes):
-                break
+        if not normalized:
+            continue
+
+        needed = len(subject_codes) if subject_codes else 3
+        if len(normalized) >= needed:
+            candidate_grade_rows.append(normalized)
+
+    if candidate_grade_rows:
+        # Prefer the last nearby row to avoid header rows like "A B C S".
+        grade_tokens = candidate_grade_rows[-1][:6]
+
+    if not grade_tokens:
+        # Fallback around "grade" anchor for flattened OCR text.
+        up = text.upper()
+        anchor = up.find("GRADE")
+        if anchor >= 0:
+            snippet = up[max(0, anchor - 160): anchor + 260]
+            tokens = re.findall(r"\b[ABCSF85]\b", snippet)
+            grade_tokens = [g for g in (_normalize_alevel_grade_token(t) for t in tokens) if g][:6]
 
     subject_grade_map: dict[str, str] = {}
     if subject_codes and grade_tokens:
@@ -1479,6 +1551,17 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
             if idx >= len(grade_tokens):
                 break
             subject_grade_map[_resolve_alevel_subject_label(code, stream_hint=stream_hint)] = grade_tokens[idx]
+
+    # Fallback: if only grades were captured, expose positional subjects.
+    if not subject_grade_map and grade_tokens:
+        stream_key = _normalize_alevel_stream_key(stream_hint)
+        if stream_key == "BIO" and len(grade_tokens) >= 3:
+            subject_grade_map["Biology"] = grade_tokens[0]
+            subject_grade_map["Chemistry"] = grade_tokens[1]
+            subject_grade_map["Physics"] = grade_tokens[2]
+        else:
+            for idx, grade in enumerate(grade_tokens[:6], start=1):
+                subject_grade_map[f"Main Subject {idx}"] = grade
 
     # Capture General English separately when present.
     ge_grade = _f(r"general\s*english[^\n]{0,80}\b([ABCSF85])\b", text)
