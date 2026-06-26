@@ -1026,7 +1026,8 @@ def _score(doc_type, fields, ocr_conf, ml_conf):
 
 
 _REQUIRED_FIELDS = {
-    "alevel": ["subjects", "grades"],
+    # Sri Lanka A/L Results Schedule: require core identity + results fields.
+    "alevel": ["name", "index_number", "year", "subjects", "stream", "z_score"],
     "bachelor": ["degree", "university"],
     "master": ["degree", "university"],
     "diploma": ["degree"],
