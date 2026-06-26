@@ -1443,7 +1443,9 @@ def _normalize_alevel_subject_code_token(token: str) -> str | None:
 
     # Accept 2-digit + optional suffix letter.
     if re.fullmatch(r"\d{2}[A-Z]", t):
-        return t
+        # In Sri Lanka A/L result schedules, subject number codes are typically
+        # represented with S suffix (e.g., 01S). Normalize noisy suffixes.
+        return f"{t[:2]}S"
     if re.fullmatch(r"\d{2}", t):
         # Most A/L subject numbers in this format use an S suffix.
         return f"{t}S"
@@ -1564,6 +1566,20 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
             if len(subject_codes) >= 6:
                 break
 
+    if len(subject_codes) < 2:
+        # Last-resort fallback: many OCR runs drop the S suffix and keep only
+        # 2-digit subject numbers in the subject-number row.
+        anchor_match = re.search(r"subject\s*no[^\n]{0,40}", text, re.I)
+        anchor_start = anchor_match.start() if anchor_match else 0
+        subject_region = text[anchor_start: anchor_start + 400]
+        numeric_tokens = re.findall(r"\b[0-9OIL]{2}\b", subject_region.upper())
+        for tok in numeric_tokens:
+            code = _normalize_alevel_subject_code_token(tok)
+            if code and code not in subject_codes:
+                subject_codes.append(code)
+            if len(subject_codes) >= 6:
+                break
+
     grade_tokens: list[str] = []
     search_start = max(0, code_line_idx)
     search_end = min(len(cleaned_lines), code_line_idx + 8) if code_line_idx >= 0 else len(cleaned_lines)
@@ -1580,6 +1596,7 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
         if not normalized:
             # Handle compact OCR grade rows like "CAC" (no spaces between cells).
             compact_line = re.sub(r"\s+", "", line.upper())
+            compact_line = re.sub(r"[^ABCSF85]", "", compact_line)
             if re.fullmatch(r"[ABCSF85]{2,6}", compact_line):
                 normalized = [
                     g for g in
@@ -1674,6 +1691,22 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
     return result
 
 
+def _normalize_alevel_name_ocr(name: str | None) -> str | None:
+    """Apply conservative OCR fixes for A/L candidate names."""
+    if not name:
+        return name
+
+    cleaned = re.sub(r"\s+", " ", str(name).upper()).strip(" .,")
+    tokens = [tok for tok in cleaned.split(" ") if tok]
+    normalized_tokens: list[str] = []
+    for tok in tokens:
+        # Common OCR confusion in surname endings: final I misread as T.
+        if tok.endswith("CHT"):
+            tok = f"{tok[:-1]}I"
+        normalized_tokens.append(tok)
+    return " ".join(normalized_tokens)
+
+
 def _extract_alevel_name(text: str) -> str | None:
     """Extract candidate full name from Results Schedule layouts."""
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
@@ -1683,11 +1716,11 @@ def _extract_alevel_name(text: str) -> str | None:
         if "full name of the candidate" in ll or "candidate name" in ll:
             inline = re.search(r"[:\-]\s*([A-Z][A-Z .]{5,})$", line)
             if inline:
-                return inline.group(1).strip(" .,")
+                return _normalize_alevel_name_ocr(inline.group(1).strip(" .,"))
             if idx + 1 < len(lines):
                 nxt = lines[idx + 1].upper().strip(" .,")
                 if re.fullmatch(r"[A-Z][A-Z\s.]{7,}", nxt):
-                    return nxt
+                    return _normalize_alevel_name_ocr(nxt)
 
     for line in lines:
         line_up = line.upper()
@@ -1702,7 +1735,7 @@ def _extract_alevel_name(text: str) -> str | None:
         ):
             tokens = [tok for tok in line_up.split() if len(tok) >= 2]
             if len(tokens) >= 2:
-                return line_up.strip(" .,")
+                return _normalize_alevel_name_ocr(line_up.strip(" .,"))
     return None
 
 
@@ -4122,6 +4155,7 @@ def chat_respond(payload: ChatRespondPayload, current_user_email: str = Depends(
 async def ocr_endpoint(
     file: UploadFile = File(...),
     doc_type: str = Form(default="auto"),
+    debug: str = Form(default="false"),
     current_user_email: str = Depends(_require_auth),
 ):
     if _OCR_ENGINE is None:
@@ -4138,6 +4172,7 @@ async def ocr_endpoint(
 
     file_bytes = await file.read()
     suffix = os.path.splitext(file.filename or "doc.jpg")[1] or ".jpg"
+    request_debug = str(debug or "").strip().lower() in {"1", "true", "yes", "on"}
     
     # Validate file type — allow PDF, JPG, PNG, and other common image formats
     allowed_extensions = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp"}
@@ -4265,7 +4300,7 @@ async def ocr_endpoint(
             "extraction_focus_areas": _extraction_focus_areas(detected),
             "retry_used":             retry_used,
         }
-        if OCR_DEBUG_MODE:
+        if OCR_DEBUG_MODE or request_debug:
             response_payload["raw_text_preview"] = text[:800]
             debug_payload: dict[str, Any] = {
                 "doc_type": detected,
