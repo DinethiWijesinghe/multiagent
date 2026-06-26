@@ -58,6 +58,7 @@ MAX_IMAGE_DIM        = 1000    # px cap — prevents RAM freeze
 # Default to degraded mode unless explicitly forced strict; this keeps boot probes alive
 # in lightweight runtimes (e.g., Colab) where OCR dependencies may be absent.
 OCR_STRICT_MODE = os.environ.get("OCR_STRICT_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+OCR_DEBUG_MODE = os.environ.get("OCR_DEBUG_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TESSERACT WINDOWS PATH AUTO-DETECTION  ← NEW FIX
@@ -1514,11 +1515,22 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
             if "subject" in line.lower():
                 break
 
+    if not subject_codes:
+        # Global fallback when OCR splits each code into different lines/cells.
+        compact = re.findall(r"(?:[0-9OIL]{2}[S5])", text.upper())
+        for tok in compact:
+            code = _normalize_alevel_subject_code_token(tok)
+            if code and code not in subject_codes:
+                subject_codes.append(code)
+            if len(subject_codes) >= 6:
+                break
+
     grade_tokens: list[str] = []
     search_start = max(0, code_line_idx)
     search_end = min(len(cleaned_lines), code_line_idx + 8) if code_line_idx >= 0 else len(cleaned_lines)
 
-    candidate_grade_rows: list[list[str]] = []
+    candidate_grade_rows: list[tuple[list[str], bool]] = []
+    debug_grade_rows: list[dict[str, Any]] = []
     for line in cleaned_lines[search_start:search_end]:
         ll = line.lower()
         if "passes" in ll or "total" in ll:
@@ -1529,13 +1541,32 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
         if not normalized:
             continue
 
-        needed = len(subject_codes) if subject_codes else 3
-        if len(normalized) >= needed:
-            candidate_grade_rows.append(normalized)
+        header_like = len(normalized) <= 4 and normalized[:4] == ["A", "B", "C", "S"]
+        if len(normalized) >= 2:
+            candidate_grade_rows.append((normalized, header_like))
+            debug_grade_rows.append({
+                "line": line,
+                "tokens": normalized,
+                "header_like": header_like,
+            })
 
+    selected_grade_row: dict[str, Any] | None = None
     if candidate_grade_rows:
-        # Prefer the last nearby row to avoid header rows like "A B C S".
-        grade_tokens = candidate_grade_rows[-1][:6]
+        needed = len(subject_codes) if subject_codes else 3
+        # Prefer non-header row with length closest to needed subject count.
+        ranked = sorted(
+            candidate_grade_rows,
+            key=lambda item: (
+                1 if item[1] else 0,
+                abs(len(item[0]) - needed),
+                -len(item[0]),
+            ),
+        )
+        grade_tokens = ranked[0][0][:6]
+        selected_grade_row = {
+            "tokens": ranked[0][0],
+            "needed": needed,
+        }
 
     if not grade_tokens:
         # Fallback around "grade" anchor for flattened OCR text.
@@ -1545,6 +1576,15 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
             snippet = up[max(0, anchor - 160): anchor + 260]
             tokens = re.findall(r"\b[ABCSF85]\b", snippet)
             grade_tokens = [g for g in (_normalize_alevel_grade_token(t) for t in tokens) if g][:6]
+            if grade_tokens and selected_grade_row is None:
+                selected_grade_row = {
+                    "tokens": grade_tokens,
+                    "source": "grade_anchor_snippet",
+                    "snippet": snippet[:240],
+                }
+
+    if len(grade_tokens) >= 4 and grade_tokens[:4] == ["A", "B", "C", "S"]:
+        grade_tokens = grade_tokens[4:]
 
     subject_grade_map: dict[str, str] = {}
     if subject_codes and grade_tokens:
@@ -1565,15 +1605,28 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
                 subject_grade_map[f"Main Subject {idx}"] = grade
 
     # Capture General English separately when present.
-    ge_grade = _f(r"general\s*english[^\n]{0,80}\b([ABCSF85])\b", text)
+    ge_grade = _f(r"general\s*english[^\n]{0,120}\b([ABCSF85])\b", text)
+    if not ge_grade:
+        ge_grade = _f(r"general\s*english[\s\S]{0,120}\b([ABCSF85])\b", text)
     ge_norm = _normalize_alevel_grade_token(ge_grade)
     if ge_norm:
         subject_grade_map["General English"] = ge_norm
 
-    return {
+    result = {
         "subject_grade_map": subject_grade_map,
         "subject_codes": subject_codes,
     }
+    if OCR_DEBUG_MODE:
+        result["debug"] = {
+            "stream_hint": stream_hint,
+            "code_line_idx": code_line_idx,
+            "subject_codes": subject_codes,
+            "grade_tokens": grade_tokens,
+            "candidate_grade_rows": debug_grade_rows,
+            "selected_grade_row": selected_grade_row,
+            "cleaned_lines_preview": cleaned_lines[:20],
+        }
+    return result
 
 
 def _extract(doc_type, text):
@@ -4085,6 +4138,32 @@ async def ocr_endpoint(
             "extraction_focus_areas": _extraction_focus_areas(detected),
             "retry_used":             retry_used,
         }
+        if OCR_DEBUG_MODE:
+            debug_payload: dict[str, Any] = {
+                "doc_type": detected,
+                "requested_doc_type": doc_type,
+                "ocr_engine": _OCR_ENGINE,
+                "ocr_preset": ocr_preset,
+                "retry_used": retry_used,
+                "initial_missing_required_fields": initial_missing,
+            }
+            if detected == "alevel":
+                schedule_debug = None
+                if isinstance(fields_raw, dict):
+                    maybe_schedule = fields_raw.get("_schedule_debug")
+                    if isinstance(maybe_schedule, dict):
+                        schedule_debug = maybe_schedule
+                # Re-evaluate table debug from final text for deterministic diagnostics.
+                final_stream_hint = fields.get("stream") if isinstance(fields, dict) else None
+                schedule_eval = _extract_alevel_results_schedule_table(text, stream_hint=final_stream_hint)
+                schedule_debug = schedule_eval.get("debug") if isinstance(schedule_eval, dict) else None
+                debug_payload["alevel"] = {
+                    "subject_codes": schedule_eval.get("subject_codes") if isinstance(schedule_eval, dict) else None,
+                    "subject_grade_map": schedule_eval.get("subject_grade_map") if isinstance(schedule_eval, dict) else None,
+                    "schedule_debug": schedule_debug,
+                    "raw_text_preview": text[:1500],
+                }
+            response_payload["ocr_debug"] = debug_payload
         if retry_error:
             response_payload["warnings"] = [
                 *response_payload["warnings"],
