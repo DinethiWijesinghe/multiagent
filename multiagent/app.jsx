@@ -1795,11 +1795,29 @@ const DOC_TYPE_DEFS = {
   "Financial Statement": {cat:"financial"},
 };
 
-const DOC_CATS = {
-  academic:  {label:"Academic",            types:["A-Level Results","Bachelor's Degree","Master's Degree","Diploma","IELTS Certificate","TOEFL Certificate","PTE Certificate"]},
-  identity:  {label:"Identity",            types:["Passport"]},
-  financial: {label:"Financial",           types:["Financial Statement"]},
-};
+const ENGLISH_DOC_TYPES = ["IELTS Certificate", "TOEFL Certificate", "PTE Certificate"];
+
+function qualificationToAcademicDoc(qualification){
+  return qualification === "GCE A/L"
+    ? "A-Level Results"
+    : qualification === "Bachelor's Degree"
+      ? "Bachelor's Degree"
+      : qualification === "Master's Degree"
+        ? "Master's Degree"
+        : qualification === "Diploma"
+          ? "Diploma"
+          : "A-Level Results";
+}
+
+function requiredChecklistItemsForQualification(qualification){
+  const academicDoc = qualificationToAcademicDoc(qualification);
+  return [
+    { id: "academic", label: `Academic (${academicDoc})`, types: [academicDoc] },
+    { id: "english", label: "English (IELTS or TOEFL or PTE)", types: ENGLISH_DOC_TYPES },
+    { id: "identity", label: "Identity (Passport)", types: ["Passport"] },
+    { id: "financial", label: "Financial (Bank Statement)", types: ["Financial Statement"] },
+  ];
+}
 
 const DOC_TYPE_LIST = [
   {id:"A-Level Results",     label:"A/L Results"},
@@ -1814,16 +1832,41 @@ const DOC_TYPE_LIST = [
 ];
 
 const REQUIRED_FIELDS_BY_DOC_LABEL = {
-  "A-Level Results": ["name", "index_number", "subjects", "grades"],
-  "Bachelor's Degree": ["name", "degree", "university", "year"],
-  "Master's Degree": ["name", "degree", "university", "year"],
-  "Diploma": ["name", "degree", "year"],
-  "IELTS Certificate": ["overall", "listening", "reading", "writing", "speaking"],
-  "TOEFL Certificate": ["total", "reading", "listening", "speaking", "writing"],
-  "PTE Certificate": ["overall", "listening", "reading", "writing", "speaking"],
-  "Passport": ["surname", "given_names", "passport_number", "nationality", "expiry_date"],
-  "Financial Statement": ["bank_name", "account_number", "closing_balance", "currency"],
+  "A-Level Results": [["subjects", "subject_grade_map", "grades"]],
+  "Bachelor's Degree": [["university_name", "university"], ["degree_program", "degree_title"], ["graduation_year", "graduation_date"], ["gpa_value", "gpa", "gpa_normalized"]],
+  "Master's Degree": [["university_name", "university"], ["degree_program", "degree_title"], ["graduation_year", "graduation_date"], ["gpa_value", "gpa", "gpa_normalized"]],
+  "Diploma": [["student_name"], ["institution"], ["program"]],
+  "IELTS Certificate": [["candidate_name"], ["overall"]],
+  "TOEFL Certificate": [["candidate_name"], ["total"]],
+  "PTE Certificate": [["candidate_name"], ["overall"]],
+  "Passport": [["surname"], ["given_names"], ["expiry_date"]],
+  "Financial Statement": [["account_holder"], ["bank_name"], ["closing_balance"]],
 };
+
+function hasNonEmptyValue(value){
+  if(value === null || value === undefined) return false;
+  if(Array.isArray(value)) return value.some((entry)=>hasNonEmptyValue(entry));
+  if(typeof value === "object") return Object.values(value).some((entry)=>hasNonEmptyValue(entry));
+  return String(value).trim() !== "";
+}
+
+function getPrimaryRequiredFieldKeys(docType){
+  return (REQUIRED_FIELDS_BY_DOC_LABEL[docType] || []).map((fieldDef)=>Array.isArray(fieldDef) ? fieldDef[0] : fieldDef);
+}
+
+function getMissingRequiredFields(docType, data){
+  const defs = REQUIRED_FIELDS_BY_DOC_LABEL[docType] || [];
+  return defs
+    .filter((fieldDef)=>{
+      const aliases = Array.isArray(fieldDef) ? fieldDef : [fieldDef];
+      if(aliases.includes("subjects") || aliases.includes("subject_grade_map") || aliases.includes("grades")){
+        const subjectMap = getALevelSubjectMap(data || {});
+        return !hasNonEmptyValue(subjectMap);
+      }
+      return !aliases.some((alias)=>hasNonEmptyValue(data?.[alias]));
+    })
+    .map((fieldDef)=>Array.isArray(fieldDef) ? fieldDef[0] : fieldDef);
+}
 
 function prettyFieldLabel(key){
   return String(key||"")
@@ -1833,21 +1876,12 @@ function prettyFieldLabel(key){
 
 function extractionEditableKeys(result){
   const docType = result?.data?.document_type;
-  const required = REQUIRED_FIELDS_BY_DOC_LABEL[docType] || [];
-  const missing = Object.keys(result?.missingFieldReasons || {});
-  const lowConfidence = Object.entries(result?.fieldConfidence || {})
-    .filter(([,score])=>Number(score) > 0 && Number(score) < 0.55)
-    .map(([field])=>field);
-  const scalar = Object.entries(result?.data || {})
-    .filter(([field,val])=>field !== "document_type" && field !== "_rawPreview" && typeof val !== "object")
-    .map(([field])=>field);
-  return Array.from(new Set([...required, ...missing, ...lowConfidence, ...scalar]));
+  return getPrimaryRequiredFieldKeys(docType);
 }
 
 // NEW v6: Checklist panel shown above doc grid
-function DocChecklist({uploadedDocs, onSelectType}) {
-  const allTypes = Object.keys(DOC_TYPE_DEFS);
-  const doneCount = Object.values(uploadedDocs).filter(Boolean).length;
+function DocChecklist({uploadedDocs, requiredItems, onSelectType}) {
+  const doneCount = requiredItems.filter((item)=>item.types.some((docType)=>Boolean(uploadedDocs[docType]))).length;
 
   return (
     <div className="doc-checklist">
@@ -1855,28 +1889,27 @@ function DocChecklist({uploadedDocs, onSelectType}) {
          Document Checklist
         <span style={{marginLeft:"auto",fontFamily:"var(--mono)",fontSize:".65rem",
           color:"var(--text3)",fontWeight:400}}>
-          {doneCount} / {allTypes.length} uploaded
+          {doneCount} / {requiredItems.length} required completed
         </span>
       </div>
       <div className="checklist-progress">
-        <div className="checklist-progress-fill" style={{width:`${(doneCount/allTypes.length)*100}%`}} />
+        <div className="checklist-progress-fill" style={{width:`${requiredItems.length ? (doneCount/requiredItems.length)*100 : 0}%`}} />
       </div>
       <div className="checklist-cats">
-        {Object.entries(DOC_CATS).map(([cat, {label, types}]) => (
-          <div key={cat}>
-            <div className="checklist-cat-label">{label}</div>
+        {requiredItems.map((item) => (
+          <div key={item.id}>
+            <div className="checklist-cat-label">{item.label}</div>
             <div className="checklist-chips">
-              {types.map(t => {
-                const done = !!uploadedDocs[t];
-                const def  = DOC_TYPE_DEFS[t];
+              {item.types.map((docType) => {
+                const done = Boolean(uploadedDocs[docType]);
                 return (
                   <span
-                    key={t}
+                    key={docType}
                     className={`checklist-chip${done?" done":""}`}
                     style={{cursor:"pointer"}}
-                    onClick={() => onSelectType(t)}
+                    onClick={() => onSelectType(docType)}
                   >
-                    {done ? "✓" : "○"} {def.icon} {t}
+                    {done ? "✓" : "○"} {docType}
                   </span>
                 );
               })}
@@ -1884,13 +1917,16 @@ function DocChecklist({uploadedDocs, onSelectType}) {
           </div>
         ))}
       </div>
-      {doneCount < allTypes.length && (
+      {doneCount < requiredItems.length && (
         <div className="checklist-remaining">
-          Still needed: {allTypes.filter(t=>!uploadedDocs[t]).join(", ")}
+          Still needed: {requiredItems
+            .filter((item)=>!item.types.some((docType)=>Boolean(uploadedDocs[docType])))
+            .map((item)=>item.label)
+            .join(", ")}
         </div>
       )}
-      {doneCount === allTypes.length && (
-        <div className="checklist-complete"> All 9 documents uploaded!</div>
+      {doneCount === requiredItems.length && (
+        <div className="checklist-complete"> Required documents completed.</div>
       )}
     </div>
   );
@@ -1900,7 +1936,9 @@ function DocChecklist({uploadedDocs, onSelectType}) {
 
 function DocumentStep({profile,docData,onNext,onBack,user}){
   const qual=profile.current_qualification;
-  const defaultType=qual==="GCE A/L"?"A-Level Results":qual==="Bachelor's Degree"?"Bachelor's Degree":qual==="Master's Degree"?"Master's Degree":qual==="Diploma"?"Diploma":"A-Level Results";
+  const defaultType=qualificationToAcademicDoc(qual);
+  const requiredChecklistItems = requiredChecklistItemsForQualification(qual);
+  const requiredDocTypes = Array.from(new Set(requiredChecklistItems.flatMap((item)=>item.types)));
 
   const [tab,setTab]=useState("upload");
   const [selectedType,setSelectedType]=useState(defaultType);
@@ -2052,8 +2090,8 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
       setExtractionByType((prev)=>({...prev,...extractedDetails}));
       setConfirmedDocs((prev)=>{
         const next={...prev};
-        Object.entries(extractedDetails).forEach(([docType,detail])=>{
-          next[docType]=!detail?.requiresManualReview;
+        Object.keys(extractedDetails).forEach((docType)=>{
+          next[docType]=false;
         });
         return next;
       });
@@ -2097,6 +2135,18 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
       setAiError("Add at least one extracted or manually entered document before eligibility check.");
       return;
     }
+    const missingGroups = requiredChecklistItems.filter((item)=>!item.types.some((docType)=>Boolean(finalPayload.documents?.[docType])));
+    if(missingGroups.length){
+      setAiError(`Please complete required documents: ${missingGroups.map((item)=>item.label).join(", ")}`);
+      return;
+    }
+    const unconfirmed = Object.keys(finalPayload.documents||{})
+      .filter((docType)=>requiredDocTypes.includes(docType))
+      .filter((docType)=>!confirmedDocs[docType]);
+    if(unconfirmed.length){
+      setAiError(`Please confirm these documents before eligibility: ${unconfirmed.join(", ")}`);
+      return;
+    }
     onNext(finalPayload);
   };
 
@@ -2121,6 +2171,11 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     );
 
     const mergedData = { ...aiResult.data, ...cleanedEdits };
+    const missingRequired = getMissingRequiredFields(activeDocType, mergedData);
+    if(missingRequired.length){
+      setCorrectionMsg(`Cannot confirm yet. Fill required fields: ${missingRequired.map(prettyFieldLabel).join(", ")}`);
+      return;
+    }
     const nextUploadedDocs = { ...uploadedDocs, [activeDocType]: mergedData };
     setUploadedDocs(nextUploadedDocs);
 
@@ -2197,17 +2252,48 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
         requiresManualReview:false,
       },
     }));
+    setConfirmedDocs((prev)=>({ ...prev, [selectedType]: false }));
+    setCorrectionMsg(`Manual data saved for ${selectedType}. Please confirm this document.`);
+    setAiError("");
+  };
+
+  const confirmManualDocument = () => {
+    const manualData = uploadedDocs[selectedType];
+    if(!manualData){
+      setAiError("Save manual data first before confirmation.");
+      return;
+    }
+    const missingRequired = getMissingRequiredFields(selectedType, manualData);
+    if(missingRequired.length){
+      setAiError(`Cannot confirm. Required fields missing: ${missingRequired.map(prettyFieldLabel).join(", ")}`);
+      return;
+    }
     setConfirmedDocs((prev)=>({ ...prev, [selectedType]: true }));
-    onNext(buildEligibilityPayload(nextDocs));
+    setCorrectionMsg(`Manual entry confirmed for ${selectedType}.`);
+    setAiError("");
   };
 
   return(
     <div className="fade-up">
 
       {/* v6: Checklist panel — always visible */}
-      <DocChecklist uploadedDocs={uploadedDocs} onSelectType={switchType} />
+      <DocChecklist uploadedDocs={uploadedDocs} requiredItems={requiredChecklistItems} onSelectType={switchType} />
 
       {/* v6: Eng-next banner — shown after A/L is done, before any English cert */}
+      {showEngBanner&&(
+        <div className="eng-next-banner">
+          <div className="eng-next-icon">📘</div>
+          <div>
+            <div className="eng-next-title">Next required document: English proficiency</div>
+            <div className="eng-next-desc">Upload one of IELTS, TOEFL, or PTE to complete required checklist.</div>
+            <div className="eng-next-btns">
+              <button className="eng-next-btn eng-next-btn-ielts" onClick={()=>switchType("IELTS Certificate")}>IELTS</button>
+              <button className="eng-next-btn eng-next-btn-toefl" onClick={()=>switchType("TOEFL Certificate")}>TOEFL</button>
+              <button className="eng-next-btn eng-next-btn-pte" onClick={()=>switchType("PTE Certificate")}>PTE</button>
+            </div>
+          </div>
+        </div>
+      )}
 
 
       <div className="panel">
@@ -2353,7 +2439,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
                     Manual Completion & Confirmation
                   </div>
                   <div className="panel-sub" style={{marginBottom:".8rem"}}>
-                    Fill missing or unclear fields, then confirm this document.
+                    OCR section shows only required eligibility fields for this document. Fill and confirm.
                   </div>
                   {(() => {
                     const editableKeys = extractionEditableKeys(aiResult);
@@ -2415,6 +2501,19 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
             {selectedType==="PTE Certificate"&&<PTEManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
             {selectedType==="Passport"&&<PassportManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
             {selectedType==="Financial Statement"&&<BankManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
+            <div className="ai-extraction-box" style={{marginTop:"1rem"}}>
+              <div className="panel-title" style={{fontSize:".9rem",marginBottom:".35rem"}}>Manual Confirmation</div>
+              <div className="panel-sub" style={{marginBottom:".8rem"}}>After entering manual data, confirm this section before eligibility check.</div>
+              <div style={{display:"flex",gap:".6rem",flexWrap:"wrap"}}>
+                <button className="btn btn-primary btn-sm" onClick={confirmManualDocument}>Confirm Manual Document</button>
+                {confirmedDocs[selectedType]&&<span className="chip chip-green">Confirmed</span>}
+              </div>
+              {correctionMsg&&<div style={{marginTop:".6rem"}}><Alert type="info">{correctionMsg}</Alert></div>}
+            </div>
+            <div className="btn-row" style={{marginTop:"1.25rem"}}>
+              <button className="btn btn-ghost" onClick={onBack}>← Profile</button>
+              <button className="btn btn-primary" onClick={proceed}>Check Eligibility →</button>
+            </div>
           </div>
         )}
       </div>
