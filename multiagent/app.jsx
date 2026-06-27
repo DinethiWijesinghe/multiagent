@@ -1217,6 +1217,11 @@ async function extractDocumentWithAI(file, docType, onProgress, token) {
     ocrEngine:result.ocr_engine||"auto",
     warnings:result.warnings||[],
     extractionFocusAreas:Array.isArray(result.extraction_focus_areas)?result.extraction_focus_areas:[],
+    fieldConfidence:result.field_confidence||{},
+    missingFieldReasons:result.missing_field_reasons||{},
+    manualReview:result.manual_review||null,
+    requiresManualReview:Boolean(result.requires_manual_review),
+    document:result.document||null,
     requested_doc_type:docType||"auto",
     classification_method:result.classification_method,
   };
@@ -1808,6 +1813,37 @@ const DOC_TYPE_LIST = [
   {id:"Financial Statement", label:"Bank Stmt"},
 ];
 
+const REQUIRED_FIELDS_BY_DOC_LABEL = {
+  "A-Level Results": ["name", "index_number", "subjects", "grades"],
+  "Bachelor's Degree": ["name", "degree", "university", "year"],
+  "Master's Degree": ["name", "degree", "university", "year"],
+  "Diploma": ["name", "degree", "year"],
+  "IELTS Certificate": ["overall", "listening", "reading", "writing", "speaking"],
+  "TOEFL Certificate": ["total", "reading", "listening", "speaking", "writing"],
+  "PTE Certificate": ["overall", "listening", "reading", "writing", "speaking"],
+  "Passport": ["surname", "given_names", "passport_number", "nationality", "expiry_date"],
+  "Financial Statement": ["bank_name", "account_number", "closing_balance", "currency"],
+};
+
+function prettyFieldLabel(key){
+  return String(key||"")
+    .replace(/_/g," ")
+    .replace(/\b\w/g,(ch)=>ch.toUpperCase());
+}
+
+function extractionEditableKeys(result){
+  const docType = result?.data?.document_type;
+  const required = REQUIRED_FIELDS_BY_DOC_LABEL[docType] || [];
+  const missing = Object.keys(result?.missingFieldReasons || {});
+  const lowConfidence = Object.entries(result?.fieldConfidence || {})
+    .filter(([,score])=>Number(score) > 0 && Number(score) < 0.55)
+    .map(([field])=>field);
+  const scalar = Object.entries(result?.data || {})
+    .filter(([field,val])=>field !== "document_type" && field !== "_rawPreview" && typeof val !== "object")
+    .map(([field])=>field);
+  return Array.from(new Set([...required, ...missing, ...lowConfidence, ...scalar]));
+}
+
 // NEW v6: Checklist panel shown above doc grid
 function DocChecklist({uploadedDocs, onSelectType}) {
   const allTypes = Object.keys(DOC_TYPE_DEFS);
@@ -1871,6 +1907,9 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
   // v6: track all uploaded docs so checklist + banner work
   const [uploadedDocs,setUploadedDocs]=useState(docData?.documents&&typeof docData.documents==="object"?docData.documents:{});
+  const [extractionByType,setExtractionByType]=useState({});
+  const [confirmedDocs,setConfirmedDocs]=useState({});
+  const [fieldEdits,setFieldEdits]=useState({});
   const [pendingUploads,setPendingUploads]=useState([]);
 
   const fileRef=useRef();
@@ -1885,6 +1924,8 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const [docsLoading,setDocsLoading]=useState(false);
   const [docsError,setDocsError]=useState("");
   const [docsBusyId,setDocsBusyId]=useState("");
+  const [savingCorrections,setSavingCorrections]=useState(false);
+  const [correctionMsg,setCorrectionMsg]=useState("");
 
   // A/L never needs inline english section (it's a separate doc type)
   const needsEng = ["Bachelor's Degree","Master's Degree","Diploma"].includes(selectedType);
@@ -1914,12 +1955,37 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
   useEffect(()=>{refreshServerDocs();},[refreshServerDocs]);
 
+  useEffect(()=>{
+    const seeded = {};
+    Object.entries(uploadedDocs || {}).forEach(([docType,data])=>{
+      if(!data || typeof data !== "object") return;
+      seeded[docType] = {
+        success:true,
+        data,
+        confidence:0.75,
+        ocrEngine:"stored",
+        warnings:[],
+        extractionFocusAreas:[],
+        fieldConfidence:{},
+        missingFieldReasons:{},
+        manualReview:null,
+        requiresManualReview:false,
+      };
+    });
+    setExtractionByType((prev)=>({ ...seeded, ...prev }));
+  },[uploadedDocs]);
+
   const switchType = (t) => {
     setSelectedType(t);
     setAiResult(null);setAiError("");setPipeStatus({});
     setProgress("");
-    // restore prior result for this type if already uploaded
-    if(uploadedDocs[t]) setAiResult({data:uploadedDocs[t],confidence:0.75,ocrEngine:"stored"});
+    setCorrectionMsg("");
+    const stored = extractionByType[t];
+    if(stored){
+      setAiResult(stored);
+    }else if(uploadedDocs[t]){
+      setAiResult({success:true,data:uploadedDocs[t],confidence:0.75,ocrEngine:"stored",warnings:[]});
+    }
   };
 
   const handleFiles=(files)=>{
@@ -1957,6 +2023,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const runAIExtraction=async()=>{
     if(!pendingUploads.length)return;
     setRunning(true);setAiError("");setPipeStatus({});setAiResult(null);
+    setCorrectionMsg("");
     const setStage=(i,st)=>setPipeStatus(p=>({...p,[i]:st}));
     setStage(0,"running");await new Promise(r=>setTimeout(r,180));setStage(0,"done");
     setStage(1,"running");await new Promise(r=>setTimeout(r,250));setStage(1,"done");
@@ -1964,6 +2031,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     try{
       let lastResult=null;
       const uploadedResults={};
+      const extractedDetails={};
       for(let index=0;index<pendingUploads.length;index+=1){
         const pending=pendingUploads[index];
         const typeLabel=UPLOAD_DOC_TYPE_OPTIONS.find((opt)=>opt.value===pending.assignedType)?.label||"Auto identify";
@@ -1974,12 +2042,23 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
           if(pct>=75){setStage(4,"done");setStage(5,"running");}
         },user?.token);
         lastResult=result;
-        uploadedResults[result.data.document_type]=result.data;
+        const resolvedType = result?.data?.document_type;
+        if(!resolvedType) continue;
+        uploadedResults[resolvedType]=result.data;
+        extractedDetails[resolvedType]=result;
       }
       setStage(4,"done");setStage(5,"done");
       setUploadedDocs(p=>({...p,...uploadedResults}));
-      if(uploadedResults[selectedType]){
-        setAiResult({data:uploadedResults[selectedType],confidence:lastResult?.confidence??0.75,ocrEngine:lastResult?.ocrEngine||"ocr"});
+      setExtractionByType((prev)=>({...prev,...extractedDetails}));
+      setConfirmedDocs((prev)=>{
+        const next={...prev};
+        Object.entries(extractedDetails).forEach(([docType,detail])=>{
+          next[docType]=!detail?.requiresManualReview;
+        });
+        return next;
+      });
+      if(extractedDetails[selectedType]){
+        setAiResult(extractedDetails[selectedType]);
       }else if(lastResult){
         setAiResult(lastResult);
         if(lastResult?.data?.document_type) setSelectedType(lastResult.data.document_type);
@@ -2021,6 +2100,80 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     onNext(finalPayload);
   };
 
+  const activeDocType = aiResult?.data?.document_type;
+
+  const updateFieldEdit = (docType, fieldKey, fieldValue) => {
+    if(!docType || !fieldKey) return;
+    setFieldEdits((prev)=>({
+      ...prev,
+      [docType]: {
+        ...(prev[docType] || {}),
+        [fieldKey]: fieldValue,
+      },
+    }));
+  };
+
+  const confirmCurrentExtraction = async () => {
+    if(!activeDocType || !aiResult?.data) return;
+    const pendingEdits = fieldEdits[activeDocType] || {};
+    const cleanedEdits = Object.fromEntries(
+      Object.entries(pendingEdits).filter(([,value])=>String(value ?? "").trim() !== "")
+    );
+
+    const mergedData = { ...aiResult.data, ...cleanedEdits };
+    const nextUploadedDocs = { ...uploadedDocs, [activeDocType]: mergedData };
+    setUploadedDocs(nextUploadedDocs);
+
+    const nextResult = {
+      ...aiResult,
+      data: mergedData,
+      missingFieldReasons:{},
+      requiresManualReview:false,
+      warnings:[],
+      manualReview:{required:false,reasons:[],summary:"Manual confirmation completed."},
+    };
+    setExtractionByType((prev)=>({ ...prev, [activeDocType]: nextResult }));
+    setAiResult(nextResult);
+    setConfirmedDocs((prev)=>({ ...prev, [activeDocType]: true }));
+    setCorrectionMsg("Extraction confirmed for this document.");
+
+    const docId = aiResult?.document?.document_id;
+    if(docId && user?.token && Object.keys(cleanedEdits).length){
+      try{
+        setSavingCorrections(true);
+        const response = await fetchApi(`/documents/${encodeURIComponent(docId)}/corrections`, {
+          method:"PATCH",
+          headers:authHeaders(user?.token, true),
+          body:JSON.stringify({
+            corrected_fields: cleanedEdits,
+            reviewer_note: "Confirmed in OCR extraction screen",
+          }),
+        });
+        if(!response.ok){
+          throw new Error(await apiErrorMessage(response, "Unable to save document corrections"));
+        }
+        const payload = await response.json();
+        if(payload?.data){
+          const correctedResult = {
+            ...nextResult,
+            data:payload.data,
+            confidence:payload.confidence ?? nextResult.confidence,
+            missingFieldReasons:payload.missing_field_reasons || {},
+            manualReview:payload.manual_review || nextResult.manualReview,
+            requiresManualReview:Boolean(payload.manual_review?.required),
+          };
+          setUploadedDocs((prev)=>({ ...prev, [activeDocType]: payload.data }));
+          setExtractionByType((prev)=>({ ...prev, [activeDocType]: correctedResult }));
+          setAiResult(correctedResult);
+        }
+      }catch(e){
+        setCorrectionMsg(e?.message || "Confirmed locally, but failed to sync corrections.");
+      }finally{
+        setSavingCorrections(false);
+      }
+    }
+  };
+
   // Manual submit also marks type as uploaded
   const handleManualSubmit = (doc) => {
     const manualDoc={...doc};
@@ -2029,6 +2182,22 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     }
     const nextDocs={...uploadedDocs,[selectedType]:manualDoc};
     setUploadedDocs(nextDocs);
+    setExtractionByType((prev)=>({
+      ...prev,
+      [selectedType]: {
+        success:true,
+        data:manualDoc,
+        confidence:1,
+        ocrEngine:"manual",
+        warnings:[],
+        extractionFocusAreas:[],
+        fieldConfidence:{},
+        missingFieldReasons:{},
+        manualReview:{required:false,reasons:[],summary:"Entered manually."},
+        requiresManualReview:false,
+      },
+    }));
+    setConfirmedDocs((prev)=>({ ...prev, [selectedType]: true }));
     onNext(buildEligibilityPayload(nextDocs));
   };
 
@@ -2133,6 +2302,45 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
             {aiResult&&(
               <div style={{marginTop:"1.25rem"}}>
                 <div className="slabel">Extracted Data</div>
+                {Object.keys(uploadedDocs).length>0&&(
+                  <div style={{marginBottom:".9rem"}}>
+                    <div className="flabel" style={{marginBottom:".45rem"}}>Document Status</div>
+                    <div className="chips-row">
+                      {Object.keys(uploadedDocs).map((docType)=>{
+                        const details = extractionByType[docType];
+                        const confidencePct = Math.round(((details?.confidence ?? 0.75) || 0) * 100);
+                        const needsReview = Boolean(details?.requiresManualReview);
+                        const confirmed = Boolean(confirmedDocs[docType]);
+                        const active = selectedType===docType;
+                        const statusText = confirmed?"Confirmed":(needsReview?"Needs Review":"Pending Confirm");
+                        const statusClass = confirmed?"chip-green":(needsReview?"chip-amber":"chip-blue");
+                        return (
+                          <button
+                            key={docType}
+                            className={`chip ${statusClass}`}
+                            onClick={()=>switchType(docType)}
+                            style={{
+                              cursor:"pointer",
+                              border:active?"1px solid var(--accent2)":undefined,
+                              boxShadow:active?"0 0 0 2px var(--accent-dim)":undefined,
+                            }}
+                            title={`${docType} · ${statusText}`}
+                          >
+                            {docType} · {statusText} · {confidencePct}%
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {Object.keys(uploadedDocs).length>0&&(
+                  <div className="field" style={{maxWidth:"360px",marginBottom:".85rem"}}>
+                    <label className="flabel">Review Uploaded Document</label>
+                    <select value={selectedType} onChange={(e)=>switchType(e.target.value)}>
+                      {Object.keys(uploadedDocs).map((docType)=><option key={docType} value={docType}>{docType}</option>)}
+                    </select>
+                  </div>
+                )}
                 {aiResult.warnings&&aiResult.warnings.length>0&&aiResult.warnings.map((w,i)=><Alert key={i} type="warn">{w}</Alert>)}
                 {Array.isArray(aiResult.extractionFocusAreas)&&aiResult.extractionFocusAreas.length>0&&(
                   <Alert type="info">
@@ -2140,6 +2348,53 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
                   </Alert>
                 )}
                 <ExtractedDisplay data={aiResult.data} confidence={aiResult.confidence} ocrEngine={aiResult.ocrEngine} />
+                <div className="ai-extraction-box" style={{marginTop:"1rem"}}>
+                  <div className="panel-title" style={{fontSize:".9rem",marginBottom:".35rem"}}>
+                    Manual Completion & Confirmation
+                  </div>
+                  <div className="panel-sub" style={{marginBottom:".8rem"}}>
+                    Fill missing or unclear fields, then confirm this document.
+                  </div>
+                  {(() => {
+                    const editableKeys = extractionEditableKeys(aiResult);
+                    const missingMap = aiResult?.missingFieldReasons || {};
+                    const edits = fieldEdits[activeDocType] || {};
+                    if(!editableKeys.length){
+                      return <Alert type="ok">No editable risk fields detected for this document.</Alert>;
+                    }
+                    return (
+                      <>
+                        <div className="fgrid">
+                          {editableKeys.map((fieldKey)=>{
+                            const currentValue = edits[fieldKey] ?? aiResult?.data?.[fieldKey] ?? "";
+                            const isMissing = Boolean(missingMap[fieldKey]);
+                            return (
+                              <div key={fieldKey} className="field">
+                                <label className="flabel">
+                                  {prettyFieldLabel(fieldKey)}
+                                  {isMissing&&<span className="req"> *</span>}
+                                </label>
+                                <input
+                                  value={String(currentValue ?? "")}
+                                  onChange={(e)=>updateFieldEdit(activeDocType, fieldKey, e.target.value)}
+                                  placeholder={isMissing?"Required field - enter value":"Edit if OCR is wrong"}
+                                />
+                                {isMissing&&<span style={{fontFamily:"var(--mono)",fontSize:".6rem",color:"var(--amber)"}}>Missing in OCR</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{display:"flex",gap:".6rem",flexWrap:"wrap",marginTop:"1rem"}}>
+                          <button className="btn btn-primary btn-sm" onClick={confirmCurrentExtraction} disabled={savingCorrections}>
+                            {savingCorrections?"Saving...":"Confirm This Document"}
+                          </button>
+                          {confirmedDocs[activeDocType]&&<span className="chip chip-green">Confirmed</span>}
+                        </div>
+                        {correctionMsg&&<div style={{marginTop:".6rem"}}><Alert type="info">{correctionMsg}</Alert></div>}
+                      </>
+                    );
+                  })()}
+                </div>
                 {needsEng&&<div style={{marginTop:"1.25rem"}}><EnglishSection value={eng} onChange={setEng} /></div>}
                 <div className="btn-row" style={{marginTop:"1.5rem"}}>
                   <button className="btn btn-ghost" onClick={onBack}>← Profile</button>
