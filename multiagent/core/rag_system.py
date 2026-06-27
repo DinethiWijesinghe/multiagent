@@ -53,6 +53,8 @@ _PROFILE_DEFAULTS = {
 }
 KEYLESS_EVIDENCE_LIMIT = int(os.environ.get("KEYLESS_EVIDENCE_LIMIT", "6"))
 KEYLESS_SNIPPET_CHARS = int(os.environ.get("KEYLESS_SNIPPET_CHARS", "420"))
+RAG_MAX_OUTPUT_TOKENS = int(os.environ.get("RAG_MAX_OUTPUT_TOKENS", "2048"))
+RAG_CONTINUE_ON_TRUNCATION = os.environ.get("RAG_CONTINUE_ON_TRUNCATION", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _import_symbol(module_candidates: List[str], symbol: str):
@@ -164,10 +166,14 @@ class RAGSystem:
                 self.llm = ChatGoogleGenerativeAI(
                     model=self.model,
                     temperature=0.7,
-                    max_output_tokens=1024,
+                    max_output_tokens=RAG_MAX_OUTPUT_TOKENS,
                     google_api_key=api_key,
                 )
-                logger.info("Gemini provider initialised with model %s", self.model)
+                logger.info(
+                    "Gemini provider initialised with model %s (max_output_tokens=%s)",
+                    self.model,
+                    RAG_MAX_OUTPUT_TOKENS,
+                )
                 return
             except Exception as e:
                 self.llm_provider = "none"
@@ -178,6 +184,88 @@ class RAGSystem:
         self.llm_provider = "none"
         self.llm = None
         logger.warning("Unknown RAG_LLM_PROVIDER=%s; using keyless mode", provider)
+
+    def _extract_response_text(self, response: Any) -> str:
+        """Extract plain text from provider responses across common content shapes."""
+        content = getattr(response, "content", response)
+
+        if isinstance(content, str):
+            return content.strip()
+
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    if item.strip():
+                        parts.append(item.strip())
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+            return "\n".join(parts).strip()
+
+        return str(content).strip()
+
+    def _looks_truncated(self, text: str) -> bool:
+        """Heuristic to detect mid-sentence cutoff responses."""
+        if not text:
+            return False
+
+        cleaned = text.strip()
+        if len(cleaned) < 80:
+            return False
+
+        last_line = ""
+        for line in reversed(cleaned.splitlines()):
+            if line.strip():
+                last_line = line.strip()
+                break
+
+        if not last_line:
+            return False
+
+        if last_line.endswith(("...", "-", ":", ";", ",")):
+            return True
+
+        if re.search(r"[.!?][\"')\]]?$", last_line):
+            return False
+
+        if re.search(r"\b(typically|including|such as|because|therefore|however|and|or|with|for|to|of|in)$", last_line.lower()):
+            return True
+
+        return bool(re.search(r"[A-Za-z0-9]$", last_line))
+
+    def _invoke_llm_with_truncation_guard(self, messages: Any) -> str:
+        """Invoke LLM and optionally continue once if output appears truncated."""
+        response = self.llm.invoke(messages)
+        text = self._extract_response_text(response)
+
+        if not (RAG_CONTINUE_ON_TRUNCATION and self._looks_truncated(text)):
+            return text
+
+        try:
+            HumanMessage = _import_symbol(["langchain_core.messages"], "HumanMessage")
+            AIMessage = _import_symbol(["langchain_core.messages"], "AIMessage")
+
+            followup = [
+                *messages,
+                AIMessage(content=text),
+                HumanMessage(
+                    content=(
+                        "Continue exactly from where you stopped and complete the answer. "
+                        "Do not repeat earlier lines. End with concise, practical next steps."
+                    )
+                ),
+            ]
+            continuation = self.llm.invoke(followup)
+            continuation_text = self._extract_response_text(continuation)
+            if continuation_text:
+                text = f"{text.rstrip()}\n\n{continuation_text.lstrip()}".strip()
+        except Exception:
+            logger.exception("Failed to continue truncated LLM response")
+
+        return text
 
     def _build_chat_messages(self, query: str, context_text: str, context: Optional[Dict[str, Any]], conversation_history: List[Dict[str, Any]]) -> Any:
         """Build a LangChain message list for multi-turn Gemini calls."""
@@ -609,8 +697,7 @@ class RAGSystem:
                     context=context,
                     conversation_history=conversation_history or [],
                 )
-                response = self.llm.invoke(messages)
-                text = response.content if hasattr(response, "content") else str(response)
+                text = self._invoke_llm_with_truncation_guard(messages)
 
             return {
                 "response": text,

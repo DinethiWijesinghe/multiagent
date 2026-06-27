@@ -452,7 +452,7 @@ function normalizeGpa(val,system){
 
 // ── CHATBOT ────────────────────────────────────────────────────────────────
 const BOT_INTRO = [
-  {id:"intro",role:"bot",text:"Hi! 👋 I'm your UniAssist assistant. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
+  {id:"intro",role:"bot",text:"Hi!  I'm your UniAssist assistant. Ask me anything about studying abroad — universities, requirements, scholarships, or visas!",time:now()}
 ];
 
 function now(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});}
@@ -608,18 +608,18 @@ function createOnboardingMessages(onboardingStatus){
   // Build onboarding message based on what's missing
   let message = "";
   if(!has_documents){
-    message = "Welcome! 👋 I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n"
+    message = "Welcome!  I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n"
       + "**Step 1: Upload your documents** (transcripts, test scores like IELTS/TOEFL)\n"
       + "**Step 2: Complete your profile** (target countries, budget, academic background)\n"
       + "**Step 3: Then I can check eligibility and recommend universities**\n\n"
-      + "Let's start with uploading your documents. Click the 'Documents' tab above to get started! 📄";
+      + "Let's start with uploading your documents. Click the 'Documents' tab above to get started! ";
   } else if(!has_profile){
     message = "Great! You've uploaded documents. Now let's build your profile so I can give you personalized recommendations.\n\n"
       + "Please fill in:\n"
       + "• Your target country/countries\n"
       + "• Your annual budget\n"
       + "• Your current academic qualifications\n\n"
-      + "Then I'll be able to suggest universities and check your eligibility! 🎓";
+      + "Then I'll be able to suggest universities and check your eligibility! ";
   }
   
   return [{
@@ -1507,9 +1507,9 @@ function ExtractedDisplay({data,confidence,ocrEngine}){
   return(
     <div>
       <div className="ai-status-bar">
-        <span className="ai-badge">🔍 {engineLabel}</span>
+        <span className="ai-badge">{engineLabel}</span>
         <span className="ai-status-text">Document extracted via {engineLabel} + ML · {dt}</span>
-        <span className={`ai-conf-badge ${confCls}`}>◆ {pct}% confidence</span>
+        <span className={`ai-conf-badge ${confCls}`}> {pct}% confidence</span>
       </div>
       {renderContent()}
       {data._rawPreview&&<div style={{marginTop:"1rem"}}><button className="btn btn-ghost btn-sm" onClick={()=>setShowRaw(p=>!p)}>{showRaw?"▲ Hide":"▼ Show"} Raw OCR Text</button>{showRaw&&<div className="raw-text-box"><pre>{data._rawPreview}</pre></div>}</div>}
@@ -1535,7 +1535,7 @@ function IELTSManualInput({value={},onChange}){
       <div className="fgrid" style={{marginTop:"1rem"}}>
         <div className="field"><label className="flabel">Test Date</label><input type="date" value={scores.test_date} onChange={e=>update("test_date",e.target.value)} /></div>
         <div className="field"><label className="flabel">TRF Number</label><input value={scores.trf_number} onChange={e=>update("trf_number",e.target.value)} placeholder="e.g. 20LK000042TEST01" /></div>
-        <div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Test Centre</label><input value={scores.test_centre} onChange={e=>update("test_centre",e.target.value)} placeholder="e.g. British Council Colombo" /></div>
+        <div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Exam Centre</label><input value={scores.test_centre} onChange={e=>update("test_centre",e.target.value)} placeholder="e.g. British Council Colombo" /></div>
       </div>
     </div>
   );
@@ -1737,7 +1737,7 @@ function IELTSManualForm({onSubmit,onBack}){
   const validBand=(v)=>BANDS.has(parseFloat(v));
   const submit=()=>{if(!form.candidate_name||!form.overall){setErr("Name and overall band are required.");return;}if(!validBand(form.overall)){setErr("Overall band must be 0–9 in 0.5 steps (e.g. 6.5).");return;}setErr("");onSubmit({document_type:"IELTS Certificate",...form});};
   const secs=["overall","listening","reading","writing","speaking"];
-  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div></div><div className="slabel" style={{marginTop:"1rem"}}>Band Scores (0–9, half-band steps)</div><div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:".5rem",marginBottom:"1rem"}}>{secs.map(k=>{const v=parseFloat(form[k])||0;const ok=form[k]===""||validBand(form[k]);return(<div key={k} className="field"><label className="flabel">{k.charAt(0).toUpperCase()+k.slice(1)}{k==="overall"&&<span className="req"> *</span>}</label><input className="band-input" type="number" min={0} max={9} step={0.5} value={form[k]} placeholder="0.0" onChange={e=>f(k,e.target.value)} style={{borderColor:form[k]&&!ok?"var(--red)":undefined}} />{form[k]!=""&&<div style={{fontFamily:"var(--mono)",fontSize:".6rem",color:ok?"var(--green)":"var(--red)",textAlign:"center",marginTop:".2rem"}}>{ok?bandStatus(v):"Invalid"}</div>}</div>);})}</div><div className="fgrid"><div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">TRF Number</label><input value={form.trf_number} onChange={e=>f("trf_number",e.target.value)} /></div><div className="field"><label className="flabel">Test Centre</label><input value={form.test_centre} onChange={e=>f("test_centre",e.target.value)} /></div><div className="field"><label className="flabel">Nationality</label><input value={form.nationality} onChange={e=>f("nationality",e.target.value)} placeholder="Sri Lankan" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
+  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div></div><div className="slabel" style={{marginTop:"1rem"}}>Band Scores (0–9, half-band steps)</div><div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:".5rem",marginBottom:"1rem"}}>{secs.map(k=>{const v=parseFloat(form[k])||0;const ok=form[k]===""||validBand(form[k]);return(<div key={k} className="field"><label className="flabel">{k.charAt(0).toUpperCase()+k.slice(1)}{k==="overall"&&<span className="req"> *</span>}</label><input className="band-input" type="number" min={0} max={9} step={0.5} value={form[k]} placeholder="0.0" onChange={e=>f(k,e.target.value)} style={{borderColor:form[k]&&!ok?"var(--red)":undefined}} />{form[k]!=""&&<div style={{fontFamily:"var(--mono)",fontSize:".6rem",color:ok?"var(--green)":"var(--red)",textAlign:"center",marginTop:".2rem"}}>{ok?bandStatus(v):"Invalid"}</div>}</div>);})}</div><div className="fgrid"><div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">TRF Number</label><input value={form.trf_number} onChange={e=>f("trf_number",e.target.value)} /></div><div className="field"><label className="flabel">Exam Centre</label><input value={form.test_centre} onChange={e=>f("test_centre",e.target.value)} /></div><div className="field"><label className="flabel">Nationality</label><input value={form.nationality} onChange={e=>f("nationality",e.target.value)} placeholder="Sri Lankan" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
 
 function TOEFLManualForm({onSubmit,onBack}){
@@ -2043,7 +2043,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
       <div className="panel">
         <div className="panel-title">Academic & Supporting Documents</div>
-        <div className="panel-sub">Upload for OCR + ML extraction (all 9 document types) or enter manually</div>
+        {/* <div className="panel-sub">Upload for OCR + ML extraction (all 9 document types) or enter manually</div> */}
         <div className="tabs">
           <button className={`tab${tab==="upload"?" active":""}`} onClick={()=>setTab("upload")}> OCR Upload & Extract</button>
           <button className={`tab${tab==="manual"?" active":""}`} onClick={()=>setTab("manual")}>Manual Entry</button>
@@ -2058,7 +2058,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
           </div>
           {!serverDocs.length && !docsLoading && (
             <div style={{padding:".75rem .9rem",border:"1px dashed var(--border2)",borderRadius:"var(--r)",fontFamily:"var(--mono)",fontSize:".68rem",color:"var(--text3)"}}>
-              No stored documents yet. Upload files while logged in to save them.
+              No stored documents yet.Please Upload Clear Document.
             </div>
           )}
           {serverDocs.slice(0,8).map((doc)=>{
@@ -2084,13 +2084,13 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
 
         {tab==="upload"&&(
           <div>
-            <Alert type="info">Students can upload multiple files here. Tag each file with a document type or leave it on <strong>Auto identify</strong> to use the backend classifier.</Alert>
+            <Alert type="info">Students can upload multiple files here. Tag each file with a document type  </Alert>
             <input ref={fileRef} type="file" multiple accept=".png,.jpg,.jpeg,.pdf" style={{display:"none"}} onChange={e=>{handleFiles(e.target.files);e.target.value="";}} />
             {!pendingUploads.length?(
               <div className={`upload-zone${drag?" drag":""}`} onClick={()=>fileRef.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);handleFiles(e.dataTransfer.files);}} style={{marginTop:"1rem"}}>
                 <div className="upload-icon">{DOC_TYPE_LIST.find(d=>d.id===selectedType)?.icon||""}</div>
                 <div className="upload-title">Drop one or more documents here</div>
-                <div className="upload-sub">PNG · JPG · JPEG · PDF · Max 10 MB each</div>
+                <div className="upload-sub"> PDF · Max 10 MB each</div>
               </div>
             ):(
               <div style={{marginTop:"1rem"}}>
@@ -2119,7 +2119,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
                     );
                   })}
                 </div>
-                {!running&&<button className="btn btn-primary btn-full" onClick={runAIExtraction} style={{marginTop:"1rem"}}>🔍 Extract {pendingUploads.length} Document{pendingUploads.length>1?"s":""}</button>}
+                {!running&&<button className="btn btn-primary btn-full" onClick={runAIExtraction} style={{marginTop:"1rem"}}>Extract {pendingUploads.length} Document{pendingUploads.length>1?"s":""}</button>}
               </div>
             )}
             {aiError&&<div style={{marginTop:"1rem"}}><Alert type="error">{aiError}</Alert></div>}
@@ -2474,9 +2474,7 @@ function AuthPage({onLogin}){
             <button className="btn btn-primary btn-full" onClick={login} style={{marginTop:"1rem"}} disabled={loading}>
               {loading ? "Signing In..." : "Sign In"}
             </button>
-            <div style={{marginTop:".7rem", fontFamily:"var(--mono)", fontSize:".66rem", color:"var(--text3)", lineHeight:1.5}}>
-              Accounts are stored in Neon/PostgreSQL. Use <strong>Register</strong> once, then log in anytime with the same credentials.
-            </div>
+          
           </div>
         ) : (
           <div>
