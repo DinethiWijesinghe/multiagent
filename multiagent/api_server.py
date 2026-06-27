@@ -1479,9 +1479,22 @@ def _extract_general_english_grade(text: str) -> str | None:
             if parsed:
                 return parsed
 
-    ge_grade = _f(r"general\s*english[^\n]{0,120}\b([ABCSF85])\b", text)
+    # Positional fallback: General English's grade box sits a few lines
+    # after "Common General Test" on the printed form. If the label search
+    # above found nothing, look there directly.
+    cgt_indices = [i for i, ln in enumerate(cleaned_lines) if "common general test" in ln.lower()]
+    for idx in cgt_indices:
+        for j in range(idx + 1, min(idx + 6, len(cleaned_lines))):
+            line = cleaned_lines[j]
+            if re.fullmatch(r"\d{2,3}", line):
+                continue
+            parsed = _line_grade(line)
+            if parsed:
+                return parsed
+
+    ge_grade = _f(r"general\s*english[^\n]{0,150}\b([ABCSF85])\b", text)
     if not ge_grade:
-        ge_grade = _f(r"general\s*english[\s\S]{0,120}\b([ABCSF85])\b", text)
+        ge_grade = _f(r"general\s*english[\s\S]{0,150}\b([ABCSF85])\b", text)
     return _normalize_alevel_grade_token(ge_grade)
 
 
@@ -1526,18 +1539,35 @@ def _extract_alevel_subjects_grades(text):
         grades = [g for g in (_normalize_alevel_grade_token(x) for x in raw_grades) if g]
 
     return subjects, grades
-
+def _looks_like_date_or_index_line(line: str) -> bool:
+    """Reject lines that are dates, index numbers, or rank rows — these
+    produce false-positive 2-digit/2-digit+letter tokens that get mistaken
+    for subject codes."""
+    if re.search(r"\d{4}\s*/\s*\d{1,2}\s*/\s*\d{1,2}", line):
+        return True
+    if re.search(r"\d{1,2}\s*/\s*\d{1,2}\s*/\s*\d{4}", line):
+        return True
+    ll = line.lower()
+    if any(kw in ll for kw in ("index", "centre", "date", "district", "island", "rank")):
+        return True
+    return False
 
 def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = None) -> dict[str, Any]:
     """
     Parse Sri Lanka A/L "Results Schedule" style table where subject numbers
     and grade row are shown separately (e.g., 01S 02S 09S + C A C).
-    """
+     """
+    
     cleaned_lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
 
     code_line_idx = -1
     subject_codes: list[str] = []
     for idx, line in enumerate(cleaned_lines):
+        # Skip date/index/rank lines — they false-positive match the same
+        # token shape as subject codes (e.g. "2018/12/29" -> "12S","29S").
+        if _looks_like_date_or_index_line(line):
+            continue
+
         raw_tokens = re.findall(r"\b[0-9OIL]{2}[A-Z58]?\b", line.upper())
         if len(raw_tokens) < 2:
             # Handle compact OCR like "01S02S09S" without spaces.
@@ -1550,11 +1580,12 @@ def _extract_alevel_results_schedule_table(text: str, stream_hint: str | None = 
             if code and code not in normalized_codes:
                 normalized_codes.append(code)
 
-        if len(normalized_codes) >= 2:
+        has_suffixed_code = any(re.fullmatch(r"\d{2}S", c) for c in normalized_codes)
+
+        if len(normalized_codes) >= 2 and has_suffixed_code:
             subject_codes = normalized_codes[:6]
             code_line_idx = idx
-            if "subject" in line.lower():
-                break
+            break  # stop at first confident match — don't let later lines overwrite it
 
     if not subject_codes:
         # Global fallback when OCR splits each code into different lines/cells.
@@ -1747,14 +1778,32 @@ def _extract_alevel_index_number(text: str) -> str | None:
 
 
 def _extract_alevel_z_score(text: str) -> str | None:
+    # Primary: the value actually prints in a STREAM ROW, e.g.
+    # "YES  BIO  .9947  758  8079" — not next to the words "Z Score".
+    stream_row = re.search(
+        r"\b(?:YES|NO)?\s*(BIO|ARTS?|COMMERCE|MATHS?|TECH|PHYSICAL)\s+([0-9]*\.[0-9]{3,6})\b",
+        text,
+        re.I,
+    )
+    if stream_row:
+        raw = stream_row.group(2)
+        return raw if not raw.startswith(".") else f"0{raw}"
+
+    # Secondary: decimal value next to two rank-like integers on one line,
+    # even if the stream code OCR'd badly.
+    rank_row = re.search(r"([0-9]*\.[0-9]{3,6})\s+(\d{2,5})\s+(\d{2,5})\b", text)
+    if rank_row:
+        raw = rank_row.group(1)
+        return raw if not raw.startswith(".") else f"0{raw}"
+
+    # Tertiary: original label-proximity search, widened window (60->200).
     raw = (
         _f(r"(?:z\s*[-.]?\s*score|z\s*score)\s*[:\-]?\s*([0-9]*[\.,]?[0-9]{3,6})", text)
-        or _f(r"\bz\s*score\b[\s\S]{0,60}?([0-9]*[\.,]?[0-9]{3,6})", text)
+        or _f(r"\bz\s*score\b[\s\S]{0,200}?([0-9]*[\.,]?[0-9]{3,6})", text)
     )
     if not raw:
         return None
     normalized = raw.replace(",", ".").strip()
-    # Normalize values like .9947 and 9947 into decimal-like form when plausible.
     if normalized.startswith("."):
         return f"0{normalized}"
     if re.fullmatch(r"\d{4}", normalized):
@@ -2000,7 +2049,7 @@ class DBSession(Base):
 class DBChatHistory(Base):
     __tablename__ = "chat_history"
 
-    user_id = Column(String(255), primary_key=True, index=True)
+    user_id = Column(String(255), primary_key=True, index=True)   
     data = Column(Text, nullable=False, default="{}")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
