@@ -3,8 +3,7 @@ import { apiErrorMessage, apiFetch as fetchApi } from "./apiClient.js";
 
 // ── STYLES ─────────────────────────────────────────────────────────────────
 const STYLES = `
-@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Instrument+Serif:ital@0;1&display=swap');
-
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Playfair+Display:wght@400;500;600;700&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
   --bg:#ffffff;
@@ -27,14 +26,14 @@ const STYLES = `
   --amber-dim:#c58a2a12;
   --red:#d16a6a;
   --red-dim:#d16a6a12;
-  --teal:#2c9fb0;
+  --teal:#2c9fb0;F
   --teal-dim:#2c9fb012;
   --pink:#c97cb6;
   --pink-dim:#c97cb612;
   --r:8px;--r2:14px;--r3:20px;
-  --mono:'DM Mono',monospace;
-  --sans:'Syne',sans-serif;
-  --serif:'Instrument Serif',serif;
+  --mono:'JetBrains Mono',monospace;
+  --sans:'Inter',sans-serif;
+  --serif:'Playfair Display',serif;
   --shadow:0 8px 24px rgba(15,30,60,0.08);
   --shadow2:0 14px 38px rgba(15,30,60,0.12);
 }

@@ -1,6 +1,6 @@
 # ML Benchmark Report
 
-Generated at: 2026-04-09T22:00:30.087676+00:00
+Generated at: 2026-06-28T17:43:07.924178+00:00
 
 ## Internal Metrics
 
@@ -24,20 +24,20 @@ Generated at: 2026-04-09T22:00:30.087676+00:00
   "cv_folds": 5,
   "metrics": {
     "accuracy": {
-      "mean": 0.9991,
-      "std": 0.0018
+      "mean": 1.0,
+      "std": 0.0
     },
     "precision_macro": {
-      "mean": 0.9991,
-      "std": 0.0017
+      "mean": 1.0,
+      "std": 0.0
     },
     "recall_macro": {
-      "mean": 0.9991,
-      "std": 0.0018
+      "mean": 1.0,
+      "std": 0.0
     },
     "f1_macro": {
-      "mean": 0.9991,
-      "std": 0.0018
+      "mean": 1.0,
+      "std": 0.0
     }
   }
 }
@@ -250,7 +250,7 @@ Generated at: 2026-04-09T22:00:30.087676+00:00
   "metrics": {
     "accuracy": 0.68
   },
-  "trained_at": "2026-04-10T03:30:38.965812"
+  "trained_at": "2026-06-28T23:13:16.333267"
 }
 ```
 
@@ -436,7 +436,7 @@ Generated at: 2026-04-09T22:00:30.087676+00:00
   "metrics": {
     "accuracy": 0.68
   },
-  "trained_at": "2026-04-10T03:30:47.508978"
+  "trained_at": "2026-06-28T23:13:24.351224"
 }
 ```
 

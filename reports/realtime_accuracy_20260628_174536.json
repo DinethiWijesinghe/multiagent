@@ -1,0 +1,239 @@
+{
+  "summary": {
+    "generated_at": "2026-06-28T17:45:36.363230+00:00",
+    "base_url": "http://127.0.0.1:8000",
+    "cases_run": 5,
+    "cases_passed": 3,
+    "accuracy_pct": 60.0,
+    "mode": "quick"
+  },
+  "results": [
+    {
+      "case_id": "EF-01",
+      "question": "My family budget is very low. Can I still apply to UK universities?",
+      "passed": true,
+      "checks": {
+        "intent": true,
+        "external_factors": true,
+        "actions": true,
+        "meaning": true
+      },
+      "predicted_intent": "financial",
+      "expected_intents": [
+        "financial"
+      ],
+      "observed_external_factors": [
+        "financial_constraints",
+        "educational_background"
+      ],
+      "expected_external_factors": [
+        "financial_constraints"
+      ],
+      "observed_actions": [
+        "Provide budget details",
+        "Explore scholarships",
+        "Compare costs",
+        "Set your annual budget in profile",
+        "Review tuition and living costs",
+        "Check scholarships and fee waivers",
+        "Shortlist budget-feasible universities",
+        "Upload transcripts and certificates",
+        "Run eligibility check",
+        "Check program fit and pathway options"
+      ],
+      "response_preview": "Finances can be tricky, but we can find solutions. For financial planning, tell me your budget and preferred country. I'll calculate costs, suggest scholarships, and find affordable options."
+    },
+    {
+      "case_id": "EF-06",
+      "question": "I am very anxious and overwhelmed. I feel I will miss everything.",
+      "passed": false,
+      "checks": {
+        "intent": false,
+        "external_factors": false,
+        "actions": true,
+        "meaning": false
+      },
+      "predicted_intent": "general",
+      "expected_intents": [
+        "emotional"
+      ],
+      "observed_external_factors": [
+        "financial_constraints",
+        "psychological_emotional",
+        "reliable_information",
+        "educational_background"
+      ],
+      "expected_external_factors": [
+        "psychological_emotional",
+        "time_deadlines"
+      ],
+      "observed_actions": [
+        "Start with eligibility check",
+        "Explore options",
+        "Set your annual budget in profile",
+        "Review tuition and living costs",
+        "Check scholarships and fee waivers",
+        "Shortlist budget-feasible universities",
+        "Break the process into small steps",
+        "Focus on one next action",
+        "Start with realistic options first",
+        "Review grounded recommendations",
+        "Check official university links",
+        "Compare evidence before deciding",
+        "Upload transcripts and certificates",
+        "Run eligibility check",
+        "Check program fit and pathway options",
+        "Choose one immediate task only (profile, document, or shortlist)",
+        "Set a 20-minute focused session and pause",
+        "Share your plan with a trusted advisor or family member"
+      ],
+      "response_preview": "I can see this feels heavy right now, and we can handle it one step at a time. Hello! I'm here to help you navigate your study abroad journey. What would you like to know about eligibility, costs, or university recommendations? Start with the smallest next step in your action list."
+    },
+    {
+      "case_id": "EF-07",
+      "question": "What visa documents do I need for Canada student permit?",
+      "passed": true,
+      "checks": {
+        "intent": true,
+        "external_factors": true,
+        "actions": true,
+        "meaning": true
+      },
+      "predicted_intent": "visa",
+      "expected_intents": [
+        "visa"
+      ],
+      "observed_external_factors": [
+        "visa_immigration",
+        "global_external",
+        "financial_constraints",
+        "educational_background"
+      ],
+      "expected_external_factors": [
+        "visa_immigration",
+        "global_external"
+      ],
+      "observed_actions": [
+        "Research visa requirements",
+        "Contact embassy",
+        "Review visa requirements early",
+        "Prepare visa document checklist",
+        "Prioritize lower-risk destinations",
+        "Check country-risk updates",
+        "Consider hybrid or online fallback options",
+        "Keep backup destinations ready",
+        "Set your annual budget in profile",
+        "Review tuition and living costs",
+        "Check scholarships and fee waivers",
+        "Shortlist budget-feasible universities",
+        "Upload transcripts and certificates",
+        "Run eligibility check",
+        "Check program fit and pathway options"
+      ],
+      "response_preview": "Visa processes vary by country. I can explain requirements and timelines once you select a university."
+    },
+    {
+      "case_id": "EF-08",
+      "question": "Deadlines are this month. Which application should I submit first?",
+      "passed": false,
+      "checks": {
+        "intent": false,
+        "external_factors": false,
+        "actions": true,
+        "meaning": false
+      },
+      "predicted_intent": "general",
+      "expected_intents": [
+        "recommendation"
+      ],
+      "observed_external_factors": [
+        "time_deadlines",
+        "reliable_information",
+        "financial_constraints",
+        "educational_background"
+      ],
+      "expected_external_factors": [
+        "time_deadlines",
+        "trust_transparency"
+      ],
+      "observed_actions": [
+        "Start with eligibility check",
+        "Explore options",
+        "Prioritize earliest deadlines",
+        "Sequence applications by intake",
+        "Prepare required documents first",
+        "Review grounded recommendations",
+        "Check official university links",
+        "Compare evidence before deciding",
+        "Set your annual budget in profile",
+        "Review tuition and living costs",
+        "Check scholarships and fee waivers",
+        "Shortlist budget-feasible universities",
+        "Upload transcripts and certificates",
+        "Run eligibility check",
+        "Check program fit and pathway options"
+      ],
+      "response_preview": "I'm here to help! Hello! I'm here to help you navigate your study abroad journey. What would you like to know about eligibility, costs, or university recommendations?"
+    },
+    {
+      "case_id": "EF-12",
+      "question": "I want fast recommendations but also need visa-safe and affordable options.",
+      "passed": true,
+      "checks": {
+        "intent": true,
+        "external_factors": true,
+        "actions": true,
+        "meaning": true
+      },
+      "predicted_intent": "recommendation",
+      "expected_intents": [
+        "recommendation"
+      ],
+      "observed_external_factors": [
+        "financial_constraints",
+        "visa_immigration",
+        "reliable_information",
+        "time_deadlines",
+        "trust_transparency",
+        "educational_background",
+        "language_proficiency"
+      ],
+      "expected_external_factors": [
+        "financial_constraints",
+        "visa_immigration",
+        "time_deadlines",
+        "trust_transparency"
+      ],
+      "observed_actions": [
+        "Review recommended universities",
+        "Apply to top choices",
+        "Prepare documents",
+        "Set your annual budget in profile",
+        "Review tuition and living costs",
+        "Check scholarships and fee waivers",
+        "Shortlist budget-feasible universities",
+        "Review visa requirements early",
+        "Prepare visa document checklist",
+        "Prioritize lower-risk destinations",
+        "Review grounded recommendations",
+        "Check official university links",
+        "Compare evidence before deciding",
+        "Prioritize earliest deadlines",
+        "Sequence applications by intake",
+        "Prepare required documents first",
+        "Review ranking reasons",
+        "Check eligibility and cost evidence",
+        "Compare recommendation with backups",
+        "Upload transcripts and certificates",
+        "Run eligibility check",
+        "Check program fit and pathway options",
+        "Check language-score requirements",
+        "Compare your score with program thresholds",
+        "Plan retake if needed",
+        "Keep a simple checklist for next actions",
+        "Confirm one completed step before starting another"
+      ],
+      "response_preview": "I recommend 0 universities for you, with 30 backup options. Tips: Focus first on universities with the earliest deadlines., Apply to a mix of reach (high rank), match (eligibility), and safety (budget-friendly) options.. Your current eligibility tier is foundation. Visa risk policy source: unavailab"
+    }
+  ]
+}
