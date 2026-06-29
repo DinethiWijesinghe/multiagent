@@ -69,7 +69,7 @@ TASK_ENCODER = {"daily": 0, "weekly": 1, "monthly": 2}
 
 def _generate_run_history(n: int = 500) -> list:
     np.random.seed(42)
-    records, base = [], datetime(2025, 1, 1)
+    records, base = [], datetime(datetime.now().year, 1, 1)
     for i in range(n):
         task   = np.random.choice(["daily","weekly","monthly"], p=[0.6,0.3,0.1])
         cfg    = TASK_CONFIG[task]

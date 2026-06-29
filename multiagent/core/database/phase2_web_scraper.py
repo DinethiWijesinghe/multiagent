@@ -55,8 +55,9 @@ KNOWN_RANKINGS = {
 
 # ─── QS/THE source URLs ───────────────────────────────────────────────────────
 
-QS_URL  = "https://www.topuniversities.com/university-rankings/world-university-rankings/2025"
-THE_URL = "https://www.timeshighereducation.com/world-university-rankings/2025/world-ranking"
+CURRENT_RANKING_YEAR = datetime.now().year
+QS_URL  = f"https://www.topuniversities.com/university-rankings/world-university-rankings/{CURRENT_RANKING_YEAR}"
+THE_URL = f"https://www.timeshighereducation.com/world-university-rankings/{CURRENT_RANKING_YEAR}/world-ranking"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

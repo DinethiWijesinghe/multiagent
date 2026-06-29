@@ -85,6 +85,7 @@ body{font-family:var(--sans);font-size:14px;line-height:1.6;color:var(--text);-w
 .flabel{font-family:var(--mono);font-size:.62rem;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);}
 .flabel .req{color:var(--accent);}
 input,select,textarea{background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:var(--r);padding:.6rem .875rem;font-family:var(--sans);font-size:.88rem;width:100%;outline:none;transition:border-color .2s,box-shadow .2s;-webkit-appearance:none;}
+input:disabled{background:var(--bg);color:var(--text3);cursor:not-allowed; border-color:var(--border);}
 input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim);}
 input::placeholder{color:var(--text3);}
 select option{background:var(--bg3);}
@@ -438,6 +439,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:po
 
 // ── UTILS ──────────────────────────────────────────────────────────────────
 const CURRENCY_RATES = {LKR:1,USD:320,EUR:345,GBP:400,AUD:210,SGD:235};
+const CURRENT_YEAR = new Date().getFullYear();
 function toLKR(amount,currency){return amount*(CURRENCY_RATES[currency]||1);}
 function formatLKR(val){return "LKR "+Math.round(val).toLocaleString();}
 function normalizeGpa(val,system){
@@ -607,10 +609,10 @@ function createOnboardingMessages(onboardingStatus){
   // Build onboarding message based on what's missing
   let message = "";
   if(!has_documents){
-    message = "Welcome!  I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n"
-      + "**Step 1: Upload your documents** (transcripts, test scores like IELTS/TOEFL)\n"
+    message = "Welcome!  I see you're just getting started. To give you personalized guidance, I need a bit of information:\n\n\n"
+      + "**Step 1: Upload your documents** (transcripts, test scores like IELTS/TOEFL)\n\n\n"
       + "**Step 2: Complete your profile** (target countries, budget, academic background)\n"
-      + "**Step 3: Then I can check eligibility and recommend universities**\n\n"
+      + "**Step 3: Then I can check eligibility and recommend universities**\n\n\n\n\n\n"
       + "Let's start with uploading your documents. Click the 'Documents' tab above to get started! ";
   } else if(!has_profile){
     message = "Great! You've uploaded documents. Now let's build your profile so I can give you personalized recommendations.\n\n"
@@ -865,17 +867,17 @@ async function fetchBackendChatReply(message, token, messages, timeoutMs = CHAT_
 }
 
 const QUICK_REPLIES = [
-  "Best unis for CS in UK?",
+  // "Best unis for CS in UK?",
   "IELTS requirements?",
   "Scholarships for Sri Lankans",
-  "Cost of living in Singapore",
+  // "Cost of living in Singapore",
 ];
 
 const FACTOR_QUICK_REPLIES = [
   { label: "Financial", text: "My family budget is limited. Which universities are affordable with scholarship options?" },
   { label: "Eligibility", text: "I have A/L results and IELTS. Am I eligible for UK or Australia CS programs?" },
   { label: "Visa", text: "What visa documents should I prepare early to avoid rejection risk?" },
-  { label: "Deadlines", text: "I am late for this intake. Which universities still have open deadlines?" },
+  { label: "Deadlines", text: `I am late for the ${CURRENT_YEAR} intake. Which universities still have open deadlines?` },
   { label: "Trust", text: "Why are these universities recommended for me? Show the reason clearly." },
   { label: "Global Risk", text: "If policies change or travel restrictions return, what backup plan should I use?" },
 ];
@@ -1615,9 +1617,9 @@ function FinancialSection({value={},onChange}){
 }
 
 // ── PROFILE STEP ─────────────────────────────────────────────────────────────
-function ProfileStep({data,onNext}){
+function ProfileStep({data,onNext,user}){
   const [activeTab,setActiveTab]=useState("personal");
-  const [form,setForm]=useState({full_name:"",email:"",phone:"",dob:"",gender:"",nic:"",address:"",district:"",country:"",program_interest:"",study_level:"",current_qualification:"",stream:"",...data});
+  const [form,setForm]=useState({full_name:user?.name ||"",email:user?.email ||"",phone:"",dob:"",gender:"",nic:"",address:"",district:"",country:"",program_interest:"",study_level:"",current_qualification:"",stream:"",...data});
   const [financial,setFinancial]=useState(data.financial||{});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -1630,7 +1632,7 @@ function ProfileStep({data,onNext}){
   return(
     <div className="fade-up">
       <div className="panel">
-        <div className="panel-title">Your Profile</div>
+        <div className="panel-title">Profile</div>
         <div className="panel-sub">Complete both sections for accurate recommendations</div>
         <div className="profile-tabs">
           <button className={`ptab${activeTab==="personal"?" active":""}`} onClick={()=>setActiveTab("personal")}> Personal</button>
@@ -1640,8 +1642,8 @@ function ProfileStep({data,onNext}){
           <div>
             <div className="slabel" style={{marginTop:0}}>Personal Information</div>
             <div className="fgrid">
-              <div className="field"><label className="flabel">Full Name <span className="req">*</span></label><input value={form.full_name} onChange={e=>f("full_name",e.target.value)} placeholder="e.g. Kasun Sampath Perera" /></div>
-              <div className="field"><label className="flabel">Email <span className="req">*</span></label><input value={form.email} onChange={e=>f("email",e.target.value)} /></div>
+              <div className="field"><label className="flabel">Full Name <span className="req">*</span></label><input value={form.full_name} onChange={e => f("full_name", e.target.value)} placeholder="e.g. Kasun Sampath Perera"/><span style={{ fontFamily: "var(--mono)", fontSize: ".62rem", color: "var(--text3)", marginTop: ".2rem" }}>(Registered: {user?.name || "N/A"}) — Editable</span></div>
+              <div className="field"><label className="flabel">Email <span className="req">*</span></label><input value={form.email} disabled style={{ cursor: "not-allowed" }}/> <span style={{ fontFamily: "var(--mono)", fontSize: ".62rem", color: "var(--text3)", marginTop: ".2rem" }}> Read-only from login account </span></div>
               <div className="field"><label className="flabel">Phone <span className="req">*</span></label><input value={form.phone} onChange={e=>f("phone",e.target.value)} placeholder="+94 77 000 0000" /></div>
               <div className="field"><label className="flabel">Date of Birth</label><input type="date" value={form.dob} onChange={e=>f("dob",e.target.value)} /></div>
               <div className="field"><label className="flabel">Gender</label><select value={form.gender} onChange={e=>f("gender",e.target.value)}><option value="">— Select —</option>{["Male","Female","Prefer not to say"].map(g=><option key={g}>{g}</option>)}</select></div>
@@ -1719,7 +1721,7 @@ function DegreeManualForm({docType,data={},onSubmit,onBack}){
   const isMasters=docType==="Master's Degree";
   const [form,setForm]=useState({university_name:"",degree_program:"",graduation_year:"",gpa_system:"",gpa_value:"",degree_class:"",thesis_title:"",...data});
   const [err,setErr]=useState("");
-  const f=(k,v)=>setForm(p=>({...p,[k]:v}));const years=Array.from({length:25},(_,i)=>2024-i);
+  const f=(k,v)=>setForm(p=>({...p,[k]:v}));const years=Array.from({length:25},(_,i)=>CURRENT_YEAR-i);
   const submit=()=>{if(!form.university_name||!form.degree_program||!form.graduation_year||!form.gpa_system||!form.gpa_value){setErr("Fill all required fields.");return;}onSubmit({document_type:docType,...form,graduation_year:+form.graduation_year,gpa_normalized:normalizeGpa(form.gpa_value,form.gpa_system)});};
   return(<div><div className="fgrid"><div className="field"><label className="flabel">University <span className="req">*</span></label><input value={form.university_name} onChange={e=>f("university_name",e.target.value)} /></div><div className="field"><label className="flabel">Degree Program <span className="req">*</span></label><input value={form.degree_program} onChange={e=>f("degree_program",e.target.value)} /></div>{isMasters&&<div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Thesis Title</label><input value={form.thesis_title} onChange={e=>f("thesis_title",e.target.value)} /></div>}<div className="field"><label className="flabel">Graduation Year <span className="req">*</span></label><select value={form.graduation_year} onChange={e=>f("graduation_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div><div className="field"><label className="flabel">Grading System <span className="req">*</span></label><select value={form.gpa_system} onChange={e=>{f("gpa_system",e.target.value);f("gpa_value","");}}><option value="">— Select —</option>{["GPA (4.0 scale)","GPA (5.0 scale)","UK Class","Percentage"].map(s=><option key={s}>{s}</option>)}</select></div>{form.gpa_system==="GPA (4.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={4} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–4.00" /></div>}{form.gpa_system==="GPA (5.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={5} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–5.00" /></div>}{form.gpa_system==="UK Class"&&<div className="field"><label className="flabel">Classification <span className="req">*</span></label><select value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)}><option value="">— Select —</option>{["First Class","Upper Second (2:1)","Lower Second (2:2)","Third Class"].map(c=><option key={c}>{c}</option>)}</select></div>}{form.gpa_system==="Percentage"&&<div className="field"><label className="flabel">Percentage <span className="req">*</span></label><input type="number" min={0} max={100} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} /></div>}</div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
@@ -1728,7 +1730,7 @@ function DiplomaManualForm({onSubmit,onBack}){
   const [form,setForm]=useState({student_name:"",institution:"",program:"",grade:"",completion_year:""});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
-  const years=Array.from({length:20},(_,i)=>2024-i);
+  const years=Array.from({length:20},(_,i)=>CURRENT_YEAR-i);
   const submit=()=>{if(!form.student_name||!form.institution||!form.program){setErr("Fill name, institution and program.");return;}setErr("");onSubmit({document_type:"Diploma",...form});};
   return(<div><div className="fgrid"><div className="field"><label className="flabel">Student Name <span className="req">*</span></label><input value={form.student_name} onChange={e=>f("student_name",e.target.value)} /></div><div className="field"><label className="flabel">Institution <span className="req">*</span></label><input value={form.institution} onChange={e=>f("institution",e.target.value)} placeholder="e.g. SLIIT, NIBM, NSBM" /></div><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Program / Diploma Name <span className="req">*</span></label><input value={form.program} onChange={e=>f("program",e.target.value)} placeholder="e.g. Diploma in IT" /></div><div className="field"><label className="flabel">Grade</label><select value={form.grade} onChange={e=>f("grade",e.target.value)}><option value="">— Select —</option>{["Distinction","Merit","Pass"].map(g=><option key={g}>{g}</option>)}</select></div><div className="field"><label className="flabel">Completion Year</label><select value={form.completion_year} onChange={e=>f("completion_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
@@ -1776,7 +1778,7 @@ function BankManualForm({onSubmit,onBack}){
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const SL_BANKS=["Bank of Ceylon","People's Bank","Commercial Bank","Hatton National Bank","Sampath Bank","Seylan Bank","Nations Trust Bank","DFCC Bank","Pan Asia Bank","NDB Bank","NSB","Citi Bank","HSBC","Standard Chartered"];
   const submit=()=>{if(!form.account_holder||!form.bank_name||!form.closing_balance){setErr("Account holder, bank name and closing balance are required.");return;}setErr("");const masked=form.account_number.length>4?"****"+form.account_number.slice(-4):form.account_number;onSubmit({document_type:"Financial Statement",...form,account_number:masked});};
-  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Account Holder Name <span className="req">*</span></label><input value={form.account_holder} onChange={e=>f("account_holder",e.target.value)} /></div><div className="field"><label className="flabel">Bank Name <span className="req">*</span></label><select value={form.bank_name} onChange={e=>f("bank_name",e.target.value)}><option value="">— Select Bank —</option>{SL_BANKS.map(b=><option key={b}>{b}</option>)}<option value="Other">Other</option></select></div>{form.bank_name==="Other"&&<div className="field"><label className="flabel">Bank Name (Other)</label><input onChange={e=>f("bank_name",e.target.value)} placeholder="Enter bank name" /></div>}<div className="field"><label className="flabel">Account Number (last 4 digits shown)</label><input value={form.account_number} onChange={e=>f("account_number",e.target.value)} placeholder="Full account number" /></div><div className="field"><label className="flabel">Currency</label><select value={form.currency} onChange={e=>f("currency",e.target.value)}>{["LKR","USD","EUR","GBP","AUD","SGD"].map(c=><option key={c}>{c}</option>)}</select></div><div className="field"><label className="flabel">Opening Balance</label><input value={form.opening_balance} onChange={e=>f("opening_balance",e.target.value)} placeholder="e.g. 500,000.00" /></div><div className="field"><label className="flabel">Closing Balance <span className="req">*</span></label><input value={form.closing_balance} onChange={e=>f("closing_balance",e.target.value)} placeholder="e.g. 1,250,000.00" /></div><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Statement Period</label><input value={form.statement_period} onChange={e=>f("statement_period",e.target.value)} placeholder="e.g. January 2024 – June 2024" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
+  return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Account Holder Name <span className="req">*</span></label><input value={form.account_holder} onChange={e=>f("account_holder",e.target.value)} /></div><div className="field"><label className="flabel">Bank Name <span className="req">*</span></label><select value={form.bank_name} onChange={e=>f("bank_name",e.target.value)}><option value="">— Select Bank —</option>{SL_BANKS.map(b=><option key={b}>{b}</option>)}<option value="Other">Other</option></select></div>{form.bank_name==="Other"&&<div className="field"><label className="flabel">Bank Name (Other)</label><input onChange={e=>f("bank_name",e.target.value)} placeholder="Enter bank name" /></div>}<div className="field"><label className="flabel">Account Number (last 4 digits shown)</label><input value={form.account_number} onChange={e=>f("account_number",e.target.value)} placeholder="Full account number" /></div><div className="field"><label className="flabel">Currency</label><select value={form.currency} onChange={e=>f("currency",e.target.value)}>{["LKR","USD","EUR","GBP","AUD","SGD"].map(c=><option key={c}>{c}</option>)}</select></div><div className="field"><label className="flabel">Opening Balance</label><input value={form.opening_balance} onChange={e=>f("opening_balance",e.target.value)} placeholder="e.g. 500,000.00" /></div><div className="field"><label className="flabel">Closing Balance <span className="req">*</span></label><input value={form.closing_balance} onChange={e=>f("closing_balance",e.target.value)} placeholder="e.g. 1,250,000.00" /></div><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Statement Period</label><input value={form.statement_period} onChange={e=>f("statement_period",e.target.value)} placeholder={`e.g. January ${CURRENT_YEAR} - June ${CURRENT_YEAR}`} /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div></div>);
 }
 
 // ── DOC STEP — v6: all 9 tabs, checklist panel, eng-next banner ─────────────
@@ -2965,7 +2967,7 @@ export default function App(){
             {STEPS.map(s=>(<div key={s.num} className={`step-seg${step>s.num?" done":step===s.num?" active":""}`}><div className="step-circle">{step>s.num?"✓":s.num}</div><div className="step-name">{s.name}</div></div>))}
           </div>
           {step>1&&<UserCard profile={profile} user={user} />}
-          {step===1&&<ProfileStep data={profile} onNext={d=>{setProfile(d);setStep(2);}} />}
+          {step===1&&<ProfileStep data={profile} onNext={d=>{setProfile(d);setStep(2);}} user={user} />}
           {step===2&&<DocumentStep profile={profile} docData={docData} onNext={handleDoc} onBack={()=>setStep(1)} user={user} />}
           {step===3&&elig&&<EligibilityStep elig={elig} docData={docData} profile={profile} onNext={()=>setStep(4)} onBack={()=>setStep(2)} />}
           {step===3&&!elig&&<div className="panel"><Alert type="error">Eligibility data missing. Go back and re-submit your document.</Alert><div className="btn-row btn-row-end" style={{marginTop:"1rem"}}><button className="btn btn-ghost" onClick={()=>setStep(2)}>← Back to Documents</button></div></div>}
