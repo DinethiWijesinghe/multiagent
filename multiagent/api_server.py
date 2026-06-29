@@ -622,7 +622,8 @@ def _preprocess(image_path):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
-    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, gray = cv2.GaussianBlur(gray,(3,3),0)
+    gray = cv2.threshold( gray,0, 255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     return gray
 
 
@@ -915,19 +916,61 @@ def _run_easyocr_engine(image_path):
 
 
 def _run_tesseract(image_path, doc_type_hint="auto"):
-    """Run Tesseract OCR. Raises if unavailable."""
+    import cv2
     import pytesseract
     gray = _preprocess(image_path)
-    preset_key, config = _tesseract_config_for_doc(doc_type_hint)
-    text = pytesseract.image_to_string(gray, config=config)
-    data = pytesseract.image_to_data(
-        gray, config=config,
-        output_type=pytesseract.Output.DICT,
+    # Convert to grayscale if needed
+    if len(gray.shape) == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    # Improve contrast
+    gray = cv2.equalizeHist(gray)
+    # Otsu threshold
+    gray = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )[1]
+    config = (
+        "--oem 3 "
+        "--psm 6 "
+        "-l eng "
+        "-c preserve_interword_spaces=1"
     )
-    confs = [int(c) for c in data["conf"] if int(c) > 0]
-    conf = (sum(confs) / len(confs) / 100) if confs else 0.0
-    text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
-    return _correct(text.strip()), conf, preset_key
+    text = pytesseract.image_to_string(
+        gray,
+        config=config
+    )
+    data = pytesseract.image_to_data(
+        gray,
+        config=config,
+        output_type=pytesseract.Output.DICT
+    )
+    confs = []
+    for c in data["conf"]:
+        try:
+            c = float(c)
+            if c > 0:
+                confs.append(c)
+        except:
+            pass
+    confidence = sum(confs)/len(confs)/100 if confs else 0
+    print("\n========== OCR TEXT ==========\n")
+    print(text)
+    print("\n==============================\n")
+    # return _correct(text), confidence, "tesseract"
+    # import pytesseract
+    # gray = _preprocess(image_path)
+    # preset_key, config = _tesseract_config_for_doc(doc_type_hint)
+    # text = pytesseract.image_to_string(gray, config=config)
+    # data = pytesseract.image_to_data(
+    #     gray, config=config,
+    #     output_type=pytesseract.Output.DICT,
+    # )
+    # confs = [int(c) for c in data["conf"] if int(c) > 0]
+    # conf = (sum(confs) / len(confs) / 100) if confs else 0.0
+    # text = re.sub(r'[\u0D80-\u0DFF\u0B80-\u0BFF]+', '', text)
+    # return _correct(text.strip()), conf, preset_key
 
 
 def _run_ocr(image_path, doc_type_hint="auto"):
@@ -965,6 +1008,7 @@ def _run_ocr(image_path, doc_type_hint="auto"):
 
     try:
         result = _run_tesseract(image_path, doc_type_hint=doc_type_hint)
+        print(result[0])
         _OCR_ENGINE = "tesseract"
         return result
     except Exception as te:
