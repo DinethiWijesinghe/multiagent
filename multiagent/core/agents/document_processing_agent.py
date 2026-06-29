@@ -289,11 +289,12 @@ def _parse_to_dataclass(doc_type: str, text: str):
 
     if doc_type == "alevel":
         return ALevelResult(
-            index_number = _f(r"\b(\d{7})\b", text),
-            year         = _f(r"(20\d{2})", text),
-            subjects     = _fa(r"(combined maths?|physics|chemistry|biology|economics|accounting|geography|ict)", t),
-            grades       = _fa(r"\b([ABCSF])\b", text.upper()),
-            z_score      = _f(r"z[\s\-]?score[\s:]+([0-9.]+)", t),
+            index_number = _f(r"Index\s+Number\s*:?\s*(\d{7})",text),
+            year         = _f( r"Year\s+of\s+Examination\s*:?\s*(20\d{2})",text),
+            pairs        = re.findall( r"(Physics|Chemistry|Biology|Combined Mathematics|ICT|Economics|Accounting|Geography)\s+([ABCSFW])", text,re.I),           
+            subjects     = [p[0].title() for p in pairs],
+            grades       = [p[1].upper() for p in pairs],
+            z_score      = _f(r"z[\s\-]?score.*?([+-]?\d+\.\d+)", t),
             stream       = _f(r"(science|mathematics|arts|technology|bio science)", t),
         ).validate()
 
@@ -430,8 +431,17 @@ def _preprocess(image_path: str) -> np.ndarray:
     except Exception:
         pass
 
-    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                  cv2.THRESH_BINARY, 21, 10)
+    # gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+    #                               cv2.THRESH_BINARY, 21, 10)
+    gray = cv2.GaussianBlur(gray,(3,3),0)
+    gray = cv2.threshold
+    (
+    gray,
+    0,
+    255,
+    cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )[1]
+
     gray = cv2.medianBlur(gray, 3)
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
@@ -462,10 +472,15 @@ def _get_reader():
 def _run_ocr(image_path: str) -> tuple[str, float]:
     img     = _preprocess(image_path)
     results = _get_reader().readtext(
-        img, detail=1, paragraph=False,
-        batch_size=1, workers=0, beamWidth=3,   # ← low-spec settings
+        img, detail=1, paragraph=True,
+        batch_size=2, workers=0, beamWidth=5,width_ths=0.8,height_ths=0.8,   
     )
-    words = [t for (_, t, c) in results if t.strip() and c > 0.25]
+    words=[] 
+    for (_,txt,conf) in results:
+        if conf<0.15:continue 
+        txt = txt.replace("\n"," ") 
+        words.append(txt) 
+    text="\n".join(words)
     confs = [c for (_, t, c) in results if t.strip() and c > 0.25]
     text  = _correct_ocr(" ".join(words))
     conf  = float(np.mean(confs)) if confs else 0.0
@@ -485,6 +500,9 @@ class DocumentProcessingAgent:
     def process_image(self, image_path: str) -> dict:
         """OCR path: image → EasyOCR (CPU) → ML classify → dataclass → dict"""
         text, ocr_conf = _run_ocr(image_path)
+        print("\n================ OCR TEXT ================\n")
+        print(text)
+        print("\n=========================================\n")
         if not text.strip():
             return {"error": "No text extracted.", "doc_type": "unknown"}
 
