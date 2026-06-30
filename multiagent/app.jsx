@@ -828,13 +828,14 @@ function isChatTimeoutLikeError(error){
   return name === "aborterror" || message.includes("aborted") || message.includes("timeout");
 }
 
-async function fetchBackendChatReply(message, token, messages, timeoutMs = CHAT_TIMEOUT_MS){
+async function fetchBackendChatReply(message, token, messages, profile, timeoutMs = CHAT_TIMEOUT_MS){
   // Send last 20 turns as conversation_history so Gemini can maintain context
   const conversation_history = (messages || [])
     .filter(m => m.role === "user" || m.role === "bot")
     .slice(-20)
     .map(m => ({ role: m.role === "bot" ? "assistant" : m.role, text: m.text }));
-  const body = JSON.stringify({ user_message: message, context: { conversation_history } });
+  const profile_data = profile && typeof profile === "object" ? profile : {};
+  const body = JSON.stringify({ user_message: message, context: { conversation_history, profile_data } });
   const request = (requestTimeoutMs)=>fetchApi("/chat/respond", {
     method: "POST",
     headers: authHeaders(token, true),
@@ -866,12 +867,12 @@ async function fetchBackendChatReply(message, token, messages, timeoutMs = CHAT_
   };
 }
 
-const QUICK_REPLIES = [
-  // "Best unis for CS in UK?",
-  "IELTS requirements?",
-  "Scholarships for Sri Lankans",
-  // "Cost of living in Singapore",
-];
+// const QUICK_REPLIES = [
+//   // "Best unis for CS in UK?",
+//   // "IELTS requirements?",
+//   // "Scholarships for Sri Lankans",
+//   // "Cost of living in Singapore",
+// ];
 
 const FACTOR_QUICK_REPLIES = [
   { label: "Financial", text: "My family budget is limited. Which universities are affordable with scholarship options?" },
@@ -882,7 +883,7 @@ const FACTOR_QUICK_REPLIES = [
   { label: "Global Risk", text: "If policies change or travel restrictions return, what backup plan should I use?" },
 ];
 
-function ChatBot({user}){
+function ChatBot({user,profile}){
   const [open,setOpen]=useState(false);
   const [expanded,setExpanded]=useState(false);
   const [messages,setMessages]=useState(()=>createIntroMessages());
@@ -986,7 +987,7 @@ function ChatBot({user}){
     let replyAgentData = undefined;
     let replyExternalFactors = [];
     try{
-      const backendReply = await fetchBackendChatReply(msg, user?.token, messages);
+      const backendReply = await fetchBackendChatReply(msg, user?.token, messages, profile);
       replyText = (backendReply.text || "").trim();
       replySource = backendReply.source || "backend_agent";
       replyIntent = backendReply.intent;
@@ -1695,17 +1696,30 @@ const STREAM_SUBJECTS={"Physical Science":["Combined Maths","Physics","Chemistry
 
 // CHANGE v6: ALevelManualForm — english_proficiency / EnglishSection REMOVED.
 //            User must upload IELTS/TOEFL/PTE as a separate document type.
-function ALevelManualForm({stream,onSubmit,onBack}){
+function ALevelManualForm({stream,data={},onSubmit,onBack}){
   const streamOptions=Object.keys(STREAM_SUBJECTS);
-  const [selectedStream,setSelectedStream]=useState(streamOptions.includes(stream)?stream:streamOptions[0]);
-  const [grades,setGrades]=useState({});
-  const [geGrade,setGeGrade]=useState("");  // General English — optional
-  const [fullName,setFullName]=useState("");
-  const [year,setYear]=useState(String(CURRENT_YEAR-1));
-  const [indexNo,setIndexNo]=useState("");
-  const [zScore,setZScore]=useState("");
+  const [selectedStream,setSelectedStream]=useState(streamOptions.includes(data.subject_stream||data.stream)?(data.subject_stream||data.stream):streamOptions.includes(stream)?stream:streamOptions[0]);
+  const [grades,setGrades]=useState(()=>getALevelSubjectMap(data));
+  const [geGrade,setGeGrade]=useState(data.general_english_grade||getALevelSubjectMap(data)["General English"]||"");  // General English — optional
+  const [fullName,setFullName]=useState(data.full_name||data.name||"");
+  const [year,setYear]=useState(String(data.year||CURRENT_YEAR-1));
+  const [indexNo,setIndexNo]=useState(data.index_number||"");
+  const [zScore,setZScore]=useState(data.z_score||"");
   const [err,setErr]=useState("");
   const subjects=STREAM_SUBJECTS[selectedStream]||["Subject 1","Subject 2","Subject 3"];
+  useEffect(()=>{
+    const nextStream = streamOptions.includes(data.subject_stream||data.stream)
+      ? (data.subject_stream||data.stream)
+      : (streamOptions.includes(stream)?stream:streamOptions[0]);
+    const subjectMap = getALevelSubjectMap(data);
+    setSelectedStream(nextStream);
+    setGrades(subjectMap);
+    setGeGrade(data.general_english_grade||subjectMap["General English"]||"");
+    setFullName(data.full_name||data.name||"");
+    setYear(String(data.year||CURRENT_YEAR-1));
+    setIndexNo(data.index_number||"");
+    setZScore(data.z_score||"");
+  },[data,stream]);
   const submit=()=>{
     if(!fullName.trim()){setErr("Full name is required.");return;}
     if(!year){setErr("Year of examination is required.");return;}
@@ -1770,61 +1784,68 @@ function DegreeManualForm({docType,data={},onSubmit,onBack}){
   const [form,setForm]=useState({university_name:"",degree_program:"",graduation_year:"",gpa_system:"",gpa_value:"",degree_class:"",thesis_title:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));const years=Array.from({length:25},(_,i)=>CURRENT_YEAR-i);
+  useEffect(()=>{setForm({university_name:"",degree_program:"",graduation_year:"",gpa_system:"",gpa_value:"",degree_class:"",thesis_title:"",...data});},[data,docType]);
   const submit=()=>{if(!form.university_name||!form.degree_program||!form.graduation_year||!form.gpa_system||!form.gpa_value){setErr("Fill all required fields.");return;}onSubmit({document_type:docType,...form,graduation_year:+form.graduation_year,gpa_normalized:normalizeGpa(form.gpa_value,form.gpa_system)});};
   return(<div><div className="fgrid"><div className="field"><label className="flabel">University <span className="req">*</span></label><input value={form.university_name} onChange={e=>f("university_name",e.target.value)} /></div><div className="field"><label className="flabel">Degree Program <span className="req">*</span></label><input value={form.degree_program} onChange={e=>f("degree_program",e.target.value)} /></div>{isMasters&&<div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Thesis Title</label><input value={form.thesis_title} onChange={e=>f("thesis_title",e.target.value)} /></div>}<div className="field"><label className="flabel">Graduation Year <span className="req">*</span></label><select value={form.graduation_year} onChange={e=>f("graduation_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div><div className="field"><label className="flabel">Grading System <span className="req">*</span></label><select value={form.gpa_system} onChange={e=>{f("gpa_system",e.target.value);f("gpa_value","");}}><option value="">— Select —</option>{["GPA (4.0 scale)","GPA (5.0 scale)","UK Class","Percentage"].map(s=><option key={s}>{s}</option>)}</select></div>{form.gpa_system==="GPA (4.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={4} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–4.00" /></div>}{form.gpa_system==="GPA (5.0 scale)"&&<div className="field"><label className="flabel">GPA <span className="req">*</span></label><input type="number" min={0} max={5} step={0.01} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} placeholder="0.00–5.00" /></div>}{form.gpa_system==="UK Class"&&<div className="field"><label className="flabel">Classification <span className="req">*</span></label><select value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)}><option value="">— Select —</option>{["First Class","Upper Second (2:1)","Lower Second (2:2)","Third Class"].map(c=><option key={c}>{c}</option>)}</select></div>}{form.gpa_system==="Percentage"&&<div className="field"><label className="flabel">Percentage <span className="req">*</span></label><input type="number" min={0} max={100} value={form.gpa_value} onChange={e=>f("gpa_value",e.target.value)} /></div>}</div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function DiplomaManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({student_name:"",institution:"",program:"",grade:"",completion_year:""});
+function DiplomaManualForm({data={},onSubmit,onBack}){
+  const [form,setForm]=useState({student_name:"",institution:"",program:"",grade:"",completion_year:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const years=Array.from({length:20},(_,i)=>CURRENT_YEAR-i);
+  useEffect(()=>{setForm({student_name:"",institution:"",program:"",grade:"",completion_year:"",...data});},[data]);
   const submit=()=>{if(!form.student_name||!form.institution||!form.program){setErr("Fill name, institution and program.");return;}setErr("");onSubmit({document_type:"Diploma",...form});};
   return(<div><div className="fgrid"><div className="field"><label className="flabel">Student Name <span className="req">*</span></label><input value={form.student_name} onChange={e=>f("student_name",e.target.value)} /></div><div className="field"><label className="flabel">Institution <span className="req">*</span></label><input value={form.institution} onChange={e=>f("institution",e.target.value)} placeholder="e.g. SLIIT, NIBM, NSBM" /></div><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Program / Diploma Name <span className="req">*</span></label><input value={form.program} onChange={e=>f("program",e.target.value)} placeholder="e.g. Diploma in IT" /></div><div className="field"><label className="flabel">Grade</label><select value={form.grade} onChange={e=>f("grade",e.target.value)}><option value="">— Select —</option>{["Distinction","Merit","Pass"].map(g=><option key={g}>{g}</option>)}</select></div><div className="field"><label className="flabel">Completion Year</label><select value={form.completion_year} onChange={e=>f("completion_year",e.target.value)}><option value="">— Select —</option>{years.map(y=><option key={y}>{y}</option>)}</select></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function IELTSManualForm({onSubmit,onBack}){
+function IELTSManualForm({data={},onSubmit,onBack}){
   const BANDS=new Set([0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9]);
-  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",trf_number:"",test_centre:"",nationality:""});
+  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",trf_number:"",test_centre:"",nationality:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const validBand=(v)=>BANDS.has(parseFloat(v));
+  useEffect(()=>{setForm({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",trf_number:"",test_centre:"",nationality:"",...data});},[data]);
   const submit=()=>{if(!form.candidate_name||!form.overall){setErr("Name and overall band are required.");return;}if(!validBand(form.overall)){setErr("Overall band must be 0–9 in 0.5 steps (e.g. 6.5).");return;}setErr("");onSubmit({document_type:"IELTS Certificate",...form});};
   const secs=["overall","listening","reading","writing","speaking"];
   return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div></div><div className="slabel" style={{marginTop:"1rem"}}>Band Scores (0–9, half-band steps)</div><div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:".5rem",marginBottom:"1rem"}}>{secs.map(k=>{const v=parseFloat(form[k])||0;const ok=form[k]===""||validBand(form[k]);return(<div key={k} className="field"><label className="flabel">{k.charAt(0).toUpperCase()+k.slice(1)}{k==="overall"&&<span className="req"> *</span>}</label><input className="band-input" type="number" min={0} max={9} step={0.5} value={form[k]} placeholder="0.0" onChange={e=>f(k,e.target.value)} style={{borderColor:form[k]&&!ok?"var(--red)":undefined}} />{form[k]!=""&&<div style={{fontFamily:"var(--mono)",fontSize:".6rem",color:ok?"var(--green)":"var(--red)",textAlign:"center",marginTop:".2rem"}}>{ok?bandStatus(v):"Invalid"}</div>}</div>);})}</div><div className="fgrid"><div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">TRF Number</label><input value={form.trf_number} onChange={e=>f("trf_number",e.target.value)} /></div><div className="field"><label className="flabel">Exam Centre</label><input value={form.test_centre} onChange={e=>f("test_centre",e.target.value)} /></div><div className="field"><label className="flabel">Nationality</label><input value={form.nationality} onChange={e=>f("nationality",e.target.value)} placeholder="Sri Lankan" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function TOEFLManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({candidate_name:"",total:"",reading:"",listening:"",speaking:"",writing:"",test_date:"",registration_number:""});
+function TOEFLManualForm({data={},onSubmit,onBack}){
+  const [form,setForm]=useState({candidate_name:"",total:"",reading:"",listening:"",speaking:"",writing:"",test_date:"",registration_number:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  useEffect(()=>{setForm({candidate_name:"",total:"",reading:"",listening:"",speaking:"",writing:"",test_date:"",registration_number:"",...data});},[data]);
   const submit=()=>{if(!form.candidate_name||!form.total){setErr("Name and total score are required.");return;}const t=parseInt(form.total);if(isNaN(t)||t<0||t>120){setErr("Total score must be 0–120.");return;}setErr("");onSubmit({document_type:"TOEFL Certificate",...form});};
   const secs=[["Reading","reading",30],["Listening","listening",30],["Speaking","speaking",30],["Writing","writing",30]];
   return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div><div className="field"><label className="flabel">Total Score (0–120) <span className="req">*</span></label><input type="number" min={0} max={120} value={form.total} onChange={e=>f("total",e.target.value)} /></div>{secs.map(([label,key,max])=>(<div key={key} className="field"><label className="flabel">{label} (0–{max})</label><input type="number" min={0} max={max} value={form[key]} onChange={e=>f(key,e.target.value)} /></div>))}<div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">Registration Number</label><input value={form.registration_number} onChange={e=>f("registration_number",e.target.value)} /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function PTEManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:""});
+function PTEManualForm({data={},onSubmit,onBack}){
+  const [form,setForm]=useState({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  useEffect(()=>{setForm({candidate_name:"",overall:"",listening:"",reading:"",writing:"",speaking:"",test_date:"",...data});},[data]);
   const submit=()=>{if(!form.candidate_name||!form.overall){setErr("Name and overall score are required.");return;}const o=parseInt(form.overall);if(isNaN(o)||o<10||o>90){setErr("Overall score must be 10–90.");return;}setErr("");onSubmit({document_type:"PTE Certificate",...form});};
   const secs=[["Listening","listening"],["Reading","reading"],["Writing","writing"],["Speaking","speaking"]];
   return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Candidate Name <span className="req">*</span></label><input value={form.candidate_name} onChange={e=>f("candidate_name",e.target.value)} /></div><div className="field"><label className="flabel">Overall Score (10–90) <span className="req">*</span></label><input type="number" min={10} max={90} value={form.overall} onChange={e=>f("overall",e.target.value)} /></div>{secs.map(([label,key])=>(<div key={key} className="field"><label className="flabel">{label} (10–90)</label><input type="number" min={10} max={90} value={form[key]} onChange={e=>f(key,e.target.value)} /></div>))}<div className="field"><label className="flabel">Test Date</label><input value={form.test_date} onChange={e=>f("test_date",e.target.value)} placeholder="DD/MM/YYYY" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function PassportManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({surname:"",given_names:"",passport_number:"",nationality:"Sri Lankan",date_of_birth:"",sex:"",place_of_birth:"",issue_date:"",expiry_date:"",issuing_authority:""});
+function PassportManualForm({data={},onSubmit,onBack}){
+  const [form,setForm]=useState({surname:"",given_names:"",passport_number:"",nationality:"Sri Lankan",date_of_birth:"",sex:"",place_of_birth:"",issue_date:"",expiry_date:"",issuing_authority:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+  useEffect(()=>{setForm({surname:"",given_names:"",passport_number:"",nationality:"Sri Lankan",date_of_birth:"",sex:"",place_of_birth:"",issue_date:"",expiry_date:"",issuing_authority:"",...data});},[data]);
   const submit=()=>{if(!form.surname||!form.given_names||!form.expiry_date){setErr("Surname, given names and expiry date are required.");return;}setErr("");const masked=form.passport_number.length>4?"*".repeat(form.passport_number.length-4)+form.passport_number.slice(-4):form.passport_number;onSubmit({document_type:"Passport",...form,passport_number:masked});};
   return(<div><Alert type="warn">Passport number will be masked for privacy — only last 4 digits stored.</Alert><div className="fgrid" style={{marginTop:"1rem"}}><div className="field"><label className="flabel">Surname <span className="req">*</span></label><input value={form.surname} onChange={e=>f("surname",e.target.value.toUpperCase())} placeholder="PERERA" /></div><div className="field"><label className="flabel">Given Names <span className="req">*</span></label><input value={form.given_names} onChange={e=>f("given_names",e.target.value)} placeholder="Kamal Suresh" /></div><div className="field"><label className="flabel">Passport Number</label><input value={form.passport_number} onChange={e=>f("passport_number",e.target.value.toUpperCase())} placeholder="N1234567" /></div><div className="field"><label className="flabel">Nationality</label><input value={form.nationality} onChange={e=>f("nationality",e.target.value)} /></div><div className="field"><label className="flabel">Date of Birth</label><input value={form.date_of_birth} onChange={e=>f("date_of_birth",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">Sex</label><select value={form.sex} onChange={e=>f("sex",e.target.value)}><option value="">— Select —</option><option value="M">Male</option><option value="F">Female</option></select></div><div className="field"><label className="flabel">Place of Birth</label><input value={form.place_of_birth} onChange={e=>f("place_of_birth",e.target.value)} placeholder="Colombo" /></div><div className="field"><label className="flabel">Issuing Authority</label><input value={form.issuing_authority} onChange={e=>f("issuing_authority",e.target.value)} placeholder="Dept. of Immigration" /></div><div className="field"><label className="flabel">Issue Date</label><input value={form.issue_date} onChange={e=>f("issue_date",e.target.value)} placeholder="DD/MM/YYYY" /></div><div className="field"><label className="flabel">Expiry Date <span className="req">*</span></label><input value={form.expiry_date} onChange={e=>f("expiry_date",e.target.value)} placeholder="DD/MM/YYYY" /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
 
-function BankManualForm({onSubmit,onBack}){
-  const [form,setForm]=useState({account_holder:"",bank_name:"",account_number:"",currency:"LKR",opening_balance:"",closing_balance:"",statement_period:""});
+function BankManualForm({data={},onSubmit,onBack}){
+  const [form,setForm]=useState({account_holder:"",bank_name:"",account_number:"",currency:"LKR",opening_balance:"",closing_balance:"",statement_period:"",...data});
   const [err,setErr]=useState("");
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
   const SL_BANKS=["Bank of Ceylon","People's Bank","Commercial Bank","Hatton National Bank","Sampath Bank","Seylan Bank","Nations Trust Bank","DFCC Bank","Pan Asia Bank","NDB Bank","NSB","Citi Bank","HSBC","Standard Chartered"];
+  useEffect(()=>{setForm({account_holder:"",bank_name:"",account_number:"",currency:"LKR",opening_balance:"",closing_balance:"",statement_period:"",...data});},[data]);
   const submit=()=>{if(!form.account_holder||!form.bank_name||!form.closing_balance){setErr("Account holder, bank name and closing balance are required.");return;}setErr("");const masked=form.account_number.length>4?"****"+form.account_number.slice(-4):form.account_number;onSubmit({document_type:"Financial Statement",...form,account_number:masked});};
   return(<div><div className="fgrid"><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Account Holder Name <span className="req">*</span></label><input value={form.account_holder} onChange={e=>f("account_holder",e.target.value)} /></div><div className="field"><label className="flabel">Bank Name <span className="req">*</span></label><select value={form.bank_name} onChange={e=>f("bank_name",e.target.value)}><option value="">— Select Bank —</option>{SL_BANKS.map(b=><option key={b}>{b}</option>)}<option value="Other">Other</option></select></div>{form.bank_name==="Other"&&<div className="field"><label className="flabel">Bank Name (Other)</label><input onChange={e=>f("bank_name",e.target.value)} placeholder="Enter bank name" /></div>}<div className="field"><label className="flabel">Account Number (last 4 digits shown)</label><input value={form.account_number} onChange={e=>f("account_number",e.target.value)} placeholder="Full account number" /></div><div className="field"><label className="flabel">Currency</label><select value={form.currency} onChange={e=>f("currency",e.target.value)}>{["LKR","USD","EUR","GBP","AUD","SGD"].map(c=><option key={c}>{c}</option>)}</select></div><div className="field"><label className="flabel">Opening Balance</label><input value={form.opening_balance} onChange={e=>f("opening_balance",e.target.value)} placeholder="e.g. 500,000.00" /></div><div className="field"><label className="flabel">Closing Balance <span className="req">*</span></label><input value={form.closing_balance} onChange={e=>f("closing_balance",e.target.value)} placeholder="e.g. 1,250,000.00" /></div><div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Statement Period</label><input value={form.statement_period} onChange={e=>f("statement_period",e.target.value)} placeholder={`e.g. January ${CURRENT_YEAR} - June ${CURRENT_YEAR}`} /></div></div>{err&&<Alert type="error">{err}</Alert>}<div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Save Document →</button></div></div>);
 }
@@ -1845,6 +1866,10 @@ const DOC_TYPE_DEFS = {
 };
 
 const ENGLISH_DOC_TYPES = ["IELTS Certificate", "TOEFL Certificate", "PTE Certificate"];
+
+function isManualStoredDocument(doc){
+  return Boolean(doc && (doc.entry_mode === "manual" || doc.ocrEngine === "manual" || doc.source === "manual"));
+}
 
 function qualificationToAcademicDoc(qualification){
   return qualification === "GCE A/L"
@@ -1990,7 +2015,7 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const requiredChecklistItems = requiredChecklistItemsForQualification(qual);
 
   const [tab,setTab]=useState("upload");
-  const [selectedType,setSelectedType]=useState(defaultType);
+  const [selectedType,setSelectedType]=useState(docData?.primary_document_type||defaultType);
 
   // v6: track all uploaded docs so checklist + banner work
   const [uploadedDocs,setUploadedDocs]=useState(docData?.documents&&typeof docData.documents==="object"?docData.documents:{});
@@ -2043,19 +2068,26 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   useEffect(()=>{refreshServerDocs();},[refreshServerDocs]);
 
   useEffect(()=>{
+    if(Object.values(uploadedDocs || {}).some((doc)=>isManualStoredDocument(doc))){
+      setTab("manual");
+    }
+  },[uploadedDocs]);
+
+  useEffect(()=>{
     const seeded = {};
     Object.entries(uploadedDocs || {}).forEach(([docType,data])=>{
       if(!data || typeof data !== "object") return;
+      const manualDoc = isManualStoredDocument(data);
       seeded[docType] = {
         success:true,
         data,
-        confidence:0.75,
-        ocrEngine:"stored",
+        confidence:manualDoc ? 1 : 0.75,
+        ocrEngine:manualDoc ? "manual" : "stored",
         warnings:[],
         extractionFocusAreas:[],
         fieldConfidence:{},
         missingFieldReasons:{},
-        manualReview:null,
+        manualReview:manualDoc ? {required:false,reasons:[],summary:"Entered manually."} : null,
         requiresManualReview:false,
       };
     });
@@ -2068,10 +2100,12 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     setProgress("");
     setCorrectionMsg("");
     const stored = extractionByType[t];
+    const manualDoc = isManualStoredDocument(uploadedDocs[t]) || stored?.ocrEngine === "manual";
+    setTab(manualDoc ? "manual" : "upload");
     if(stored){
       setAiResult(stored);
     }else if(uploadedDocs[t]){
-      setAiResult({success:true,data:uploadedDocs[t],confidence:0.75,ocrEngine:"stored",warnings:[]});
+      setAiResult({success:true,data:uploadedDocs[t],confidence:manualDoc ? 1 : 0.75,ocrEngine:manualDoc ? "manual" : "stored",warnings:[]});
     }
   };
 
@@ -2272,6 +2306,8 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     if(manualDoc.gpa_value&&!manualDoc.gpa_normalized){
       manualDoc.gpa_normalized=parseFloat(manualDoc.gpa_value)||0;
     }
+    manualDoc.entry_mode = "manual";
+    manualDoc.source = "manual";
     const nextDocs={...uploadedDocs,[selectedType]:manualDoc};
     setUploadedDocs(nextDocs);
     setExtractionByType((prev)=>({
@@ -2289,9 +2325,19 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
         requiresManualReview:false,
       },
     }));
+    setTab("manual");
     setConfirmedDocs((prev)=>({ ...prev, [selectedType]: false }));
     setCorrectionMsg(`Manual data saved for ${selectedType}. Please confirm this document.`);
     setAiError("");
+    saveUserState(user?.email, {
+      step: 2,
+      profile,
+      docData: {
+        documents: nextDocs,
+        primary_document_type: selectedType,
+        english_proficiency: eng,
+      },
+    }, user?.token).catch(()=>{});
   };
 
   const confirmManualDocument = () => {
@@ -2551,14 +2597,14 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
                 );
               })}
             </div>
-            {selectedType==="A-Level Results"&&<ALevelManualForm stream={profile.stream} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="A-Level Results"&&<ALevelManualForm stream={profile.stream} data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
             {(selectedType==="Bachelor's Degree"||selectedType==="Master's Degree")&&<DegreeManualForm docType={selectedType} data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="Diploma"&&<DiplomaManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="IELTS Certificate"&&<IELTSManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="TOEFL Certificate"&&<TOEFLManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="PTE Certificate"&&<PTEManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="Passport"&&<PassportManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
-            {selectedType==="Financial Statement"&&<BankManualForm onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="Diploma"&&<DiplomaManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="IELTS Certificate"&&<IELTSManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="TOEFL Certificate"&&<TOEFLManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="PTE Certificate"&&<PTEManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="Passport"&&<PassportManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
+            {selectedType==="Financial Statement"&&<BankManualForm data={uploadedDocs[selectedType]||{}} onSubmit={handleManualSubmit} onBack={onBack} />}
             <div className="ai-extraction-box" style={{marginTop:"1rem"}}>
               <div className="panel-title" style={{fontSize:".9rem",marginBottom:".35rem"}}>Manual Confirmation</div>
               <div className="panel-sub" style={{marginBottom:".8rem"}}>After entering manual data, confirm this section before eligibility check.</div>
@@ -3040,7 +3086,7 @@ export default function App(){
           {step===4&&elig&&<UniversitiesStep profile={profile} elig={elig} onBack={()=>setStep(3)} onReset={reset} user={user} />}
         </div>
       </div>
-      <ChatBot user={user} />
+      <ChatBot user={user} profile={profile} />
     </>
   );
 }

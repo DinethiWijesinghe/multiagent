@@ -1606,13 +1606,77 @@ def _extract_general_english_grade(text: str) -> str | None:
 def _extract_alevel_subjects_grades(text):
     """Return (subjects, grades) where subjects may be a dict when per-line
     subject-grade pairing succeeds (Official Statement format)."""
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
+
+    # Official Statement tables are often OCR'd in 3 vertical columns:
+    # SUBJECT names block, GRADE letters block, and DEFINITION block.
+    # Parse this region first to avoid picking legend letters (A/B/C/S/F)
+    # from the lower "Range of Marks" reference table.
+    table_subjects: list[str] = []
+    table_grades: list[str] = []
+    header_idx = -1
+    for idx, line in enumerate(lines):
+        up = line.upper()
+        if "SUBJECT" in up and "GRADE" in up:
+            header_idx = idx
+            break
+
+    if header_idx >= 0:
+        for line in lines[header_idx + 1:]:
+            up = line.upper()
+            if (
+                "Z-SCORE" in up
+                or "RANGE OF MARKS" in up
+                or "G.C.E." in up
+                or up.startswith("---")
+            ):
+                break
+
+            # Row-style OCR: "PHYSICS S" on the same line.
+            row_matched = False
+            for subject_name, subject_pattern in _ALEVEL_SUBJECT_MAP:
+                if re.search(subject_pattern, line, re.I):
+                    row_matched = True
+                    if subject_name not in table_subjects:
+                        table_subjects.append(subject_name)
+                    g_match = re.search(r"\b([ABCSF85])\b", up)
+                    g_norm = _normalize_alevel_grade_token(g_match.group(1) if g_match else None)
+                    if g_norm:
+                        table_grades.append(g_norm)
+                    break
+
+            if row_matched:
+                continue
+
+            # Column-style OCR: subjects listed first, grades listed as single-letter rows.
+            for subject_name, subject_pattern in _ALEVEL_SUBJECT_MAP:
+                if re.search(subject_pattern, line, re.I):
+                    if subject_name not in table_subjects:
+                        table_subjects.append(subject_name)
+                    break
+
+            # Keep compact single-grade lines only (e.g., "S", "C", "8", "5").
+            if re.fullmatch(r"[ABCSF85]", up):
+                g = _normalize_alevel_grade_token(up)
+                if g:
+                    table_grades.append(g)
+
+        # Strong signal for official table extraction.
+        if len(table_subjects) >= 2 and len(table_grades) >= len(table_subjects):
+            paired = {
+                subject: table_grades[idx]
+                for idx, subject in enumerate(table_subjects)
+                if idx < len(table_grades)
+            }
+            if len(paired) >= 2:
+                return paired, list(paired.values())
+
     subject_grade_pairs: dict[str, str] = {}  # per-line paired map
     subjects: list[str] = []
     grades: list[str] = []
 
     # Line-wise parsing helps when OCR outputs table rows as plain lines.
-    for raw_line in text.splitlines():
-        line = re.sub(r"\s+", " ", raw_line).strip()
+    for line in lines:
         if not line:
             continue
 
@@ -1653,7 +1717,14 @@ def _extract_alevel_subjects_grades(text):
                 subjects.append(subject_name)
 
     if not grades:
-        raw_grades = re.findall(r"\b(?:grade\s*[:\-]?\s*)?([ABCSF]|[85])(?:[+\-*])?\b", text, re.I)
+        # Avoid contaminating with A/B/C/S/F legend rows from the lower
+        # reference table section in Official Statement documents.
+        search_text = text
+        legend_split = re.search(r"\bRANGE\s+OF\s+MARKS\b", text, re.I)
+        if legend_split:
+            search_text = text[:legend_split.start()]
+
+        raw_grades = re.findall(r"\b(?:grade\s*[:\-]?\s*)?([ABCSF]|[85])(?:[+\-*])?\b", search_text, re.I)
         grades = [g for g in (_normalize_alevel_grade_token(x) for x in raw_grades) if g]
 
     return subjects, grades
@@ -1999,6 +2070,36 @@ def _looks_like_passport_text(text: str) -> bool:
     return score >= 2
 
 
+def _looks_like_pte_text(text: str) -> bool:
+    t = str(text or "").upper()
+    score = 0
+    if "PTE" in t:
+        score += 1
+    if "PEARSON" in t:
+        score += 1
+    if "COMMUNICATIVE" in t and "SKILL" in t:
+        score += 1
+    skill_hits = sum(1 for label in ("LISTENING", "READING", "SPEAKING", "WRITING") if label in t)
+    if skill_hits >= 2:
+        score += 1
+    return score >= 2
+
+
+def _looks_like_ielts_text(text: str) -> bool:
+    t = str(text or "").upper()
+    score = 0
+    if "IELTS" in t:
+        score += 1
+    if "TEST REPORT FORM" in t:
+        score += 1
+    if "BAND SCORE" in t:
+        score += 1
+    skill_hits = sum(1 for label in ("LISTENING", "READING", "WRITING", "SPEAKING") if label in t)
+    if skill_hits >= 2:
+        score += 1
+    return score >= 2
+
+
 def _normalize_passport_number(raw: str | None) -> str | None:
     if not raw:
         return None
@@ -2094,6 +2195,243 @@ def _extract_passport_from_mrz(text: str) -> dict[str, Any]:
     return result
 
 
+def _normalize_date_ddmmyyyy(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    m = re.search(r"\b(\d{2})[/-](\d{2})[/-](\d{4})\b", str(raw))
+    if not m:
+        return None
+    dd, mm, yyyy = m.group(1), m.group(2), m.group(3)
+    return f"{dd}/{mm}/{yyyy}"
+
+
+def _extract_passport_labeled_fields(text: str) -> dict[str, Any]:
+    """Extract passport fields from bilingual layouts where labels and values
+    are often split across adjacent lines."""
+    raw_lines = [re.sub(r"\s+", " ", ln).strip() for ln in str(text or "").splitlines() if ln.strip()]
+    lines = [ln.upper() for ln in raw_lines]
+
+    # Lines that are labels or metadata only, not candidate values.
+    label_markers = (
+        "SURNAME", "OTHER NAMES", "GIVEN", "NATIONAL STATUS", "NATIONALITY",
+        "DATE OF BIRTH", "DATE OF ISSUE", "DATE OF EXPIRY", "PASSPORT NO",
+        "PLACE OF BIRTH", "PROFESSION", "HOLDER", "SIGN", "AUTHORITY", "ID NO",
+    )
+
+    def _is_value_line(line: str) -> bool:
+        up = line.upper().strip()
+        if not up:
+            return False
+        if any(marker in up for marker in label_markers):
+            return False
+        return True
+
+    def _next_matching_value(label_re: str, value_re: str, max_lookahead: int = 4) -> str | None:
+        for i, line in enumerate(lines):
+            if not re.search(label_re, line, re.I):
+                continue
+
+            # Same-line capture first.
+            same = re.search(value_re, line, re.I)
+            if same:
+                return same.group(1).strip()
+
+            # Then look ahead a few lines for split label/value OCR output.
+            for j in range(i + 1, min(len(lines), i + 1 + max_lookahead)):
+                candidate = lines[j]
+                if not _is_value_line(candidate):
+                    continue
+                hit = re.search(value_re, candidate, re.I)
+                if hit:
+                    return hit.group(1).strip()
+        return None
+
+    surname = _next_matching_value(r"\bSURNAME\b", r"\b([A-Z][A-Z\s'-]{1,40})\b")
+    given_names = _next_matching_value(r"\b(?:OTHER\s*NAMES?|GIVEN\s*NAMES?)\b", r"\b([A-Z][A-Z\s'-]{2,70})\b")
+    nationality = _next_matching_value(r"\b(?:NATIONALITY|NATIONAL\s*STATUS)\b", r"\b([A-Z][A-Z\s]{2,40})\b")
+
+    dob = _next_matching_value(r"\b(?:DATE\s*OF\s*BIRTH|DOB)\b", r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
+    issue = _next_matching_value(r"\b(?:DATE\s*OF\s*ISSUE|ISSUED\s*DATE)\b", r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
+    expiry = _next_matching_value(r"\b(?:DATE\s*OF\s*EXPIRY|EXPIRY(?:\s*DATE)?)\b", r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b")
+
+    passport_no = _normalize_passport_number(
+        _next_matching_value(r"\bPASSPORT\s*(?:NO\.?|NUMBER)\b", r"\b([A-Z]\s?\d{7})\b")
+        or _f(r"\b([A-Z]\s?\d{7})\b", text)
+    )
+
+    parsed: dict[str, Any] = {
+        "surname": surname,
+        "given_names": given_names,
+        "passport_no": passport_no,
+        "nationality": nationality,
+        "dob": _normalize_date_ddmmyyyy(dob),
+        "date_of_issue": _normalize_date_ddmmyyyy(issue),
+        "expiry": _normalize_date_ddmmyyyy(expiry),
+    }
+    return parsed
+
+
+def _extract_pte_fields(text: str) -> dict[str, Any]:
+    """Extract PTE scores from report layouts where labels and values may be
+    separated across lines or shown as visual score badges."""
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in str(text or "").splitlines() if ln.strip()]
+    upper_lines = [ln.upper() for ln in lines]
+
+    def _valid_pte_score(num_txt: str | None) -> str | None:
+        if not num_txt:
+            return None
+        try:
+            value = int(num_txt)
+        except Exception:
+            return None
+        if 10 <= value <= 90:
+            return str(value)
+        return None
+
+    def _extract_near_label(label_pattern: str, lookahead: int = 4) -> str | None:
+        for i, line in enumerate(upper_lines):
+            if not re.search(label_pattern, line, re.I):
+                continue
+
+            same_line = re.search(r"\b([1-8]\d|90)\b", line)
+            if same_line:
+                parsed = _valid_pte_score(same_line.group(1))
+                if parsed:
+                    return parsed
+
+            for j in range(i + 1, min(len(upper_lines), i + 1 + lookahead)):
+                m = re.search(r"\b([1-8]\d|90)\b", upper_lines[j])
+                if m:
+                    parsed = _valid_pte_score(m.group(1))
+                    if parsed:
+                        return parsed
+        return None
+
+    # Primary direct extraction.
+    overall = (
+        _extract_near_label(r"\bOVERALL\s*SCORE\b")
+        or _extract_near_label(r"\bOVERALL\b")
+        or _f(r"\boverall\s*score\b[^0-9]{0,20}([1-8]\d|90)\b", text)
+    )
+    skills: dict[str, str | None] = {
+        "listening": _extract_near_label(r"\bLISTENING\b"),
+        "reading": _extract_near_label(r"\bREADING\b"),
+        "speaking": _extract_near_label(r"\bSPEAKING\b"),
+        "writing": _extract_near_label(r"\bWRITING\b"),
+    }
+
+    # Secondary pair parsing for flattened OCR text.
+    flattened = "\n".join(upper_lines)
+    for label, key in (("LISTENING", "listening"), ("READING", "reading"), ("SPEAKING", "speaking"), ("WRITING", "writing")):
+        if skills.get(key):
+            continue
+        m1 = re.search(rf"\b{label}\b[^0-9]{{0,20}}([1-8]\d|90)\b", flattened, re.I)
+        m2 = re.search(rf"\b([1-8]\d|90)\b[^\n]{{0,12}}\b{label}\b", flattened, re.I)
+        hit = m1.group(1) if m1 else (m2.group(1) if m2 else None)
+        if hit:
+            skills[key] = _valid_pte_score(hit)
+
+    # Keep strict ordering fallback for common score-badge layout if needed.
+    if not all(skills.values()):
+        score_bag = []
+        for ln in upper_lines:
+            for s in re.findall(r"\b([1-8]\d|90)\b", ln):
+                parsed = _valid_pte_score(s)
+                if parsed:
+                    score_bag.append(parsed)
+        # If Overall already known and we have at least 5 compact scores,
+        # use first 4 non-overall values as listening/reading/speaking/writing.
+        if overall and len(score_bag) >= 5:
+            non_overall = [s for s in score_bag if s != overall]
+            if len(non_overall) >= 4:
+                skills["listening"] = skills.get("listening") or non_overall[0]
+                skills["reading"] = skills.get("reading") or non_overall[1]
+                skills["speaking"] = skills.get("speaking") or non_overall[2]
+                skills["writing"] = skills.get("writing") or non_overall[3]
+
+    test_date = (
+        _f(r"\b(\d{1,2}[\s/-][A-Za-z]{3,9}[\s/-]20\d{2})\b", text)
+        or _f(r"\b(\d{2}[/-]\d{2}[/-]20\d{2})\b", text)
+    )
+
+    return {
+        "overall": _valid_pte_score(overall),
+        "listening": _valid_pte_score(skills.get("listening")),
+        "reading": _valid_pte_score(skills.get("reading")),
+        "speaking": _valid_pte_score(skills.get("speaking")),
+        "writing": _valid_pte_score(skills.get("writing")),
+        "test_date": test_date,
+    }
+
+
+def _extract_ielts_fields(text: str) -> dict[str, Any]:
+    """Extract IELTS TRF fields from boxed/line-split OCR layouts."""
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in str(text or "").splitlines() if ln.strip()]
+    upper_lines = [ln.upper() for ln in lines]
+
+    def _normalize_band(raw: str | None) -> str | None:
+        if not raw:
+            return None
+        s = str(raw).strip()
+
+        # OCR often drops the decimal point, e.g. 90 -> 9.0, 85 -> 8.5.
+        if re.fullmatch(r"\d{2}", s):
+            n = int(s)
+            if 0 <= n <= 90 and n % 5 == 0:
+                return f"{n / 10:.1f}"
+
+        if re.fullmatch(r"\d", s):
+            return f"{int(s):.1f}"
+        if re.fullmatch(r"\d(?:\.0|\.5)", s):
+            return s
+        return None
+
+    def _extract_near_label(label_pattern: str, lookahead: int = 4) -> str | None:
+        for i, line in enumerate(upper_lines):
+            if not re.search(label_pattern, line, re.I):
+                continue
+
+            same_line = re.search(r"\b(\d(?:\.0|\.5)?|\d{2})\b", line)
+            if same_line:
+                b = _normalize_band(same_line.group(1))
+                if b is not None:
+                    return b
+
+            for j in range(i + 1, min(len(upper_lines), i + 1 + lookahead)):
+                m = re.search(r"\b(\d(?:\.0|\.5)?|\d{2})\b", upper_lines[j])
+                if m:
+                    b = _normalize_band(m.group(1))
+                    if b is not None:
+                        return b
+        return None
+
+    overall = _extract_near_label(r"\bOVERALL\s*(?:BAND\s*SCORE)?\b")
+    listening = _extract_near_label(r"\bLISTENING\b")
+    reading = _extract_near_label(r"\bREADING\b")
+    writing = _extract_near_label(r"\bWRITING\b")
+    speaking = _extract_near_label(r"\bSPEAKING\b")
+
+    test_date = (
+        _f(r"\b(\d{1,2}[\s/-][A-Za-z]{3,9}[\s/-]20\d{2})\b", text)
+        or _f(r"\b(\d{2}[/-]\d{2}[/-]20\d{2})\b", text)
+    )
+
+    trf = (
+        _f(r"(?:test\s*report\s*form\s*number|trf\s*(?:number|no\.?))[^A-Z0-9]{0,20}([A-Z0-9'\-]{6,})", text)
+        or _f(r"\b([A-Z0-9]{2,5}\/[A-Z0-9]{2,20})\b", text)
+    )
+
+    return {
+        "overall": overall,
+        "listening": listening,
+        "reading": reading,
+        "writing": writing,
+        "speaking": speaking,
+        "test_date": test_date,
+        "trf": trf.strip("'") if isinstance(trf, str) else trf,
+    }
+
+
 def _extract(doc_type, text):
     t = text.lower()
     if doc_type == "alevel":
@@ -2187,14 +2525,15 @@ def _extract(doc_type, text):
             "gpa":        _f(r"gpa[\s:]+([0-9.]+)", t),
         }
     elif doc_type == "ielts":
+        parsed = _extract_ielts_fields(text)
         return {
-            "overall":   _f(r"overall[\s\w]{0,20}?([0-9]\.[05])", t),
-            "listening": _f(r"listening[\s:]+([0-9]\.[05])", t),
-            "reading":   _f(r"reading[\s:]+([0-9]\.[05])", t),
-            "writing":   _f(r"writing[\s:]+([0-9]\.[05])", t),
-            "speaking":  _f(r"speaking[\s:]+([0-9]\.[05])", t),
-            "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
-            "trf":       _f(r"(?:trf|reference)[\s:]+([A-Z0-9\-]+)", t),
+            "overall":   parsed.get("overall") or _f(r"overall[\s\w]{0,20}?([0-9]\.[05])", t),
+            "listening": parsed.get("listening") or _f(r"listening[\s:]+([0-9]\.[05])", t),
+            "reading":   parsed.get("reading") or _f(r"reading[\s:]+([0-9]\.[05])", t),
+            "writing":   parsed.get("writing") or _f(r"writing[\s:]+([0-9]\.[05])", t),
+            "speaking":  parsed.get("speaking") or _f(r"speaking[\s:]+([0-9]\.[05])", t),
+            "test_date": parsed.get("test_date") or _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
+            "trf":       parsed.get("trf") or _f(r"(?:trf|reference)[\s:]+([A-Z0-9\-]+)", t),
         }
     elif doc_type == "toefl":
         return {
@@ -2206,13 +2545,14 @@ def _extract(doc_type, text):
             "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
         }
     elif doc_type == "pte":
+        parsed = _extract_pte_fields(text)
         return {
-            "overall":   _f(r"overall[\s:]+(\d{2,3})", t),
-            "listening": _f(r"listening[\s:]+(\d{2,3})", t),
-            "reading":   _f(r"reading[\s:]+(\d{2,3})", t),
-            "writing":   _f(r"writing[\s:]+(\d{2,3})", t),
-            "speaking":  _f(r"speaking[\s:]+(\d{2,3})", t),
-            "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
+            "overall":   parsed.get("overall") or _f(r"overall[\s:]+(\d{2,3})", t),
+            "listening": parsed.get("listening") or _f(r"listening[\s:]+(\d{2,3})", t),
+            "reading":   parsed.get("reading") or _f(r"reading[\s:]+(\d{2,3})", t),
+            "writing":   parsed.get("writing") or _f(r"writing[\s:]+(\d{2,3})", t),
+            "speaking":  parsed.get("speaking") or _f(r"speaking[\s:]+(\d{2,3})", t),
+            "test_date": parsed.get("test_date") or _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
         }
     elif doc_type == "passport":
         parsed = {
@@ -2239,6 +2579,13 @@ def _extract(doc_type, text):
             ),
             "mrz": _f(r"(P[<A-Z]{0,2}LKA[A-Z<]{12,})", text),
         }
+
+        # Merge line-aware extraction for bilingual passport layouts where
+        # labels and values are often split across separate lines.
+        labeled = _extract_passport_labeled_fields(text)
+        for key, value in labeled.items():
+            if not parsed.get(key) and value:
+                parsed[key] = value
 
         mrz_fallback = _extract_passport_from_mrz(text)
         for key, value in mrz_fallback.items():
@@ -4604,9 +4951,22 @@ async def ocr_endpoint(
             detected, final_conf, method = ml_label, ml_conf, "ml"
 
         # Heuristic rescue for passports: OCR often captures MRZ and key fields,
-        # but ML confidence may be low on noisy mobile photos.
-        if doc_type == "auto" and detected != "passport" and _looks_like_passport_text(text) and final_conf < 0.75:
-            detected, method = "passport", "heuristic_passport_fallback"
+        # but ML confidence may be low or misdirected on noisy mobile photos.
+        has_passport_mrz = bool(re.search(r"P[<A-Z]{0,2}LKA", text.upper()))
+        if doc_type == "auto" and detected != "passport":
+            if has_passport_mrz or (_looks_like_passport_text(text) and final_conf < 0.75):
+                detected, method = "passport", "heuristic_passport_fallback"
+
+        # Heuristic rescue for PTE reports: score-circle layouts and low OCR
+        # confidence can mislead ML despite clear Pearson/PTE signatures.
+        if doc_type == "auto" and detected != "pte":
+            if _looks_like_pte_text(text) and final_conf < 0.78:
+                detected, method = "pte", "heuristic_pte_fallback"
+
+        # Heuristic rescue for IELTS TRF layouts on noisy scans.
+        if doc_type == "auto" and detected != "ielts":
+            if _looks_like_ielts_text(text) and final_conf < 0.80:
+                detected, method = "ielts", "heuristic_ielts_fallback"
 
         # Heuristic rescue for degree certificates on noisy scans.
         if doc_type == "auto" and final_conf < 0.75:

@@ -27,7 +27,7 @@ _ROOT      = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 _DB_PATH   = os.path.join(_ROOT, "data", "databases", "universities_database.json")
 _MODEL_DIR = os.path.join(_ROOT, "data", "ml_models")
 
-# ─── Feature names ────────────────────────────────────────────────────────────
+# ─── Feature names - input of RF────────────────────────────────────────────────────────────
 
 FEATURE_NAMES = [
     "student_gpa", "student_ielts", "student_toefl",
@@ -41,7 +41,7 @@ FEATURE_NAMES = [
 
 def _generate_training_data(n: int = 2000):
     np.random.seed(42)
-    # (min_gpa, min_ielts, min_toefl, qs_rank, tuition_usd)
+    # (min_gpa, min_ielts, min_toefl, qs_rank, tuition_usd - model learn 13 features - input ML)
     unis = [
         (3.9,7.5,110,2,45000),(3.9,7.5,110,3,45000),(3.7,6.5,96,6,50000),
         (3.7,6.5,92,9,40000),(3.5,6.5,92,27,36000),(3.3,6.5,90,32,30000),
@@ -141,7 +141,6 @@ class CuratedDatabaseManager:
             stats["by_country"][country] = len(unis)
             stats["total"] += len(unis)
         return stats
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ML ENGINE — Random Forest
