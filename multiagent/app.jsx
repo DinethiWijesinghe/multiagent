@@ -2954,10 +2954,11 @@ export default function App(){
     if(!normalized.documents || !Object.keys(normalized.documents).length) return;
     const eligResult=assessEligibility(profile,normalized);
     setDocData(normalized);setElig(eligResult);setStep(3);
+    saveUserState(user?.email, {step:3,profile,docData:normalized,elig:eligResult}, user?.token).catch(()=>{});
   };
   const reset=()=>{setStep(1);setProfile({});setDocData({});setElig(null);};
   const logout=async()=>{
-    if(user?.email && stateReady){
+    if(user?.email){
       const latestState = { step, profile, docData, elig };
       await saveUserState(user.email, latestState, user?.token).catch(()=>{});
     }
@@ -2997,10 +2998,13 @@ export default function App(){
   },[user?.email]);
 
   useEffect(()=>{
-    if(!user?.email || !stateReady) return;
-    const payload = { step, profile, docData, elig };
-    saveUserState(user.email, payload, user?.token).catch(()=>{});
-  },[user?.email,stateReady,step,profile,docData,elig]);
+    if(!user?.email) return;
+    const saveDelay = setTimeout(()=>{
+      const payload = { step, profile, docData, elig };
+      saveUserState(user.email, payload, user?.token).catch(()=>{});
+    }, 500);
+    return ()=>clearTimeout(saveDelay);
+  },[user?.email,step,profile,docData,elig]);
 
   if(!user) return <><style>{STYLES}</style><AuthPage onLogin={u=>{setUser(u);setProfile(p=>({...p,email:u.email}));}} /></>;
 
@@ -3028,7 +3032,7 @@ export default function App(){
             {STEPS.map(s=>(<div key={s.num} className={`step-seg${step>s.num?" done":step===s.num?" active":""}`}><div className="step-circle">{step>s.num?"✓":s.num}</div><div className="step-name">{s.name}</div></div>))}
           </div>
           {step>1&&<UserCard profile={profile} user={user} />}
-          {step===1&&<ProfileStep data={profile} onNext={d=>{setProfile(d);setStep(2);}} user={user} />}
+          {step===1&&<ProfileStep data={profile} onNext={d=>{setProfile(d);setStep(2);saveUserState(user?.email,{step:2,profile:d,docData,elig},user?.token).catch(()=>{});}} user={user} />}
           {step===2&&<DocumentStep profile={profile} docData={docData} onNext={handleDoc} onBack={()=>setStep(1)} user={user} />}
           {step===3&&elig&&<EligibilityStep elig={elig} docData={docData} profile={profile} onNext={()=>setStep(4)} onBack={()=>setStep(2)} />}
           {step===3&&!elig&&<div className="panel"><Alert type="error">Eligibility data missing. Go back and re-submit your document.</Alert><div className="btn-row btn-row-end" style={{marginTop:"1rem"}}><button className="btn btn-ghost" onClick={()=>setStep(2)}>← Back to Documents</button></div></div>}
