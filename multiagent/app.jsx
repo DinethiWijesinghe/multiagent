@@ -1488,12 +1488,16 @@ function ExtractedDisplay({data,confidence,ocrEngine}){
               <tbody>{main.map(([s,g])=>(<tr key={s}><td>{s}</td><td><span className={`grade-chip gchip-${g}`}>{g}</span></td></tr>))}</tbody>
             </table>
           </>}
-          {spec.length>0&&<>
-            <div className="slabel">General English</div>
-            <table className="subjects-table">
-              <tbody>{spec.map(([s,g])=>(<tr key={s}><td>{s}</td><td><span className={`grade-chip gchip-${g}`}>{g}</span></td></tr>))}</tbody>
-            </table>
-          </>}
+          {/* General English section: show extracted grade or "not in document" row */}
+          <div className="slabel">General English</div>
+          <table className="subjects-table">
+            <tbody>
+              {spec.length>0
+                ? spec.map(([s,g])=>(<tr key={s}><td>{s}</td><td><span className={`grade-chip gchip-${g}`}>{g}</span></td></tr>))
+                : <tr><td style={{color:"var(--text3)",fontStyle:"italic"}}>General English</td><td><span style={{color:"var(--text3)",fontSize:".75rem"}}>— Not in document (enter manually below)</span></td></tr>
+              }
+            </tbody>
+          </table>
           {!main.length&&<Alert type="warn">No subject grades extracted. Please verify manually.</Alert>}
           {/* NOTE: No english_proficiency block here. Upload IELTS/TOEFL/PTE as a separate document. */}
         </>
@@ -1694,6 +1698,7 @@ function ALevelManualForm({stream,onSubmit,onBack}){
   const streamOptions=Object.keys(STREAM_SUBJECTS);
   const [selectedStream,setSelectedStream]=useState(streamOptions.includes(stream)?stream:streamOptions[0]);
   const [grades,setGrades]=useState({});
+  const [geGrade,setGeGrade]=useState("");  // General English — optional
   const [fullName,setFullName]=useState("");
   const [year,setYear]=useState(String(CURRENT_YEAR-1));
   const [indexNo,setIndexNo]=useState("");
@@ -1710,6 +1715,7 @@ function ALevelManualForm({stream,onSubmit,onBack}){
     // ✕ english_proficiency NOT included — must be uploaded as a separate document
     const subjectMap={};
     subjects.forEach((subject)=>{subjectMap[subject]=grades[subject]||"";});
+    if(geGrade) subjectMap["General English"]=geGrade;
     const cleanName=fullName.trim();
     const cleanYear=String(year).trim();
     const cleanIndex=indexNo.trim();
@@ -1726,6 +1732,7 @@ function ALevelManualForm({stream,onSubmit,onBack}){
       subject_grade_map:subjectMap,
       subjects:subjectMap,
       grades:Object.values(subjectMap),
+      general_english_grade:geGrade||null,
     });
   };
   return(
@@ -1736,8 +1743,17 @@ function ALevelManualForm({stream,onSubmit,onBack}){
         <div className="field"><label className="flabel">Year of Examination <span className="req">*</span></label><select value={year} onChange={e=>setYear(e.target.value)}><option value="">— Select —</option>{Array.from({length:15},(_,i)=>CURRENT_YEAR-i).map((y)=><option key={y}>{y}</option>)}</select></div>
         <div className="field"><label className="flabel">Stream <span className="req">*</span></label><select value={selectedStream} onChange={e=>setSelectedStream(e.target.value)}>{streamOptions.map((s)=><option key={s}>{s}</option>)}</select></div>
       </div>
-      <div className="slabel" style={{marginTop:"1rem"}}>Subject Grades</div>
-      {subjects.map(sub=>(<div key={sub} style={{marginBottom:"1.1rem"}}><div className="flabel" style={{marginBottom:".4rem"}}>{sub}</div><div className="grade-row">{["A","B","C","S","F"].map(g=>(<button key={g} className={`gpill${grades[sub]===g?` g${g}`:""}`} onClick={()=>setGrades(p=>({...p,[sub]:g}))}>{g}</button>))}</div></div>))}
+      <div className="slabel" style={{marginTop:"1rem"}}>Subject Grades <span style={{fontWeight:400,fontSize:".75rem",color:"var(--text3)"}}>(3 main subjects — required)</span></div>
+      {subjects.map(sub=>(<div key={sub} style={{marginBottom:"1.1rem"}}><div className="flabel" style={{marginBottom:".4rem"}}>{sub} <span className="req">*</span></div><div className="grade-row">{["A","B","C","S","F"].map(g=>(<button key={g} className={`gpill${grades[sub]===g?` g${g}`:""}`} onClick={()=>setGrades(p=>({...p,[sub]:g}))}>{g}</button>))}</div></div>))}
+      <div className="slabel" style={{marginTop:"1rem"}}>General English <span style={{fontWeight:400,fontSize:".75rem",color:"var(--text3)"}}>(optional — not printed on all official statements)</span></div>
+      <div style={{marginBottom:"1.1rem"}}>
+        <div className="flabel" style={{marginBottom:".4rem"}}>General English Grade</div>
+        <div className="grade-row">
+          {["A","B","C","S","F"].map(g=>(<button key={g} className={`gpill${geGrade===g?` g${g}`:""}`} onClick={()=>setGeGrade(p=>p===g?"":g)}>{g}</button>))}
+          {geGrade&&<button className="btn btn-ghost btn-sm" style={{marginLeft:".5rem",fontSize:".7rem"}} onClick={()=>setGeGrade("")}>Clear</button>}
+        </div>
+        {!geGrade&&<div style={{fontSize:".72rem",color:"var(--text3)",marginTop:".3rem"}}>Leave blank if not available on your document.</div>}
+      </div>
       <div className="fgrid" style={{marginTop:"1rem"}}>
         <div className="field"><label className="flabel">Index Number <span className="req">*</span></label><input value={indexNo} onChange={e=>setIndexNo(e.target.value)} /></div>
         <div className="field"><label className="flabel">Z-Score <span className="req">*</span></label><input value={zScore} onChange={e=>setZScore(e.target.value)} placeholder="e.g. +0.3386" /></div>

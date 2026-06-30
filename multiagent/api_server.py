@@ -1586,8 +1586,11 @@ def _extract_general_english_grade(text: str) -> str | None:
 
 
 def _extract_alevel_subjects_grades(text):
-    subjects = []
-    grades = []
+    """Return (subjects, grades) where subjects may be a dict when per-line
+    subject-grade pairing succeeds (Official Statement format)."""
+    subject_grade_pairs: dict[str, str] = {}  # per-line paired map
+    subjects: list[str] = []
+    grades: list[str] = []
 
     # Line-wise parsing helps when OCR outputs table rows as plain lines.
     for raw_line in text.splitlines():
@@ -1614,6 +1617,16 @@ def _extract_alevel_subjects_grades(text):
         grade = _normalize_alevel_grade_token(grade_match.group(1) if grade_match else None)
         if grade:
             grades.append(grade)
+            # Build per-line paired map for Official Statement format
+            # (each row has subject name + grade on the same line).
+            if matched_subject not in subject_grade_pairs:
+                subject_grade_pairs[matched_subject] = grade
+
+    # If per-line pairing produced ≥2 complete pairs, return as dict.
+    # This covers Official Statement documents where the table has subject
+    # name and grade on the same OCR line.
+    if len(subject_grade_pairs) >= 2:
+        return subject_grade_pairs, list(subject_grade_pairs.values())
 
     # Fallback scan for compact OCR text where lines are merged.
     if not subjects:
@@ -1825,12 +1838,32 @@ def _normalize_alevel_name_ocr(name: str | None) -> str | None:
     return " ".join(normalized_tokens)
 
 
+# Words that appear in institutional headings, addresses and country names;
+# must NOT be mistaken for a person's name.
+_NAME_HEURISTIC_EXCLUSIONS = frozenset({
+    "DEPARTMENT", "EXAMINATION", "RESULT", "GENERAL", "SCHEDULE",
+    "REPUBLIC", "DEMOCRATIC", "SOCIALIST", "LANKA", "SRI",
+    "CERTIFICATE", "OFFICIAL", "STATEMENT", "EVALUATION", "TESTING",
+    "SERVICE", "COLOMBO", "NATIONAL", "GOVERNMENT", "MINISTRY",
+    "UNIVERSITY", "INSTITUTE", "COLLEGE", "BOARD", "COMMISSION",
+})
+
+
 def _extract_alevel_name(text: str) -> str | None:
-    """Extract candidate full name from Results Schedule layouts."""
-    # Common official-statement format: "Name in Full : SURNAME ..."
-    direct = _f(r"name\s*in\s*full\s*[:\-]\s*([A-Z][A-Z .]{5,})(?:\n|$)", text)
-    if direct:
-        return _normalize_alevel_name_ocr(direct.strip(" .,"))
+    """Extract candidate full name from Results Schedule / Official Statement."""
+    # Primary: official-statement "Name in Full : FULL NAME" on one line.
+    # Allow the name to continue until end-of-line or a newline; do NOT
+    # require the anchor immediately after the name so that trailing OCR
+    # noise on the same line is tolerated.
+    m = re.search(
+        r"name\s*in\s*full\s*[:\-]?\s*([A-Z][A-Z .]{5,})",
+        text, re.I,
+    )
+    if m:
+        # Trim trailing digits / punctuation that are not part of the name.
+        raw = re.sub(r"[^A-Za-z .]\s*$", "", m.group(1)).strip()
+        if len(raw) >= 6:
+            return _normalize_alevel_name_ocr(raw.strip(" .,"))
 
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
 
@@ -1848,24 +1881,22 @@ def _extract_alevel_name(text: str) -> str | None:
     for line in lines:
         line_up = line.upper()
         # Heuristic: all-caps person-like line, not a heading label.
+        words = line_up.split()
         if (
             re.fullmatch(r"[A-Z][A-Z\s.]{7,}", line_up)
-            and "DEPARTMENT" not in line_up
-            and "EXAMINATION" not in line_up
-            and "RESULT" not in line_up
-            and "GENERAL" not in line_up
-            and "SCHEDULE" not in line_up
+            and len(words) >= 2
+            and not _NAME_HEURISTIC_EXCLUSIONS.intersection(words)
         ):
-            tokens = [tok for tok in line_up.split() if len(tok) >= 2]
-            if len(tokens) >= 2:
-                return _normalize_alevel_name_ocr(line_up.strip(" .,"))
+            return _normalize_alevel_name_ocr(line_up.strip(" .,"))
     return None
 
 
 def _extract_alevel_index_number(text: str) -> str | None:
     return (
         _f(r"(?:index\s*(?:number|no\.?))\s*[:\-]?\s*([0-9]{5,10})", text)
-        or _f(r"\bindex\b[^0-9]{0,20}([0-9]{5,10})", text)
+        or _f(r"\bindex\b[^0-9\n]{0,30}([0-9]{5,10})", text)
+        # Sri Lanka A/L index numbers are exactly 7 digits; last resort.
+        or _f(r"(?:^|\D)([0-9]{7})(?:\D|$)", text)
     )
 
 
@@ -1953,8 +1984,30 @@ def _extract(doc_type, text):
         ]
         schedule_map_reliable = len(non_generic_schedule_keys) >= 2
 
-        if schedule_map and (schedule_map_reliable or not subjects):
-            # Prefer table-aligned extraction for Results Schedule scans.
+        # When line-based extraction already produced per-line subject-grade
+        # pairs (dict), trust those — they come from Official Statement rows
+        # where each line has both the subject name and its grade.  Only
+        # override with the schedule table if it also used real subject codes
+        # (not positional fallback), because positional fallback may assign
+        # grades in the wrong order for this document layout.
+        line_paired = isinstance(subjects, dict) and len(subjects) >= 2
+        schedule_has_codes = bool(schedule_table.get("subject_codes"))
+
+        if line_paired:
+            # Merge any extra entries from schedule (e.g. General English)
+            # but never overwrite the per-line paired results.
+            for k, v in schedule_map.items():
+                if k not in subjects:
+                    subjects[k] = v
+            grades = list(subjects.values())
+        elif schedule_map and (schedule_map_reliable or not subjects) and schedule_has_codes:
+            # Prefer table-aligned extraction for Results Schedule scans
+            # that used actual subject codes.
+            subjects = schedule_map
+            grades = list(schedule_map.values())
+        elif schedule_map and (schedule_map_reliable or not subjects):
+            # Positional fallback from schedule table — still use it when
+            # line-based extraction found nothing.
             subjects = schedule_map
             grades = list(schedule_map.values())
 
