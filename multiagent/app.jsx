@@ -867,12 +867,12 @@ async function fetchBackendChatReply(message, token, messages, profile, timeoutM
   };
 }
 
-// const QUICK_REPLIES = [
-//   // "Best unis for CS in UK?",
-//   // "IELTS requirements?",
-//   // "Scholarships for Sri Lankans",
-//   // "Cost of living in Singapore",
-// ];
+const QUICK_REPLIES = [
+  // "Best unis for CS in UK?",
+  // "IELTS requirements?",
+  "Scholarships for Sri Lankans",
+  // "Cost of living in Singapore",
+];
 
 const FACTOR_QUICK_REPLIES = [
   { label: "Financial", text: "My family budget is limited. Which universities are affordable with scholarship options?" },
