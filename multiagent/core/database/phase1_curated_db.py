@@ -105,9 +105,9 @@ class CuratedDatabaseManager:
             with open(self.db_path, "r", encoding="utf-8") as f:
                 self.database = json.load(f)
             total = sum(len(v) for v in self.database.values())
-            print(f"✅ Phase1 DB: Loaded {total} universities from {self.db_path}")
+            print(f"Phase1 DB: Loaded {total} universities from {self.db_path}")
         except FileNotFoundError:
-            print(f"⚠️  Phase1 DB: {self.db_path} not found — starting empty")
+            print(f" Phase1 DB: {self.db_path} not found — starting empty")
             self.database = {}
         except json.JSONDecodeError as e:
             logger.error("Phase1 DB corrupt: %s", e)
@@ -117,7 +117,7 @@ class CuratedDatabaseManager:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         with open(self.db_path, "w", encoding="utf-8") as f:
             json.dump(self.database, f, indent=2, ensure_ascii=False)
-        print(f"✅ Phase1 DB: Saved to {self.db_path}")
+        print(f" Phase1 DB: Saved to {self.db_path}")
 
     def get_universities_by_country(self, country: str) -> List[Dict]:
         return self.database.get(country, [])
@@ -321,7 +321,7 @@ class Phase1:
         self.ml = Phase1MLEngine()
         if not self.ml.trained:
             self.ml.train(verbose=False)
-        print("✅ Phase1 ready (DB + ML)")
+        print(" Phase1 ready (DB + ML)")
 
     def analyse_student(self, student: dict, country: str = None) -> dict:
         """
@@ -386,4 +386,4 @@ if __name__ == "__main__":
         s = u["ml_score"]
         print(f"  #{i} {u['name']:<38} {s['percentage']:>5}  [{s['tier']}]")
 
-    print("\n✓ Phase 1 test complete")
+    print("\n Phase 1 test complete")

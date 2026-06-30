@@ -256,14 +256,14 @@ class UpdateScheduler:
         self._running           = False
         self._run_log: list     = self._load_log()
         self._try_import_apscheduler()
-        print("ℹ️  Phase4 UpdateScheduler ready")
-        print(f"   APScheduler : {'✅ available' if self._apscheduler_avail else '⚠️  manual-only mode'}")
+        print("Phase4 UpdateScheduler ready")
+        print(f"   APScheduler : {' available' if self._apscheduler_avail else '⚠️  manual-only mode'}")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self) -> bool:
         if not self._apscheduler_avail:
-            print("ℹ️  Phase4: pip install apscheduler for automatic updates")
+            print("  Phase4: pip install apscheduler for automatic updates")
             return False
         if self._running:
             return True
@@ -275,7 +275,7 @@ class UpdateScheduler:
             self._scheduler.add_job(self._monthly_task, "cron", day=1,   hour=4,  minute=0, id="monthly", replace_existing=True)
             self._scheduler.start()
             self._running = True
-            print("✅ Phase4: Scheduler started (Asia/Colombo timezone)")
+            print(" Phase4: Scheduler started (Asia/Colombo timezone)")
             for job in self._scheduler.get_jobs():
                 print(f"   [{job.id}] next: {job.next_run_time}")
             return True
@@ -317,19 +317,19 @@ class UpdateScheduler:
 
     def _daily_task(self) -> Dict:
         start, details, status = datetime.now(), [], "success"
-        print(f"\n⏰ Phase4 DAILY — {start:%Y-%m-%d %H:%M:%S}")
+        print(f"\n Phase4 DAILY — {start:%Y-%m-%d %H:%M:%S}")
         try:
             rates = self.manager.api_integrator.fetch_exchange_rates()
             for c in ["GBP","SGD","AUD"]:
                 if c in rates: details.append(f"1 USD = {rates[c]:.4f} {c}")
-            print(f"  ✅ Rates: {', '.join(details)}")
+            print(f"   Rates: {', '.join(details)}")
         except Exception as exc:
             details.append(f"ERROR: {exc}"); status = "error"
         return self._log_run("daily", status, start, details)
 
     def _weekly_task(self) -> Dict:
         start, details, status = datetime.now(), [], "success"
-        print(f"\n⏰ Phase4 WEEKLY — {start:%Y-%m-%d %H:%M:%S}")
+        print(f"\n Phase4 WEEKLY — {start:%Y-%m-%d %H:%M:%S}")
         try:
             total_verified = 0
             for country in ["UK","Singapore","Australia"]:
@@ -348,14 +348,14 @@ class UpdateScheduler:
             for country in ["UK","Singapore","Australia"]:
                 meta = self.manager.api_integrator.fetch_country_metadata(country)
                 if meta: details.append(f"{country} meta OK")
-            print(f"  ✅ Hipo verified: {total_verified}")
+            print(f"   Hipo verified: {total_verified}")
         except Exception as exc:
             details.append(f"ERROR: {exc}"); status = "error"
         return self._log_run("weekly", status, start, details)
 
     def _monthly_task(self) -> Dict:
         start, details, status = datetime.now(), [], "success"
-        print(f"\n⏰ Phase4 MONTHLY — {start:%Y-%m-%d %H:%M:%S}")
+        print(f"\n Phase4 MONTHLY — {start:%Y-%m-%d %H:%M:%S}")
         try:
             backup = self._create_backup("monthly_auto")
             details.append(f"Backup: {os.path.basename(backup)}")
@@ -366,7 +366,7 @@ class UpdateScheduler:
             rates = self.manager.api_integrator.fetch_exchange_rates()
             details.append(f"Rates: {len(rates)} currencies")
             self.manager.db_manager.save_database()
-            print("  ✅ Monthly pipeline complete")
+            print("   Monthly pipeline complete")
         except Exception as exc:
             details.append(f"ERROR: {exc}"); status = "error"
         return self._log_run("monthly", status, start, details)
@@ -399,7 +399,7 @@ class UpdateScheduler:
                    "duration_sec": round(elapsed,2), "details": details}
         self._run_log.append(entry)
         self._save_log()
-        print(f"  {'✅' if status=='success' else '❌'} [{task}] {elapsed:.1f}s — {status}")
+        print(f"  {'' if status=='success' else '❌'} [{task}] {elapsed:.1f}s — {status}")
         return entry
 
     def _load_log(self) -> list:
@@ -445,7 +445,7 @@ class Phase4:
         if not self.ml.trained:
             self.ml.train(verbose=False)
         self.scheduler = UpdateScheduler(manager) if manager else None
-        print("✅ Phase4 ready (Scheduler + ML)")
+        print(" Phase4 ready (Scheduler + ML)")
 
     def start(self): return self.scheduler.start() if self.scheduler else False
     def stop(self):  self.scheduler.stop()           if self.scheduler else None
@@ -470,7 +470,7 @@ if __name__ == "__main__":
         ("monthly", 720, "30 days due"),
     ]:
         d = p4.ml.should_run_task(task, hours)
-        print(f"  {'▶ RUN' if d['run'] else '⏸ SKIP'}  [{task:<7}] {hours:>4}h  "
+        print(f"  {' RUN' if d['run'] else '⏸ SKIP'}  [{task:<7}] {hours:>4}h  "
               f"P={d['probability_changed']:.2f}  [{d['priority']}]  {desc}")
 
     print("\n--- Optimal Schedule ---")

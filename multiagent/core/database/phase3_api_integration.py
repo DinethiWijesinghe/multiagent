@@ -485,7 +485,7 @@ class Phase3:
         self.ml  = Phase3MLEngine()
         if not self.ml.trained:
             self.ml.train(verbose=False)
-        print("✅ Phase3 ready (API + ML)")
+        print(" Phase3 ready (API + ML)")
 
     def enrich_and_forecast(self, universities: List[Dict],
                              country: str) -> dict:

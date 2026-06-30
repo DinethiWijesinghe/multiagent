@@ -887,7 +887,10 @@ def _run_easyocr_engine(image_path):
         beamWidth=3,
     )
 
-    filtered = [(bbox, t, c) for (bbox, t, c) in results if t.strip() and c > 0.25]
+    # Keep lower-confidence tokens for ornate certificate fonts.
+    filtered = [(bbox, t, c) for (bbox, t, c) in results if t.strip() and c > 0.08]
+    if not filtered:
+        filtered = [(bbox, t, c) for (bbox, t, c) in results if t.strip()]
     confs = [c for (_bbox, _t, c) in filtered]
 
     # Keep approximate line structure so table parsers can work.
@@ -922,43 +925,58 @@ def _run_tesseract(image_path, doc_type_hint="auto"):
     # Convert to grayscale if needed
     if len(gray.shape) == 3:
         gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
-    # Improve contrast
-    gray = cv2.equalizeHist(gray)
-    # Otsu threshold
-    gray = cv2.threshold(
-        gray,
-        0,
+    eq = cv2.equalizeHist(gray)
+    otsu = cv2.threshold(eq, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    adaptive = cv2.adaptiveThreshold(
+        eq,
         255,
-        cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )[1]
-    config = (
-        "--oem 3 "
-        "--psm 6 "
-        "-l eng "
-        "-c preserve_interword_spaces=1"
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
     )
-    text = pytesseract.image_to_string(
-        gray,
-        config=config
-    )
-    data = pytesseract.image_to_data(
-        gray,
-        config=config,
-        output_type=pytesseract.Output.DICT
-    )
-    confs = []
-    for c in data["conf"]:
-        try:
-            c = float(c)
-            if c > 0:
-                confs.append(c)
-        except:
-            pass
-    confidence = sum(confs)/len(confs)/100 if confs else 0
+
+    preset_key, base_config = _tesseract_config_for_doc(doc_type_hint)
+    config_candidates = [
+        ("base", base_config + " -l eng -c preserve_interword_spaces=1"),
+        ("sparse", "--oem 3 --psm 11 -l eng -c preserve_interword_spaces=1"),
+        ("single_block", "--oem 3 --psm 6 -l eng -c preserve_interword_spaces=1"),
+    ]
+    image_candidates = [("otsu", otsu), ("adaptive", adaptive), ("gray", gray)]
+
+    best_text = ""
+    best_conf = 0.0
+    best_meta = f"{preset_key}:none"
+
+    for img_name, candidate_img in image_candidates:
+        for cfg_name, config in config_candidates:
+            try:
+                text = pytesseract.image_to_string(candidate_img, config=config)
+                data = pytesseract.image_to_data(candidate_img, config=config, output_type=pytesseract.Output.DICT)
+                confs = []
+                for c in data.get("conf", []):
+                    try:
+                        c_val = float(c)
+                        if c_val > 0:
+                            confs.append(c_val)
+                    except Exception:
+                        continue
+                confidence = (sum(confs) / len(confs) / 100) if confs else 0.0
+
+                # Prefer richer text; use confidence as tie-breaker.
+                current_len = len((text or "").strip())
+                best_len = len(best_text.strip())
+                if current_len > best_len + 25 or (abs(current_len - best_len) <= 25 and confidence > best_conf):
+                    best_text = text or ""
+                    best_conf = confidence
+                    best_meta = f"{preset_key}:{img_name}:{cfg_name}"
+            except Exception:
+                continue
+
     print("\n========== OCR TEXT ==========\n")
-    print(text)
+    print(best_text)
     print("\n==============================\n")
-    return _correct(text), confidence, "tesseract"
+    return _correct(best_text), best_conf, best_meta
     # import pytesseract
     # gray = _preprocess(image_path)
     # preset_key, config = _tesseract_config_for_doc(doc_type_hint)
@@ -1967,6 +1985,115 @@ def _extract_alevel_stream(text: str, subjects: Any, stream_hint: str | None = N
     return None
 
 
+def _looks_like_passport_text(text: str) -> bool:
+    t = str(text or "").upper()
+    score = 0
+    if "PASSPORT" in t:
+        score += 1
+    if "LKA" in t or "SRI LANKAN" in t:
+        score += 1
+    if re.search(r"P[<A-Z]{0,2}LKA", t):
+        score += 1
+    if re.search(r"\b[A-Z]\s?\d{7}\b", t):
+        score += 1
+    return score >= 2
+
+
+def _normalize_passport_number(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    candidate = re.sub(r"\s+", "", str(raw).upper())
+    return candidate if re.match(r"^[A-Z][0-9]{7}$", candidate) else None
+
+
+def _infer_degree_doc_type_from_text(text: str) -> str | None:
+    t = str(text or "").lower()
+    score = 0
+    if "university" in t:
+        score += 1
+    if "convocation" in t or "certify that" in t:
+        score += 1
+    if "degree" in t:
+        score += 1
+
+    if score < 2:
+        return None
+    if "master" in t:
+        return "master"
+    if "diploma" in t:
+        return "diploma"
+    if "bachelor" in t:
+        return "bachelor"
+    return None
+
+
+def _parse_mrz_birth_or_expiry_yyMMdd(raw: str, is_expiry: bool = False) -> str | None:
+    if not raw or not re.fullmatch(r"\d{6}", raw):
+        return None
+    yy = int(raw[:2])
+    mm = int(raw[2:4])
+    dd = int(raw[4:6])
+    if not (1 <= mm <= 12 and 1 <= dd <= 31):
+        return None
+
+    current_yy = datetime.now(timezone.utc).year % 100
+    if is_expiry:
+        year = 2000 + yy
+    else:
+        year = 2000 + yy if yy <= current_yy else 1900 + yy
+    return f"{dd:02d}/{mm:02d}/{year:04d}"
+
+
+def _extract_passport_from_mrz(text: str) -> dict[str, Any]:
+    up = str(text or "").upper()
+    result: dict[str, Any] = {}
+
+    line1_match = re.search(r"(P[<A-Z]{0,2}LKA[A-Z<]{12,})", up)
+    line2_match = re.search(r"([A-Z0-9<]{20,})", up)
+
+    line1 = line1_match.group(1) if line1_match else ""
+    line2 = ""
+    if line2_match:
+        # Prefer an MRZ-like line containing passport number pattern + country marker.
+        all_candidates = re.findall(r"[A-Z0-9<]{20,}", up)
+        for candidate in all_candidates:
+            if re.search(r"\b[A-Z]\d{7}<", candidate) and "LKA" in candidate:
+                line2 = candidate
+                break
+        if not line2:
+            line2 = line2_match.group(1)
+
+    if line1:
+        mrz_names = re.sub(r"^P[<A-Z]{0,2}LKA", "", line1)
+        parts = mrz_names.split("<<")
+        if parts:
+            surname = parts[0].replace("<", " ").strip()
+            if surname:
+                result["surname"] = surname
+        if len(parts) > 1:
+            given = parts[1].replace("<", " ").strip()
+            if given:
+                result["given_names"] = given
+
+    if line2:
+        passport_match = re.search(r"([A-Z]\d{7})<", line2)
+        if passport_match:
+            result["passport_no"] = passport_match.group(1)
+
+        date_match = re.search(r"\b[A-Z]\d{7}<\d?LKA(\d{6})\d[FMX]<?(\d{6})", line2)
+        if date_match:
+            dob = _parse_mrz_birth_or_expiry_yyMMdd(date_match.group(1), is_expiry=False)
+            expiry = _parse_mrz_birth_or_expiry_yyMMdd(date_match.group(2), is_expiry=True)
+            if dob:
+                result["dob"] = dob
+            if expiry:
+                result["expiry"] = expiry
+
+    if line1:
+        result["mrz"] = line1
+    return result
+
+
 def _extract(doc_type, text):
     t = text.lower()
     if doc_type == "alevel":
@@ -2039,13 +2166,24 @@ def _extract(doc_type, text):
             "date_of_issue": _f(r"(?:date\s*of\s*issue|issued\s*date|date)[:\s]+(.+?\d{4})", text),
         }
     elif doc_type in ("bachelor", "master", "diploma"):
+        degree_name = (
+            _f(r"(?:this\s+is\s+to\s+certify\s+that|certify\s+that)\s+([A-Za-z][A-Za-z .'-]{4,90}?)\s+(?:was\s+admitted|has\s+been\s+admitted|was\s+awarded|was\s+conferred)", text)
+            or _f(r"(?:awarded\s+to|conferred\s+upon)\s+([A-Za-z][A-Za-z .'-]{4,90})", text)
+        )
+        degree_title = (
+            _f(r"((?:bachelor|master|diploma)[^\n]{0,120})", t)
+            or _f(r"(?:degree\s+of)\s+((?:bachelor|master|diploma)[^\n]{0,120})", t)
+        )
+        degree_university = (
+            _f(r"((?:general\s+sir\s+john\s+kotelawala\s+defence\s+university(?:\s+sri\s+lanka)?)|(?:[a-z][a-z\s&.'-]{3,90}\suniversity(?:\s+of\s+[a-z\s&.'-]{2,60})?))", t)
+            or _f(r"([A-Za-z][A-Za-z\s&.'-]{4,90}\s+University(?:\s+of\s+[A-Za-z\s&.'-]{2,60})?)", text)
+        )
         return {
-            "name":       _f(r"(?:certify that|awarded to|conferred upon)\s+([A-Z\s]+)", text),
-            "degree":     _f(r"(bachelor|master|diploma)[^.\n]{0,60}", t),
-            "university": _f(r"university of [\w\s]+|[\w\s]+ university", t),
+            "name":       degree_name,
+            "degree":     degree_title,
+            "university": degree_university,
             "year":       _f(r"(20\d{2})", text),
-            "class":      _f(r"(first class|second class|upper second|lower second|"
-                             r"distinction|merit|pass)", t),
+            "class":      _f(r"(first\s+class|second\s+class\s+upper\s+division|second\s+class\s+lower\s+division|upper\s+second|lower\s+second|distinction|merit|pass)", t),
             "gpa":        _f(r"gpa[\s:]+([0-9.]+)", t),
         }
     elif doc_type == "ielts":
@@ -2077,15 +2215,36 @@ def _extract(doc_type, text):
             "test_date": _f(r"(\d{1,2}[\s/\-]\w+[\s/\-]20\d{2})", text),
         }
     elif doc_type == "passport":
-        return {
-            "surname":     _f(r"surname[\s:]+([A-Z]+)", text),
-            "given_names": _f(r"given\s*names?[\s:]+([A-Z\s]+)", text),
-            "passport_no": _f(r"\b([A-Z]\d{7})\b", text),
-            "nationality": _f(r"nationality[\s:]+([A-Z\s]+)", text),
-            "dob":         _f(r"(?:date of birth|dob)[\s:]+([0-9/\-\s\w]+)", t),
-            "expiry":      _f(r"(?:date of expiry|expiry)[\s:]+([0-9/\-\s\w]+)", t),
-            "mrz":         _f(r"(P<<LKA[A-Z<]+)", text),
+        parsed = {
+            "surname":     _f(r"(?:surname|surname\s*/[^\n]*)[^A-Z0-9]{0,10}([A-Z][A-Z\s'-]{1,40})", text),
+            "given_names": (
+                _f(r"(?:given\s*names?|other\s*names?)[^A-Z0-9]{0,10}([A-Z][A-Z\s'-]{2,70})", text)
+                or _f(r"(?:other\s*names?\s*/[^\n]*)[^A-Z0-9]{0,10}([A-Z][A-Z\s'-]{2,70})", text)
+            ),
+            "passport_no": _normalize_passport_number(
+                _f(r"(?:passport\s*(?:no\.?|number))[^A-Z0-9]{0,10}([A-Z]\s?\d{7})", text)
+                or _f(r"\b([A-Z]\s?\d{7})\b", text)
+            ),
+            "nationality": (
+                _f(r"(?:nationality|national\s*status)[^A-Z0-9]{0,10}([A-Z][A-Z\s]{2,40})", text)
+                or _f(r"\b(SRI\s+LANKAN)\b", text)
+            ),
+            "dob": (
+                _f(r"(?:date\s*of\s*birth|dob)[^0-9]{0,20}(\d{2}[/-]\d{2}[/-]\d{4})", text)
+                or _f(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", text)
+            ),
+            "expiry": (
+                _f(r"(?:date\s*of\s*expiry|expiry(?:\s*date)?)[^0-9]{0,20}(\d{2}[/-]\d{2}[/-]\d{4})", text)
+                or _f(r"(?:valid\s*until)[^0-9]{0,20}(\d{2}[/-]\d{2}[/-]\d{4})", text)
+            ),
+            "mrz": _f(r"(P[<A-Z]{0,2}LKA[A-Z<]{12,})", text),
         }
+
+        mrz_fallback = _extract_passport_from_mrz(text)
+        for key, value in mrz_fallback.items():
+            if not parsed.get(key) and value:
+                parsed[key] = value
+        return parsed
     elif doc_type == "financial":
         return {
             "bank_name":   _f(
@@ -4443,6 +4602,17 @@ async def ocr_endpoint(
                 detected, final_conf, method = ml_label, ml_conf, "ml_low_conf"
         else:
             detected, final_conf, method = ml_label, ml_conf, "ml"
+
+        # Heuristic rescue for passports: OCR often captures MRZ and key fields,
+        # but ML confidence may be low on noisy mobile photos.
+        if doc_type == "auto" and detected != "passport" and _looks_like_passport_text(text) and final_conf < 0.75:
+            detected, method = "passport", "heuristic_passport_fallback"
+
+        # Heuristic rescue for degree certificates on noisy scans.
+        if doc_type == "auto" and final_conf < 0.75:
+            degree_guess = _infer_degree_doc_type_from_text(text)
+            if degree_guess and detected != degree_guess:
+                detected, method = degree_guess, f"heuristic_{degree_guess}_fallback"
 
         # Override if doc_type explicitly passed
         if doc_type != "auto" and doc_type in TRAINING_DATA:

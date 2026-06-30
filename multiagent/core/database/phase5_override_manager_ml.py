@@ -320,11 +320,11 @@ class Phase5:
         self._ml_log:    List = self._load_ml_log()
 
         # ML modules
-        print("🤖 Phase5: Loading ML modules...")
+        print(" Phase5: Loading ML modules...")
         self.anomaly    = AnomalyDetector()
         self.classifier = OverrideClassifier()
         self.suggester  = SuggestionEngine()
-        print(f"✅ Phase5 ready — ML-1 ({len(self.anomaly._models)} field models) | "
+        print(f" Phase5 ready — ML-1 ({len(self.anomaly._models)} field models) | "
               f"ML-2 (TF-IDF+NB, {len(OverrideClassifier.TRAINING_EXAMPLES)} examples) | "
               f"ML-3 (Z-score, {len(SuggestionEngine.HARD_BOUNDS)} bounds)")
 
@@ -335,10 +335,10 @@ class Phase5:
         try:
             with open(self.overrides_path, "r", encoding="utf-8") as f:
                 self._overrides = json.load(f)
-            print(f"✅ Phase5: Loaded overrides for {len(self._overrides)} universities")
+            print(f" Phase5: Loaded overrides for {len(self._overrides)} universities")
         except FileNotFoundError:
             self._overrides = {}
-            print("ℹ️  Phase5: No active_overrides.json — starting fresh")
+            print("  Phase5: No active_overrides.json — starting fresh")
         except json.JSONDecodeError as e:
             logger.error("Phase5: overrides corrupt: %s", e)
             self._overrides = {}
@@ -375,11 +375,11 @@ class Phase5:
             print(f"  🚨 ML-1 ANOMALY: {uni_id}.{field_path} = {new_value}")
             print(f"     {anomaly['warning']}")
         else:
-            print(f"  ✅ ML-1: {new_value} looks normal for '{field_path}'")
+            print(f"   ML-1: {new_value} looks normal for '{field_path}'")
 
         # ML-2 classify reason
         clf = self.classifier.classify(reason)
-        print(f"  🏷️  ML-2: '{clf['label']}' ({clf['confidence']:.0%} confidence)")
+        print(f"   ML-2: '{clf['label']}' ({clf['confidence']:.0%} confidence)")
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = {
@@ -428,7 +428,7 @@ class Phase5:
                 "reason": "Override removed", "ml_category": None, "ml_is_anomaly": False,
             })
             self._save_overrides(); self._save_history()
-            print(f"🗑️  Phase5: Removed {uni_id}.{field_path}")
+            print(f"  Phase5: Removed {uni_id}.{field_path}")
             return True
         return False
 
@@ -448,11 +448,11 @@ class Phase5:
             for c in ["UK","Singapore","Australia"]:
                 universities.extend(self.db_manager.get_universities_by_country(c))
         if not universities:
-            print("⚠️  ML-3: No university data for scan")
+            print(" ML-3: No university data for scan")
             return []
-        print(f"\n  🔍 ML-3: Scanning {len(universities)} universities...")
+        print(f"\n   ML-3: Scanning {len(universities)} universities...")
         suggestions = self.suggester.suggest(universities)
-        print(f"  📋 ML-3: {len(suggestions)} suggestion(s) found")
+        print(f"   ML-3: {len(suggestions)} suggestion(s) found")
         for s in suggestions[:5]:
             print(f"     • {s['university_id']}.{s['field']} = {s['current_value']}")
             print(f"       {s['reason']} | Confidence: {s['confidence']:.0%}")

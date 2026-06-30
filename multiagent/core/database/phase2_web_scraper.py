@@ -489,7 +489,7 @@ class Phase2:
         self.ml      = Phase2AnomalyDetector()
         if not self.ml.trained:
             self.ml.fit_baseline(verbose=False)
-        print("✅ Phase2 ready (Scraper + ML)")
+        print(" Phase2 ready (Scraper + ML)")
 
     def scrape_and_validate(self, use_cache: bool = True) -> dict:
         """
@@ -560,4 +560,4 @@ if __name__ == "__main__":
           f"Clean: {result['summary']['clean']} | "
           f"Flagged: {result['flagged']}")
 
-    print("\n✓ Phase 2 test complete")
+    print("\n Phase 2 test complete")

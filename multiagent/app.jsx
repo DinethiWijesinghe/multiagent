@@ -1630,6 +1630,7 @@ function ProfileStep({data,onNext,user}){
   const SL_DISTRICTS=["Colombo","Gampaha","Kalutara","Kandy","Matale","Nuwara Eliya","Galle","Matara","Hambantota","Jaffna","Kilinochchi","Mannar","Mullaitivu","Vavuniya","Puttalam","Kurunegala","Anuradhapura","Polonnaruwa","Badulla","Monaragala","Ratnapura","Kegalle","Trincomalee","Batticaloa","Ampara"];
   const submit=()=>{
     if(!form.full_name||!form.email||!form.phone||!form.country||!form.current_qualification){setErr("Complete all required fields (*) in the Personal tab.");return;}
+    if(form.current_qualification==="GCE A/L"&&!form.stream){setErr("Please select your A/L stream to continue.");return;}
     if(!financial.total_budget){setErr("Enter your total budget in the Financial tab.");return;}
     setErr("");onNext({...form,financial});
   };
@@ -1661,7 +1662,7 @@ function ProfileStep({data,onNext,user}){
               <div className="field"><label className="flabel">Program Interest</label><select value={form.program_interest} onChange={e=>f("program_interest",e.target.value)}><option value="">— Select —</option>{["Engineering","Computer Science","Business","Medicine","Science","Arts","Law","Other"].map(p=><option key={p}>{p}</option>)}</select></div>
               <div className="field"><label className="flabel">Study Level</label><select value={form.study_level} onChange={e=>f("study_level",e.target.value)}><option value="">— Select —</option>{["Bachelor's Degree","Master's Degree","PhD"].map(l=><option key={l}>{l}</option>)}</select></div>
               <div className="field"><label className="flabel">Highest Qualification <span className="req">*</span></label><select value={form.current_qualification} onChange={e=>{f("current_qualification",e.target.value);f("stream","");}}><option value="">— Select —</option>{["GCE A/L","Diploma","Bachelor's Degree","Master's Degree"].map(q=><option key={q}>{q}</option>)}</select></div>
-              {form.current_qualification==="GCE A/L"&&(<div className="field"><label className="flabel">A/L Stream</label><select value={form.stream} onChange={e=>f("stream",e.target.value)}><option value="">— Select —</option>{["Physical Science","Bio Science","Commerce","Arts","Technology"].map(s=><option key={s}>{s}</option>)}</select></div>)}
+              {form.current_qualification==="GCE A/L"&&(<div className="field"><label className="flabel">A/L Stream <span className="req">*</span></label><select value={form.stream} onChange={e=>f("stream",e.target.value)}><option value="">— Select —</option>{["Physical Science","Bio Science","Commerce","Arts","Technology"].map(s=><option key={s}>{s}</option>)}</select></div>)}
             </div>
           </div>
         )}
