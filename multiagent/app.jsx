@@ -1861,9 +1861,6 @@ function requiredChecklistItemsForQualification(qualification){
   const academicDoc = qualificationToAcademicDoc(qualification);
   return [
     { id: "academic", label: `Academic (${academicDoc})`, types: [academicDoc] },
-    { id: "english", label: "English (IELTS or TOEFL or PTE)", types: ENGLISH_DOC_TYPES },
-    { id: "identity", label: "Identity (Passport)", types: ["Passport"] },
-    { id: "financial", label: "Financial (Bank Statement)", types: ["Financial Statement"] },
   ];
 }
 
@@ -1924,7 +1921,11 @@ function prettyFieldLabel(key){
 
 function extractionEditableKeys(result){
   const docType = result?.data?.document_type;
-  return getPrimaryRequiredFieldKeys(docType);
+  const keys = [...getPrimaryRequiredFieldKeys(docType)];
+  if(docType === "A-Level Results"){
+    keys.push("general_english_grade");
+  }
+  return Array.from(new Set(keys));
 }
 
 // NEW v6: Checklist panel shown above doc grid
@@ -1986,7 +1987,6 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
   const qual=profile.current_qualification;
   const defaultType=qualificationToAcademicDoc(qual);
   const requiredChecklistItems = requiredChecklistItemsForQualification(qual);
-  const requiredDocTypes = Array.from(new Set(requiredChecklistItems.flatMap((item)=>item.types)));
 
   const [tab,setTab]=useState("upload");
   const [selectedType,setSelectedType]=useState(defaultType);
@@ -2181,18 +2181,6 @@ function DocumentStep({profile,docData,onNext,onBack,user}){
     const finalPayload=buildEligibilityPayload(uploadedDocs);
     if(!Object.keys(finalPayload.documents||{}).length){
       setAiError("Add at least one extracted or manually entered document before eligibility check.");
-      return;
-    }
-    const missingGroups = requiredChecklistItems.filter((item)=>!item.types.some((docType)=>Boolean(finalPayload.documents?.[docType])));
-    if(missingGroups.length){
-      setAiError(`Please complete required documents: ${missingGroups.map((item)=>item.label).join(", ")}`);
-      return;
-    }
-    const unconfirmed = Object.keys(finalPayload.documents||{})
-      .filter((docType)=>requiredDocTypes.includes(docType))
-      .filter((docType)=>!confirmedDocs[docType]);
-    if(unconfirmed.length){
-      setAiError(`Please confirm these documents before eligibility: ${unconfirmed.join(", ")}`);
       return;
     }
     onNext(finalPayload);
