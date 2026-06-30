@@ -958,7 +958,7 @@ def _run_tesseract(image_path, doc_type_hint="auto"):
     print("\n========== OCR TEXT ==========\n")
     print(text)
     print("\n==============================\n")
-    # return _correct(text), confidence, "tesseract"
+    return _correct(text), confidence, "tesseract"
     # import pytesseract
     # gray = _preprocess(image_path)
     # preset_key, config = _tesseract_config_for_doc(doc_type_hint)
@@ -1038,6 +1038,43 @@ def _run_ocr(image_path, doc_type_hint="auto"):
                 "    pip install easyocr\n"
                 f"\nDetails: tesseract_error={te} | easyocr_error={ee}"
             )
+
+
+def _try_enable_ocr_engine() -> bool:
+    """Best-effort OCR runtime recovery without requiring server restart."""
+    global _OCR_ENGINE, _OCR_READINESS
+
+    # Honor explicit mode first.
+    if OCR_ENGINE_MODE == "easyocr" or USE_EASYOCR:
+        try:
+            import easyocr  # noqa: F401
+            _OCR_ENGINE = "easyocr"
+            _OCR_READINESS = _collect_ocr_readiness()
+            return True
+        except Exception:
+            _OCR_ENGINE = None
+            _OCR_READINESS = _collect_ocr_readiness()
+            return False
+
+    if OCR_ENGINE_MODE == "tesseract":
+        _OCR_ENGINE = "tesseract" if _configure_tesseract() else None
+        _OCR_READINESS = _collect_ocr_readiness()
+        return _OCR_ENGINE is not None
+
+    # Auto mode: prefer Tesseract, fallback to EasyOCR.
+    if _configure_tesseract():
+        _OCR_ENGINE = "tesseract"
+        _OCR_READINESS = _collect_ocr_readiness()
+        return True
+    try:
+        import easyocr  # noqa: F401
+        _OCR_ENGINE = "easyocr"
+        _OCR_READINESS = _collect_ocr_readiness()
+        return True
+    except Exception:
+        _OCR_ENGINE = None
+        _OCR_READINESS = _collect_ocr_readiness()
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1146,6 +1183,12 @@ def _normalize_fields(doc_type, fields):
     normalized["doc_type_key"] = doc_type
 
     if doc_type == "alevel":
+        # Accept frontend/manual aliases and normalize into canonical keys.
+        if not normalized.get("name") and normalized.get("full_name"):
+            normalized["name"] = normalized.get("full_name")
+        if not normalized.get("stream") and normalized.get("subject_stream"):
+            normalized["stream"] = normalized.get("subject_stream")
+
         subjects = normalized.get("subjects") or []
         grades = normalized.get("grades") or []
 
@@ -1784,6 +1827,11 @@ def _normalize_alevel_name_ocr(name: str | None) -> str | None:
 
 def _extract_alevel_name(text: str) -> str | None:
     """Extract candidate full name from Results Schedule layouts."""
+    # Common official-statement format: "Name in Full : SURNAME ..."
+    direct = _f(r"name\s*in\s*full\s*[:\-]\s*([A-Z][A-Z .]{5,})(?:\n|$)", text)
+    if direct:
+        return _normalize_alevel_name_ocr(direct.strip(" .,"))
+
     lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines() if ln.strip()]
 
     for idx, line in enumerate(lines):
@@ -1821,6 +1869,14 @@ def _extract_alevel_index_number(text: str) -> str | None:
     )
 
 
+def _extract_alevel_year(text: str) -> str | None:
+    return (
+        _f(r"year\s*of\s*examination\s*[:\-]?\s*(20\d{2})", text)
+        or _f(r"examination\s*year\s*[:\-]?\s*(20\d{2})", text)
+        or _f(r"\b(20\d{2})\b", text)
+    )
+
+
 def _extract_alevel_z_score(text: str) -> str | None:
     # Primary: the value actually prints in a STREAM ROW, e.g.
     # "YES  BIO  .9947  758  8079" — not next to the words "Z Score".
@@ -1842,12 +1898,13 @@ def _extract_alevel_z_score(text: str) -> str | None:
 
     # Tertiary: original label-proximity search, widened window (60->200).
     raw = (
-        _f(r"(?:z\s*[-.]?\s*score|z\s*score)\s*[:\-]?\s*([0-9]*[\.,]?[0-9]{3,6})", text)
-        or _f(r"\bz\s*score\b[\s\S]{0,200}?([0-9]*[\.,]?[0-9]{3,6})", text)
+        _f(r"(?:z\s*[-.]?\s*score|z\s*score)[^0-9+\-\n]{0,40}([+\-]?[0-9]*[\.,]?[0-9]{3,6})", text)
+        or _f(r"\bz\s*[-.]?\s*score\b[\s\S]{0,200}?([+\-]?[0-9]*[\.,]?[0-9]{3,6})", text)
     )
     if not raw:
         return None
     normalized = raw.replace(",", ".").strip()
+    normalized = normalized.lstrip("+")
     if normalized.startswith("."):
         return f"0{normalized}"
     if re.fullmatch(r"\d{4}", normalized):
@@ -1890,7 +1947,13 @@ def _extract(doc_type, text):
         schedule_table = _extract_alevel_results_schedule_table(text, stream_hint=stream_guess)
         schedule_map = schedule_table.get("subject_grade_map") or {}
 
-        if schedule_map:
+        non_generic_schedule_keys = [
+            key for key in schedule_map.keys()
+            if not re.match(r"^(?:main\s+subject\s*\d+|subject\s*\d+[a-z]?)$", str(key).strip(), re.I)
+        ]
+        schedule_map_reliable = len(non_generic_schedule_keys) >= 2
+
+        if schedule_map and (schedule_map_reliable or not subjects):
             # Prefer table-aligned extraction for Results Schedule scans.
             subjects = schedule_map
             grades = list(schedule_map.values())
@@ -1901,7 +1964,7 @@ def _extract(doc_type, text):
             "name":          _extract_alevel_name(text),
             "index_number":  _extract_alevel_index_number(text),
             "centre_no":     _f(r"(?:centre\s*no\.?|center\s*no\.?)[:\s]*([0-9]{2,6})", text),
-            "year":          _f(r"(20\d{2})", text),
+            "year":          _extract_alevel_year(text),
             "subjects":      subjects,
             "grades":        grades,
             "subject_codes": schedule_table.get("subject_codes") or [],
@@ -4251,6 +4314,9 @@ async def ocr_endpoint(
     debug: str = Form(default="false"),
     current_user_email: str = Depends(_require_auth),
 ):
+    if _OCR_ENGINE is None:
+        _try_enable_ocr_engine()
+
     if _OCR_ENGINE is None:
         hints = " | ".join((_OCR_READINESS or {}).get("messages", []))
         raise HTTPException(

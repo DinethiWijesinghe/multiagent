@@ -434,13 +434,7 @@ def _preprocess(image_path: str) -> np.ndarray:
     # gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
     #                               cv2.THRESH_BINARY, 21, 10)
     gray = cv2.GaussianBlur(gray,(3,3),0)
-    gray = cv2.threshold
-    (
-    gray,
-    0,
-    255,
-    cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )[1]
+    gray = cv2.threshold(gray,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
     gray = cv2.medianBlur(gray, 3)
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)

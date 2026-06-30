@@ -1691,25 +1691,56 @@ const STREAM_SUBJECTS={"Physical Science":["Combined Maths","Physics","Chemistry
 // CHANGE v6: ALevelManualForm — english_proficiency / EnglishSection REMOVED.
 //            User must upload IELTS/TOEFL/PTE as a separate document type.
 function ALevelManualForm({stream,onSubmit,onBack}){
-  const subjects=STREAM_SUBJECTS[stream]||["Subject 1","Subject 2","Subject 3"];
+  const streamOptions=Object.keys(STREAM_SUBJECTS);
+  const [selectedStream,setSelectedStream]=useState(streamOptions.includes(stream)?stream:streamOptions[0]);
   const [grades,setGrades]=useState({});
+  const [fullName,setFullName]=useState("");
+  const [year,setYear]=useState(String(CURRENT_YEAR-1));
   const [indexNo,setIndexNo]=useState("");
   const [zScore,setZScore]=useState("");
   const [err,setErr]=useState("");
+  const subjects=STREAM_SUBJECTS[selectedStream]||["Subject 1","Subject 2","Subject 3"];
   const submit=()=>{
+    if(!fullName.trim()){setErr("Full name is required.");return;}
+    if(!year){setErr("Year of examination is required.");return;}
     if(subjects.some(s=>!grades[s])){setErr("Select a grade for every subject.");return;}
+    if(!indexNo.trim()){setErr("Index number is required.");return;}
+    if(!zScore.trim()){setErr("Z-Score is required.");return;}
     setErr("");
     // ✕ english_proficiency NOT included — must be uploaded as a separate document
-    onSubmit({document_type:"A-Level Results",subjects:grades,index_number:indexNo,z_score:zScore||"N/A"});
+    const subjectMap={};
+    subjects.forEach((subject)=>{subjectMap[subject]=grades[subject]||"";});
+    const cleanName=fullName.trim();
+    const cleanYear=String(year).trim();
+    const cleanIndex=indexNo.trim();
+    const cleanZ=zScore.trim();
+    onSubmit({
+      document_type:"A-Level Results",
+      full_name:cleanName,
+      name:cleanName,
+      year:cleanYear,
+      subject_stream:selectedStream,
+      stream:selectedStream,
+      index_number:cleanIndex,
+      z_score:cleanZ,
+      subject_grade_map:subjectMap,
+      subjects:subjectMap,
+      grades:Object.values(subjectMap),
+    });
   };
   return(
     <div>
       <Alert type="info">English proficiency (IELTS/TOEFL/PTE) is a <strong>separate document</strong>. Select the relevant tab to upload it after submitting your A/L results.</Alert>
+      <div className="fgrid" style={{marginTop:"1rem"}}>
+        <div className="field" style={{gridColumn:"1/-1"}}><label className="flabel">Full Name <span className="req">*</span></label><input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="As in official statement" /></div>
+        <div className="field"><label className="flabel">Year of Examination <span className="req">*</span></label><select value={year} onChange={e=>setYear(e.target.value)}><option value="">— Select —</option>{Array.from({length:15},(_,i)=>CURRENT_YEAR-i).map((y)=><option key={y}>{y}</option>)}</select></div>
+        <div className="field"><label className="flabel">Stream <span className="req">*</span></label><select value={selectedStream} onChange={e=>setSelectedStream(e.target.value)}>{streamOptions.map((s)=><option key={s}>{s}</option>)}</select></div>
+      </div>
       <div className="slabel" style={{marginTop:"1rem"}}>Subject Grades</div>
       {subjects.map(sub=>(<div key={sub} style={{marginBottom:"1.1rem"}}><div className="flabel" style={{marginBottom:".4rem"}}>{sub}</div><div className="grade-row">{["A","B","C","S","F"].map(g=>(<button key={g} className={`gpill${grades[sub]===g?` g${g}`:""}`} onClick={()=>setGrades(p=>({...p,[sub]:g}))}>{g}</button>))}</div></div>))}
       <div className="fgrid" style={{marginTop:"1rem"}}>
-        <div className="field"><label className="flabel">Index Number</label><input value={indexNo} onChange={e=>setIndexNo(e.target.value)} /></div>
-        <div className="field"><label className="flabel">Z-Score (optional)</label><input value={zScore} onChange={e=>setZScore(e.target.value)} /></div>
+        <div className="field"><label className="flabel">Index Number <span className="req">*</span></label><input value={indexNo} onChange={e=>setIndexNo(e.target.value)} /></div>
+        <div className="field"><label className="flabel">Z-Score <span className="req">*</span></label><input value={zScore} onChange={e=>setZScore(e.target.value)} placeholder="e.g. +0.3386" /></div>
       </div>
       {err&&<Alert type="error">{err}</Alert>}
       <div className="btn-row"><button className="btn btn-ghost" onClick={onBack}>← Back</button><button className="btn btn-primary" onClick={submit}>Check Eligibility →</button></div>
@@ -1833,7 +1864,7 @@ const DOC_TYPE_LIST = [
 ];
 
 const REQUIRED_FIELDS_BY_DOC_LABEL = {
-  "A-Level Results": [["subjects", "subject_grade_map", "grades"]],
+  "A-Level Results": [["full_name", "name"], ["year"], ["subject_stream", "stream"], ["index_number"], ["z_score"], ["subjects", "subject_grade_map", "grades"]],
   "Bachelor's Degree": [["university_name", "university"], ["degree_program", "degree_title"], ["graduation_year", "graduation_date"], ["gpa_value", "gpa", "gpa_normalized"]],
   "Master's Degree": [["university_name", "university"], ["degree_program", "degree_title"], ["graduation_year", "graduation_date"], ["gpa_value", "gpa", "gpa_normalized"]],
   "Diploma": [["student_name"], ["institution"], ["program"]],
