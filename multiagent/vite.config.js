@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    allowedHosts: true,
+    host: '0.0.0.0',
+    allowedHosts: ['rico-fails-their-from.trycloudflare.com', '.trycloudflare.com'],
     proxy: {
       '/health': 'http://127.0.0.1:8000',
       '/universities': 'http://127.0.0.1:8000',
@@ -16,5 +17,9 @@ export default defineConfig({
       '/applications': 'http://127.0.0.1:8000',
       '/metrics': 'http://127.0.0.1:8000',
     },
+  },
+  preview: {
+    host: '0.0.0.0',
+    allowedHosts: ['rico-fails-their-from.trycloudflare.com', '.trycloudflare.com'],
   },
 })
