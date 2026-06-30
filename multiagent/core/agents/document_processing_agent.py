@@ -288,10 +288,14 @@ def _parse_to_dataclass(doc_type: str, text: str):
     t = text.lower()
 
     if doc_type == "alevel":
+        pairs = re.findall(
+            r"(Physics|Chemistry|Biology|Combined Mathematics|ICT|Economics|Accounting|Geography)\s+([ABCSFW])",
+            text,
+            re.I,
+        )
         return ALevelResult(
             index_number = _f(r"Index\s+Number\s*:?\s*(\d{7})",text),
             year         = _f( r"Year\s+of\s+Examination\s*:?\s*(20\d{2})",text),
-            pairs        = re.findall( r"(Physics|Chemistry|Biology|Combined Mathematics|ICT|Economics|Accounting|Geography)\s+([ABCSFW])", text,re.I),           
             subjects     = [p[0].title() for p in pairs],
             grades       = [p[1].upper() for p in pairs],
             z_score      = _f(r"z[\s\-]?score.*?([+-]?\d+\.\d+)", t),
