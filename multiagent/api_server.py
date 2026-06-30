@@ -622,7 +622,7 @@ def _preprocess(image_path):
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
-    _, gray = cv2.GaussianBlur(gray,(3,3),0)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
     gray = cv2.threshold( gray,0, 255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     return gray
 
